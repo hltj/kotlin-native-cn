@@ -14,13 +14,13 @@ to platform's implementation of `POSIX` standard.
 
 To use the library just 
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 import platform.posix.*
 ```
 
-</div> 
+
 
 The only target for which it is not available is [WebAssembly](https://en.wikipedia.org/wiki/WebAssembly).
 

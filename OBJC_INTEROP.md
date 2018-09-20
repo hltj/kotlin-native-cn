@@ -69,7 +69,7 @@ Kotlin constructors are imported as initializers to Swift/Objective-C.
 Top-level Kotlin functions and properties are accessible as members of special classes.
 Each Kotlin file is translated into such a class. E.g.
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 // MyLibraryUtils.kt
@@ -78,17 +78,17 @@ package my.library
 fun foo() {}
 ```
 
-</div>
+
 
 can be called from Swift like
 
-<div class="sample" markdown="1" theme="idea" mode="swift">
+
 
 ```swift
 MyLibraryUtilsKt.foo()
 ```
 
-</div>
+
 
 ### Method names translation
 
@@ -97,25 +97,25 @@ parameter names. Anyway these two concepts have different semantics, so sometime
 Swift/Objective-C methods can be imported with a clashing Kotlin signature. In this case
 the clashing methods can be called from Kotlin using named arguments, e.g.:
 
-<div class="sample" markdown="1" theme="idea" mode="swift">
+
 
 ```swift
 [player moveTo:LEFT byMeters:17]
 [player moveTo:UP byInches:42]
 ```
 
-</div>
+
 
 in Kotlin it would be:
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 player.moveTo(LEFT, byMeters = 17)
 player.moveTo(UP, byInches = 42)
 ```
 
-</div>
+
 
 ### Errors and exceptions
 
@@ -186,27 +186,27 @@ can be retrieved in the same way as it is for any other Kotlin `object`
 (see singletons in the table above).
 To sum the things up:
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 fun foo(block: (Int) -> Unit) { ... }
 ```
 
-</div>
+
 
 would be represented in Swift as
 
-<div class="sample" markdown="1" theme="idea" mode="swift">
+
 
 ```swift
 func foo(block: (KotlinInt) -> KotlinUnit)
 ```
 
-</div>
+
 
 and can be called like
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 foo {
@@ -215,7 +215,7 @@ foo {
 }
 ```
 
-</div>
+
 
 ## Casting between mapped types
 
@@ -223,7 +223,7 @@ When writing Kotlin code, an object may need to be converted from a Kotlin type
 to the equivalent Swift/Objective-C type (or vice versa). In this case a plain old
 Kotlin cast can be used, e.g.
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 val nsArray = listOf(1, 2, 3) as NSArray
@@ -231,7 +231,7 @@ val string = nsString as String
 val nsNumber = 42 as NSNumber
 ```
 
-</div>
+
 
 ## Subclassing
 
@@ -256,7 +256,7 @@ Sometimes it is required to override initializers, e.g. when subclassing `UIView
 Initializers imported as Kotlin constructors can be overridden by Kotlin constructors
 marked with the `@OverrideInit` annotation:
 
-<div class="sample" markdown="1" theme="idea" mode="swift">
+
 
 ```swift
 class ViewController : UIViewController {
@@ -266,7 +266,7 @@ class ViewController : UIViewController {
 }
 ```
 
-</div>
+
 
 The overriding constructor must have the same parameter names and types as the overridden one.
 

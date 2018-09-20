@@ -60,7 +60,7 @@ use `./gradlew` to run the build instead of using your local Gradle installation
 Once the wrapper is created we need to describe the project structure in Gradle terms. To do this, create
 a `settings.gradle` file in the root directory of the project and put the following snippet into it:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 include ':greeting'
@@ -69,7 +69,7 @@ include ':greeting:android'
 include ':greeting:ios'
 ```
 
-</div>
+
 
 Here we declare all subprojects for our `greeting` multiplatform library. All other multiplatform libraries included
 in the project also must be declared here.
@@ -112,7 +112,7 @@ Now we have the basic structure of the project and can proceed to implement the 
 We need to add buildscript dependencies to be able to use the Kotlin plugins for Gradle in our build. Open
 the `build.gradle` in the `greeting` directory and put the following snippet into it:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 // Set up a buildscript dependency on the Kotlin plugin.
@@ -141,7 +141,7 @@ subprojects {
 }
 ```
 
-</div>
+
 
 
 Now all subprojects of the library can use Kotlin plugins.
@@ -150,7 +150,7 @@ Now all subprojects of the library can use Kotlin plugins.
 
 The `common` subproject contains platform-independent code. To build it, add the following snippet in `common/build.gradle`:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 apply plugin: 'kotlin-platform-common'
@@ -167,12 +167,12 @@ dependencies {
 }
 ```
 
-</div>
+
 
 Now we can write some logic available for all platforms. Create `common/src/main/kotlin/common.kt` and add some
 functionality into it:
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 // greeting/common/src/main/kotlin/common.kt
@@ -187,7 +187,7 @@ class Greeting {
 }
 ```
 
-</div>
+
 
 Here we create a simple class using the `expect`/`actual` paradigm. Find details about platform-specific declarations
 [here](https://kotlinlang.org/docs/reference/multiplatform.html#platform-specific-declarations).
@@ -198,7 +198,7 @@ The `android` subproject contains platform-dependent implementations of the `exp
 `common` project. We compile it into a Java library which an Android Studio project can depend on. The content
 of the `android/build.gradle` will be the following:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 apply plugin: 'kotlin-platform-jvm'
@@ -218,12 +218,12 @@ dependencies {
 }
 ```
 
-</div>
+
 
 As mentioned above this subproject should include actual implementations of the common project's `expect`-declarations.
 Let's write an Android-specific method:
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 // greeting/android/src/main/kotlin/android.kt
@@ -234,14 +234,14 @@ actual class Platform actual constructor() {
 }
 ```
 
-</div>
+
 
 #### 2.3 iOS subproject
 
 This project is compiled into an Objective-C framework using the Kotlin/Native compiler. To do this, declare a framework in
 `ios/build.gradle` and add an `expectedBy` dependency in the same manner as was done in the Android project:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 apply plugin: 'konan'
@@ -263,11 +263,11 @@ dependencies {
 }
 ```
 
-</div>
+
 
 As well as `android`, this project contains platform-dependent implementations of `expect`-declarations:
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 // greeting/ios/src/main/kotlin/ios.kt
@@ -278,7 +278,7 @@ actual class Platform actual constructor() {
 }
 ```
 
-</div>
+
 
 
 ### 3. Android application
@@ -318,7 +318,7 @@ following line in `androidApp/settings.gradle`:
 > creating a composite build. To do this you need to declare them along with their directories in
 > `androidApp/settings.gradle`:
 >
-><div class="sample" markdown="1" theme="idea" mode="groovy">
+>
 >
 >```groovy
 >include ':greeting'
@@ -330,21 +330,21 @@ following line in `androidApp/settings.gradle`:
 >project(':greeting:android').projectDir = file('../greeting/android')
 >```
 >
-></div>
+>
 >
 > Now you can declare dependencies directly on projects instead of using maven-like coordinates:
 >
-><div class="sample" markdown="1" theme="idea" mode="groovy">
+>
 >
 >```groovy
 >implementation project(':greeting:android')
 >```
 >
-></div>
+>
 
 After these steps we can access our library as we would with any other Kotlin code:
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 import org.greeting.*
@@ -356,7 +356,7 @@ fun foo() {
 }
 ```
 
-</div>
+
 
 
 ### 4. iOS application
@@ -421,7 +421,7 @@ Do this for the common code of the library too.
 Now the framework is added and all the Kotlin API are available from Swift code (note that you need to build the
 framework in order to get code completion). Let's print our greeting:
 
-<div class="sample" markdown="1" theme="idea" mode="swift">
+
 
 ```swift
 import Greeting
@@ -433,7 +433,7 @@ func foo() {
 }
 ```
 
-</div>
+
 
 ### Sample
 

@@ -8,7 +8,7 @@ You may use the Gradle plugin to build _Kotlin/Native_ projects. Since version 0
 [available](https://plugins.gradle.org/plugin/org.jetbrains.kotlin.konan) at the Gradle plugin portal, so you can apply it
 using Gradle plugin DSL:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 plugins {
@@ -16,12 +16,12 @@ plugins {
 }
 ```
 
-</div>
+
 
 __Note__: The 0.9 version of Kotlin/Native is based on Kotlin 1.3-M1 which is an EAP version and isn't available on
 the plugin portal. In this case you need to add a Kotlin EAP repository in your `settings.gradle`:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 pluginManagement {
@@ -34,13 +34,13 @@ pluginManagement {
 }
 ```
 
-</div>
+
 
 You also can get the plugin from a Bintray repository. In addition to releases, this repo contains old and development
 versions of the plugin which are not available at the plugin portal. To get the plugin from the Bintray repo, include
 the following snippet in your build script:
    
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 buildscript {
@@ -62,7 +62,7 @@ buildscript {
 apply plugin: 'konan'
 ```
 
-</div>
+
 
 The Kotlin/Native plugin depends on `org.jetbrains.kotlin:kotlin-gradle-plugin`. So if a build contains both these
 plugins as buildscript dependencies, it's recommended to **declare them in the same `build.gradle`** to avoid issues with
@@ -71,13 +71,13 @@ plugin classpath.
 By default the plugin downloads the Kotlin/Native compiler during the first run. If you have already downloaded the compiler
 manually you can specify the path to its root directory using `konan.home` project property (e.g. in `gradle.properties`).
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konan.home=/home/user/kotlin-native-0.8
 ```
 
-</div>
+
 
 In this case the compiler will not be downloaded by the plugin.
 
@@ -96,7 +96,7 @@ All Kotlin/Native artifacts should be declared in the `konanArtifacts` block. No
 v0.3.4. Use the `interop` method of the `konanArtifact` block instead:
 
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konanArtifacts {
@@ -109,13 +109,13 @@ konanArtifacts {
 }
 ```
 
-</div>
+
 
 All artifacts except interop libraries are built by the Kotlin/Native compiler. Such an artifact may be configured using its script block.
 It is here that you can specify source directories, used libraries, and compilation flags (see [**Plugin DSL**](#plugin-dsl) section for details). The plugin
 uses `src/main/kotlin/` as a default source directory for all compiler artifacts:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konanArtifacts {
@@ -139,14 +139,14 @@ konanArtifacts {
 }
 ```
 
-</div>
+
 
 Interop libraries are built using the `cinterop` tool. They also may have configuration blocks but the options available in these blocks
 differ from ones available for compiler artifacts. The input for such an artifact is a def-file describing a native API. By default the
 def-file path is `src/main/c_interop/<library-name>.def` but it may be changed using the `defFile` method of the configuration block of
 an interoperability library:
     
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konanArtifacts {
@@ -168,24 +168,24 @@ konanArtifacts {
 }
 ```
 
-</div>
+
 
 ## Building for different targets
 
 All the artifacts declared in a project may be built for different targets. By default they are built only for the `host` target i.e. a
 computer used for building. One may change the default target list using the `konan.targets` project extension:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konan.targets = [ 'linux', 'android_arm64', 'android_arm32' ]
 ```
 
-</div>
+
 
 One may specify a custom target set for each particular artifact using the `targets` parameter of an artifact declaration:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konan.targets = [ 'linux', 'android_arm64' ]
@@ -204,13 +204,13 @@ konanArtifacts {
 }
 ```
 
-</div>
+
 
 
 The plugin creates tasks to compile each artifact for all the targets supported by the current host and declared in the `konan.targets` list.
 You can perform additional configuration for a target using the `target` method of an artifact configuration block:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konan.targets = [ 'linux', 'macbook', 'wasm32' ]
@@ -235,11 +235,11 @@ konanArtifacts {
 }
 ```
 
-</div>
+
 
 One may access to a task for some target via artifact methods or properties:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 // Both of them return a task building artifact 'foo' for MacOS
@@ -247,13 +247,13 @@ konanArtifacts.foo.getByTarget("macbook")
 konanArtifacts.foo.macbook
 ```
 
-</div>
+
 
 ## Using libraries
 
 You can specify used libraries for artifacts of all types using the `libraries` script block:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 program('foo') {
@@ -263,7 +263,7 @@ program('foo') {
 }
 ```
 
-</div>
+
 
 There are several ways to describe a library used by an artifact:
 
@@ -271,7 +271,7 @@ There are several ways to describe a library used by an artifact:
 the [`Project.file`](https://docs.gradle.org/current/dsl/org.gradle.api.Project.html#org.gradle.api.Project:file(java.lang.Object))
 method may be passed there:
 
-    <div class="sample" markdown="1" theme="idea" mode="groovy">
+
     
     ```groovy
     libraries {
@@ -280,12 +280,12 @@ method may be passed there:
     }
     ```
     
-    </div>
+
 
 * Specify a Kotlin/Native artifact object or its name. In this case the plugin automatically chooses a library with the correct target
 and sets dependencies between building tasks.
 
-    <div class="sample" markdown="1" theme="idea" mode="groovy">
+
     
     ```groovy
     libraries {
@@ -302,11 +302,11 @@ and sets dependencies between building tasks.
     }
     ```
     
-    </div>
+
 
 * Specify a project containing libraries. In this case all libraries built by the project specified will be used:
 
-    <div class="sample" markdown="1" theme="idea" mode="groovy">
+
     
     ```groovy
     libraries {
@@ -317,11 +317,11 @@ and sets dependencies between building tasks.
     }
     ```
     
-    </div>
+
 
 * Specify only the name of a library. In this case the compiler will look for the library in its repositories.
 
-    <div class="sample" markdown="1" theme="idea" mode="groovy">
+
     
     ```groovy
     libraries {
@@ -334,7 +334,7 @@ and sets dependencies between building tasks.
     }
     ```
     
-    </div>
+
 
 ## Multiplatform build
 
@@ -342,7 +342,7 @@ Kotlin/Native, Kotlin/JVM, and Kotlin/JS, support multiplatform projects. Such s
 Kotlin/Native Gradle plugin by default and there is no need to apply any additional plugins to use it. By default
 multiplatform support is turned off, and can be enabled with the `enableMultiplatform` DSL method:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 apply 'konan'
@@ -354,12 +354,12 @@ konanArtifacts {
 }
 ```
 
-</div>
+
 
 The Gradle plugin adds an `expectedBy` dependency configuration that is used to specify a dependency from a Kotlin/Native
 project to a common project:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 apply 'konan'
@@ -369,13 +369,13 @@ dependencies {
 }
 ```
 
-</div>
+
 
 When a common project is added as an `expectedBy` dependency, all the artifacts with the multiplatform support enabled
 will use its `main` source set as a common module. One may specify custom source sets for each artifact using the
 `commonSourceSets` DSL method. In this case the multiplatform support will be also enabled for this artifact.
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konanArtifacts {
@@ -385,7 +385,7 @@ konanArtifacts {
 }
 ```
 
-</div>
+
 
 
 See more about multiplatform projects [here](https://kotlinlang.org/docs/reference/multiplatform.html).
@@ -437,13 +437,13 @@ for each an artifact is defined in a `konanArtifacts` block. Such a task may hav
 the artifact for all the supported targets declared for the project. You can change this behavior by specifying the space-separated
 target list in the `konan.build.targets` project property:
 
-    <div class="sample" markdown="1" theme="idea" mode="shell">
+
     
     ```bash
      ./gradlew compileKonanFoo -Pkonan.build.targets='android_arm32 android_arm64'
     ```
    
-    </div>
+
 
     The task has no properties to use by a build script.
 
@@ -455,13 +455,13 @@ executable. The task is an instance of Gradle's [`Exec`](https://docs.gradle.org
 so it supports all the settings provided by `Exec`. Additionally, run parameters may be passed to the task using the `runArgs`
 project property:
 
-    <div class="sample" markdown="1" theme="idea" mode="shell">
+
         
     ```bash
     ./gradlew runFoo -PrunArgs='foo bar'
     ```
         
-    </div>
+
 
 
 The plugin also edits the default `build` and `clean` tasks so that the first one allows you to build all the artifacts supported
@@ -480,7 +480,7 @@ Each task building a dynamic library produces two files: the library itself (a `
 on the target platform) and a C language header. Both of them may be accessed via properties of a building task
 (both properties have type `File`):
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konanArtifacts {
@@ -492,7 +492,7 @@ konanArtifacts.foo.getByTarget('host').artifact    // Points to the library file
 konanArtifacts.foo.getByTarget('host').headerFile  // Points to the header file
 ```
 
-</div> 
+
     
 Using a dynamic library is shown in the [python extension sample](https://github.com/JetBrains/kotlin-native/tree/master/samples/python_extension).
     
@@ -502,7 +502,7 @@ An Objective-C framework can be built using the `framework` artifact block. This
 same options as other ones. One may access the framework built using `artifact` property of the building task
 (see the [**Tasks**](#tasks) section). Unlike other artifacts this property points to a directory instead of a regular file.
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konanArtifacts {
@@ -513,7 +513,7 @@ konanArtifacts {
 konanArtifacts.foo.getByTarget('host').artifact // Points to the framework directory
 ```
 
-</div>    
+
 
 Using a framework is shown in the [calculator sample](https://github.com/JetBrains/kotlin-native/tree/master/samples/calculator).
 
@@ -523,7 +523,7 @@ You can also pass additional command line keys to the compiler or cinterop tool 
 available in the artifact configuration script block. For example this sample enables a verbose output for a link and bitcode
 generation stages and prints the execution time for all the compiler phases:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konanArtifacts {
@@ -533,7 +533,7 @@ konanArtifacts {
 }
 ```
 
-</div>
+
 
 Any command line key supported by the according tool (compiler or cinterop) can be used. Some of them are listed in the
 tables below.
@@ -558,7 +558,7 @@ tables below.
 
 ## Plugin DSL
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 // Default targets to build for.
@@ -742,12 +742,12 @@ konanArtifacts {
 
 ```
 
-</div>
+
 
 
 ## Multiplatform DSL
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 apply plugin: 'konan'
@@ -774,7 +774,7 @@ dependencies {
 }
 ```
 
-</div>
+
 
 ## Publishing to Maven
 
@@ -784,19 +784,19 @@ than the gradle version of kotlin native plugin that it depends on (currently Gr
 [GRADLE_METADATA](https://github.com/gradle/gradle/blob/master/subprojects/docs/src/docs/design/gradle-module-metadata-specification.md) 
 should be enabled for the build. e.g. in settings.gradle
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 enableFeaturePreview('GRADLE_METADATA')
 ```
 
-</div> 
+
 
 
 Some Maven repositories require some declarations in the `pom` files, that should be present in all auxiliary `pom` files (
 platform x build types). To meet this requirement the Kotlin/Native plugin has the following syntax to do it:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 konanArtifacts {
@@ -818,7 +818,7 @@ konanArtifacts {
 }
 ```
 
-</div> 
+
 
  In this example `name` and `description` tags will be added to each generated `pom` file for _libcurl_ published artifact.
 
@@ -830,7 +830,7 @@ for native languages and provides a new DSL which is much closer to the DSL of K
 plugins than the old one.
 The plugin is available at the Gradle plugin portal:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 plugins {
@@ -838,7 +838,7 @@ plugins {
 }
 ```
 
-</div> 
+
 
 
 ### Source management
@@ -846,7 +846,7 @@ plugins {
 Source management in the `kotlin.platform.native` plugin is uniform with other Kotlin plugins and is based on source sets. A source set is a group of Kotlin/Native source which may contain both common and platform-specific code. The plugin provides a top-level script block `sourceSets` allowing you to configure source sets. Also it creates the default source sets `main` and `test` (for production and test code respectively).
 By default the production sources are located in `src/main/kotlin` and the test sources - in `src/test/kotlin`.
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 sourceSets {
@@ -858,13 +858,13 @@ sourceSets {
 }
 ```
 
-</div> 
+
 
 ### Targets and output kinds
 
 By default the plugin creates software components for the main and test source sets. You can access them via the `components` container provided by Gradle or via the `component` property of a corresponding source set:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 // Main component.
@@ -876,7 +876,7 @@ components.test
 sourceSets.test.component
 ```
 
-</div> 
+
 
 Components allow you to specify:
 
@@ -886,7 +886,7 @@ Components allow you to specify:
 
 Targets can be specified by setting a corresponding component property:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 components.main {
@@ -895,13 +895,13 @@ components.main {
 }
 ```
 
-</div> 
+
 
 The plugin uses the same notation as the compiler. By default, test component uses the same targets as specified for the main one.
 
 Output kinds can also be specified using a special property:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 components.main {
@@ -910,7 +910,7 @@ components.main {
 }
 ```
 
-</div> 
+
 
 All constants used here are available inside a component configuration script block.
 The plugin supports producing binaries of the following kinds:
@@ -948,20 +948,20 @@ Basic lifecycle tasks like `assemble`, `build`, and `clean` are also available.
 The plugin builds a test executable for all the targets specified for the `test` component. If the current host platform is
 included in this list the test running tasks are also created. To run tests, execute the standard lifecycle `check` task:
 
-<div class="sample" markdown="1" theme="idea" mode="shell">
+
 
 ```bash
 ./gradlew check
 ```
 
-</div> 
+
 
 ### Dependencies
 
 The plugin allows you to declare dependencies on files and other projects using traditional Gradle's mechanism of
 configurations. The plugin supports Kotlin multiplatform projects allowing you to declare the `expectedBy` dependencies
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 dependencies {
@@ -972,24 +972,24 @@ dependencies {
 }
 ```
 
-</div> 
+
 
 It's possible to depend on a Kotlin/Native library published earlier in a maven repo. The plugin relies on Gradle's
 [metadata](https://github.com/gradle/gradle/blob/master/subprojects/docs/src/docs/design/gradle-module-metadata-specification.md)
 support so the corresponding feature must be enabled. Add the following line in your `settings.gradle`:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 enableFeaturePreview('GRADLE_METADATA')
 ```
 
-</div>
+
 
 
 Now you can declare a dependency on a Kotlin/Native library in the traditional `group:artifact:version` notation:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 dependencies {
@@ -998,11 +998,11 @@ dependencies {
 }
 ```
 
-</div>
+
 
 `implementation`-dependencies are also available in the component block:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 components.main {
@@ -1018,14 +1018,14 @@ components.test {
 }
 ```
 
-</div>
+
 
 
 ### Using cinterop
 
 It's possible to declare a cinterop dependency for a component. The DSL here is similar to the one used in the `konan` plugin:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 components.main {
@@ -1045,14 +1045,14 @@ components.main {
 }
 ```
 
-</div>
+
 
 Here an interop library will be built and added in the component dependencies.
 
 Often it's necessary to specify target-specific linker options for a Kotlin/Native binary using an interop. It can be
 done using the `target` script block:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 components.main {
@@ -1062,11 +1062,11 @@ components.main {
 }
 ```
 
-</div>
+
 
 Also the `allTargets` block is available 
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 components.main {
@@ -1077,7 +1077,7 @@ components.main {
 }
 ```
 
-</div>
+
 
 
 ### Publishing
@@ -1087,19 +1087,19 @@ metadata to publish the artifacts so this feature must be enabled (see the [depe
 
 Now you can publish the artifacts with the standard Gradle `publish` task:
 
-<div class="sample" markdown="1" theme="idea" mode="shell">
+
 
 ```bash
 ./gradlew publish
 ```
 
-</div>
+
     
 Only `EXECUTABLE` and `KLIBRARY` binaries are published currently.
 
 The plugin allows you to customize the pom generated for the publication with the `pom` code block available for every component:
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 components.main {
@@ -1113,7 +1113,7 @@ components.main {
 }
 ```
 
-</div>
+
 
 
 ### DSL example
@@ -1123,7 +1123,7 @@ See also the example projects that use this plugin, e.g.
 [Kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines),
 [MPP http client](https://github.com/e5l/http-client-common/tree/master/samples/ios-test-application)
 
-<div class="sample" markdown="1" theme="idea" mode="groovy">
+
 
 ```groovy
 plugins {
@@ -1223,4 +1223,4 @@ components.main {
 }
 ```
 
-</div>
+
