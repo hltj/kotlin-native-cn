@@ -1,38 +1,38 @@
 - md: CONCURRENCY.md
   url: concurrency.html
-  title: "Concurrency"
+  title: "并发"
 
 - md: IMMUTABILITY.md
   url: immutability.html
-  title: "Immutability"
+  title: "不可变性"
 
 - md: LIBRARIES.md
   url: libraries.html
-  title: "Kotlin Libraries"
+  title: "Kotlin 库"
 
 - md: PLATFORM_LIBS.md
   url: platform_libs.html
-  title: "Platform Libraries"
+  title: "平台库"
 
 - md: MULTIPLATFORM.md
   url: multiplatform.html
-  title: "Multiplatform Projects"
+  title: "多平台项目"
 
 - md: INTEROP.md
   url: c_interop.html
-  title: "C Interop"
+  title: "与 C 语言交互"
 
 - md: OBJC_INTEROP.md
   url: objc_interop.html
-  title: "Objective-C and Swift Interop"
+  title: "与 Objective-C 及 Swift 交互"
 
 - md: GRADLE_PLUGIN.md
   url: gradle_plugin.html
-  title: "Gradle Plugin"
+  title: "Gradle 插件"
 
 - md: DEBUGGING.md
   url: debugging.html
-  title: "Debugging"
+  title: "调试"
 
 - md: FAQ.md
   url: faq.html
