@@ -59,7 +59,7 @@ interface KotlinNativeBinary : ComponentWithDependencies, BuildableComponent, Co
      * The link libraries (klibs only!) used to link this binary.
      * Includes the link libraries of the component's dependencies.
      */
-    val klibraries: FileCollection
+    val klibs: FileCollection
 
     /**
      * Binary kind in terms of the KN compiler (program, library, dynamic etc).
@@ -77,7 +77,7 @@ interface KotlinNativeBinary : ComponentWithDependencies, BuildableComponent, Co
     val linkerOpts: List<String>
 
     companion object {
-        val KONAN_TARGET_ATTRIBUTE = Attribute.of("org.gradle.native.kotlin.platform", String::class.java)
+        val KONAN_TARGET_ATTRIBUTE = Attribute.of("org.jetbrains.kotlin.native.target", String::class.java)
     }
 }
 

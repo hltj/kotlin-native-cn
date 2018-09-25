@@ -36,8 +36,8 @@ configurations {
 
 repositories {
     ivy {
-        ivyPattern      'http://teamcity.jetbrains.com/guestAuth/repository/download/[module]/[revision]/teamcity-ivy.xml'
-        artifactPattern 'http://teamcity.jetbrains.com/guestAuth/repository/download/[module]/[revision]/[artifact](.[ext])'
+        ivyPattern      'https://teamcity.jetbrains.com/guestAuth/repository/download/[module]/[revision]/teamcity-ivy.xml'
+        artifactPattern 'https://teamcity.jetbrains.com/guestAuth/repository/download/[module]/[revision]/[artifact](.[ext])'
     }
 }
 
@@ -96,10 +96,8 @@ task installTestLibrary(type: KlibInstall) {
 // Gets tests from the same Kotlin compiler build
 def update_external_tests() {
     // Copy only used tests into the test directory.
+    delete(externalTestsDir)
     externalTestsDir.mkdirs()
-    delete("${externalTestsDir.canonicalPath}/codegen")
-    delete("${externalTestsDir.canonicalPath}/compileKotlinAgainstKotlin")
-
     copy {
         configurations.update_tests.asFileTree.each {
             from(zipTree(it))
@@ -110,15 +108,15 @@ def update_external_tests() {
         }
     }
 
+    delete(externalStdlibTestsDir)
     externalStdlibTestsDir.mkdirs()
-    delete("${externalStdlibTestsDir.canonicalPath}/common")
-    delete("${externalStdlibTestsDir.canonicalPath}/test")
     copy {
         configurations.update_tests.asFileTree.each {
             from(zipTree(it))
             into(externalStdlibTestsDir)
             include 'stdlib/common/**'
             include 'stdlib/test/**'
+            exclude 'stdlib/test/js/**'
         }
     }
 }
@@ -2732,6 +2730,10 @@ kotlinNativeInterop {
         defFile 'interop/basics/cmacros.def'
     }
 
+    cunsupported {
+        defFile 'interop/basics/cunsupported.def'
+    }
+
     if (isMac()) {
         objcSmoke {
             defFile 'interop/objc/objcSmoke.def'
@@ -2817,6 +2819,12 @@ task interop_macros(type: RunInteropKonanTest) {
     disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
     source = "interop/basics/macros.kt"
     interop = 'cmacros'
+}
+
+task interop_unsupported(type: RunInteropKonanTest) {
+    disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
+    source = "interop/basics/unsupported.kt"
+    interop = 'cunsupported'
 }
 
 task interop_echo_server(type: RunInteropKonanTest) {
@@ -3008,6 +3016,7 @@ task runStdlibTests(type: RunStdlibTest) {
     // runs all tests and hence source name should be not null
     source = "stdlib_external/utils.kt"
     useFilter = false
+    arguments = [ "--ktest_negative_regex_filter=test.collections.CollectionTest.abstractCollectionToArray" ]
     runnerLogger = RunKonanTest.Logger.GTEST
 }
 

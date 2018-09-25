@@ -106,9 +106,7 @@ class ExperimentalPluginTests {
 
         val compileReleaseResult = project.createRunner().withArguments("compileReleaseKotlinNative").build()
         assertEquals(TaskOutcome.SUCCESS, compileReleaseResult.task(":compileReleaseKotlinNative")?.outcome)
-        assertEquals(TaskOutcome.SUCCESS, compileReleaseResult.task(":library:compileReleaseKotlinNative")?.outcome)
-        assertTrue(projectDirectory.resolve("build/exe/main/release/test.$exeSuffix").exists())
-        assertTrue(libraryDir.resolve("build/lib/main/release/library.klib").exists())
+        assertEquals(TaskOutcome.UP_TO_DATE, compileReleaseResult.task(":library:compileDebugKotlinNative")?.outcome)
     }
 
     @Test
@@ -125,7 +123,7 @@ class ExperimentalPluginTests {
                 version '1.0'
 
                 sourceSets.main.component {
-                    target 'host', 'wasm32'
+                    targets = ['host', 'wasm32']
                 }
 
                 publishing {
@@ -159,7 +157,7 @@ class ExperimentalPluginTests {
                 }
 
                 sourceSets.main.component {
-                    target 'host', 'wasm32'
+                    targets = ['host', 'wasm32']
                     outputKinds = [ EXECUTABLE ]
                 }
             """.trimIndent())
@@ -226,7 +224,7 @@ class ExperimentalPluginTests {
                 plugins { id 'kotlin-native' }
 
                 sourceSets.main.component {
-                    target 'host', 'wasm32'
+                    targets = ['host', 'wasm32']
                 }
 
                 dependencies {
@@ -241,7 +239,7 @@ class ExperimentalPluginTests {
                 plugins { id 'kotlin-native'}
 
                 sourceSets.main.component {
-                    target 'host', 'wasm32'
+                    targets = ['host', 'wasm32']
                 }
 
             """.trimIndent())
@@ -257,7 +255,7 @@ class ExperimentalPluginTests {
                 plugins { id 'kotlin-native' }
 
                 sourceSets.main.component {
-                    target 'host', 'wasm32'
+                    targets = ['host', 'wasm32']
                     outputKinds = [ EXECUTABLE ]
                 }
 
@@ -295,7 +293,7 @@ class ExperimentalPluginTests {
                 version '1.0'
 
                 sourceSets.main.component {
-                    target 'host', 'wasm32'
+                    targets = ['host', 'wasm32']
                 }
 
                 dependencies {
@@ -324,7 +322,7 @@ class ExperimentalPluginTests {
                 version '1.0'
 
                 sourceSets.main.component {
-                    target 'host', 'wasm32'
+                    targets = ['host', 'wasm32']
                 }
 
                 publishing {
@@ -359,7 +357,7 @@ class ExperimentalPluginTests {
                 }
 
                 sourceSets.main.component {
-                    target 'host', 'wasm32'
+                    targets = ['host', 'wasm32']
                     outputKinds = [ EXECUTABLE ]
                 }
             """.trimIndent())
@@ -429,7 +427,7 @@ class ExperimentalPluginTests {
                 assertEquals(
                     expectedOutcome,
                     it.outcome,
-                    "Task '$taskName' has incorrect outcome. Expected: $expectedOutcome, actual: ${it.outcome}"
+                    "Task '$taskName' has an incorrect outcome."
                 )
             }
         }
@@ -444,14 +442,14 @@ class ExperimentalPluginTests {
                 sourceSets.main {
                     component {
                         outputKinds = [ EXECUTABLE, KLIBRARY, FRAMEWORK ]
-                        target 'host', 'wasm32'
+                        targets = ['host', 'wasm32']
                     }
                 }
 
             """.trimIndent())
         }
 
-        val outputKinds = arrayOf(OutputKind.EXECUTABLE, OutputKind.KLIBRARY, OutputKind.FRAMEWORK)
+        val outputKinds = arrayOf(OutputKind.EXECUTABLE, OutputKind.FRAMEWORK)
         val buildTypes = arrayOf("Debug", "Release")
         val targets = arrayOf(HostManager.host, KonanTarget.WASM32)
 
@@ -460,7 +458,7 @@ class ExperimentalPluginTests {
                 buildTypes.map { type ->
                     ":compile${type}${kind.name.toLowerCase().capitalize()}${target.name.capitalize()}KotlinNative"
                 }
-            }
+            } + ":compileDebug${OutputKind.KLIBRARY.name.toLowerCase().capitalize()}${target.name.capitalize()}KotlinNative"
         }
 
         val result1 = project.createRunner().withArguments("assemble").build()
@@ -498,7 +496,7 @@ class ExperimentalPluginTests {
                 sourceSets.main {
                     component {
                         outputKinds = [ DYNAMIC, STATIC ]
-                        target 'host'
+                        targets = ['host']
                     }
                 }
 
@@ -695,7 +693,6 @@ class ExperimentalPluginTests {
 
         rootProject.createRunner().withArguments(":libFoo:publish", ":libBar:publish").build()
         assertFileExists("repo/test/libFoo_debug/1.0/libFoo_debug-1.0-interop-mystdio.klib")
-        assertFileExists("repo/test/libFoo_release/1.0/libFoo_release-1.0-interop-mystdio.klib")
 
         // A dependency on a published library
         rootProject.buildFile.writeText("""
@@ -809,13 +806,13 @@ class ExperimentalPluginTests {
 
             val nameToArtifact = model.artifacts.map { it.name to it }.toMap()
 
-            val buildTypes =  listOf("debug", "release")
             val kinds = listOf(OutputKind.EXECUTABLE, OutputKind.KLIBRARY)
             val targets = listOf(HostManager.host, KonanTarget.WASM32)
 
             // Production binaries
-            buildTypes.forEach { buildType ->
-                kinds.forEach { kind ->
+            kinds.forEach { kind ->
+                val buildTypes = if (kind == OutputKind.KLIBRARY) listOf("debug") else listOf("debug", "release")
+                buildTypes.forEach { buildType ->
                     targets.forEach { target ->
                         val suffix = "${buildType.capitalize()}${kind.name.toLowerCase().capitalize()}${target.name.capitalize()}"
                         val artifact = nameToArtifact.getValue("main$suffix")
