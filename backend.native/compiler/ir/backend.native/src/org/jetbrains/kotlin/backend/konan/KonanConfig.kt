@@ -21,7 +21,9 @@ import org.jetbrains.kotlin.konan.library.libraryResolver
 import org.jetbrains.kotlin.konan.properties.loadProperties
 import org.jetbrains.kotlin.konan.target.*
 import org.jetbrains.kotlin.konan.KonanAbiVersion
+import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.library.toUnresolvedLibraries
+import org.jetbrains.kotlin.konan.parseKonanVersion
 
 class KonanConfig(val project: Project, val configuration: CompilerConfiguration) {
 
@@ -76,7 +78,17 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
     private val repositories = configuration.getList(KonanConfigKeys.REPOSITORIES)
     private fun resolverLogger(msg: String) = configuration.report(STRONG_WARNING, msg)
 
-    private val resolver = defaultResolver(repositories, target, distribution, ::resolverLogger).libraryResolver()
+    private val compatibleCompilerVersions: List<KonanVersion> =
+        configuration.getList(KonanConfigKeys.COMPATIBLE_COMPILER_VERSIONS).map { it.parseKonanVersion() }
+
+    private val resolver = defaultResolver(
+        repositories,
+        libraryNames.filter { it.contains(File.separator) },
+        target,
+        distribution,
+        ::resolverLogger,
+        compatibleCompilerVersions = compatibleCompilerVersions 
+    ).libraryResolver()
 
     internal val resolvedLibraries by lazy {
         resolver.resolveWithDependencies(
