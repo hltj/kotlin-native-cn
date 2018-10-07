@@ -1,4 +1,4 @@
-# Kotlin/Native libraries
+# Kotlin/Native 库
 
 ## Kotlin compiler specifics
 
