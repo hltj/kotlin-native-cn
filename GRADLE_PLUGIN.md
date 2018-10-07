@@ -1,4 +1,4 @@
-# Kotlin/Native Gradle plugin
+# Kotlin/Native Gradle 插件
 
 ### Overview
 
