@@ -174,18 +174,18 @@ applied as an intersection.
 (used to link final executables) can be passed in the definition file as `compilerOpts` and `linkerOpts`
 respectively. For example
 
-<div class="sample" markdown="1" theme="idea" mode="c">
+
 
 ```c
 compilerOpts = -DFOO=bar
 linkerOpts = -lpng
 ```
 
-</div>
+
 
 Target-specific options, only applicable to the certain target can be specified as well, such as
 
-<div class="sample" markdown="1" theme="idea" mode="c">
+
 
  ```c
  compilerOpts = -DBAR=bar
@@ -193,7 +193,7 @@ Target-specific options, only applicable to the certain target can be specified 
  compilerOpts.mac_x64 = -DFOO=foo2
  ```
 
-</div>
+
 
 and so, C headers on Linux will be analyzed with `-DBAR=bar -DFOO=foo1` and on macOS with `-DBAR=bar -DFOO=foo2`.
 Note that any definition file option can have both common and the platform-specific part.
@@ -701,7 +701,7 @@ in some cases.
  Kotlin objects could be pinned, i.e. their position in memory is guaranteed to be stable
 until unpinned, and pointers to such objects inner data could be passed to the C functions. For example
 
-<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
 
 ```kotlin
 fun readData(fd: Int): String {
@@ -719,7 +719,7 @@ fun readData(fd: Int): String {
 }
 ```
 
-</div>
+
 
 Here we use service function `usePinned`, which pins an object, executes block and unpins it on normal and
 exception paths.
