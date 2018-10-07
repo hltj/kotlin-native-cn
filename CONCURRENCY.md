@@ -1,4 +1,4 @@
-## Concurrency in Kotlin/Native
+## Kotlin/Native 中的并发
 
   Kotlin/Native runtime doesn't encourage a classical thread-oriented concurrency
  model with mutually exclusive code blocks and conditional variables, as this model is

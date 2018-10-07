@@ -32,7 +32,6 @@ import org.jetbrains.kotlin.gradle.plugin.experimental.CInteropSettings
 import org.jetbrains.kotlin.gradle.plugin.experimental.CInteropSettings.IncludeDirectories
 import org.jetbrains.kotlin.gradle.plugin.experimental.KotlinNativeBinary
 import org.jetbrains.kotlin.gradle.plugin.experimental.internal.KotlinNativeBuildType
-import org.jetbrains.kotlin.gradle.plugin.experimental.internal.KotlinNativeUsage
 import org.jetbrains.kotlin.gradle.plugin.experimental.internal.getGradleOSFamily
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import java.io.File
@@ -87,6 +86,7 @@ open class CInteropSettingsImpl @Inject constructor(
             attributes.attribute(CppBinary.OPTIMIZED_ATTRIBUTE, KotlinNativeBuildType.DEBUG.optimized)
             attributes.attribute(KotlinPlatformType.attribute, KotlinPlatformType.native)
             attributes.attribute(KotlinNativeBinary.KONAN_TARGET_ATTRIBUTE, konanTarget.name)
+            attributes.attribute(KotlinNativeBinary.OLD_KONAN_TARGET_ATTRIBUTE, konanTarget.name)
             attributes.attribute(
                 OperatingSystemFamily.OPERATING_SYSTEM_ATTRIBUTE,
                 konanTarget.getGradleOSFamily(objects)

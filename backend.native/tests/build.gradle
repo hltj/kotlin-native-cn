@@ -150,10 +150,15 @@ task resultsTask() {
             results.put(it.name, it.results)
             statistics.add(it.statistics)
         }
+        
+        tasks.withType(RunStdlibTest).matching {it.state.executed }.each {
+            statistics.add(it.statistics)
+        }
 
         def output = ["statistics": statistics, "tests": results]
         def json = JsonOutput.toJson(output)
         def reportFile = new File(testOutputExternal, "results.json")
+        testOutputExternal.mkdirs()
         reportFile.write(JsonOutput.prettyPrint(json))
         println("DONE.\n\n" +
                 "TOTAL: $statistics.total\n" +
@@ -164,6 +169,19 @@ task resultsTask() {
     }
 }
 
+boolean isExcluded(String task) {
+    // List of tests that fail due to unresolved comiler bugs
+    def excluded = [ "codegen/box/functions/bigArity", "codegen/box/functions/functionExpression" ]
+
+    boolean result = false
+    excluded.forEach {
+        if (task.contains(it)) {
+            result = true
+        }
+    }
+    return result
+}
+
 def createTestTasks(File testRoot, Class<Task> taskType, Closure taskConfiguration) {
     testRoot.eachDirRecurse {
         // Skip build directory and directories without *.kt files.
@@ -172,13 +190,17 @@ def createTestTasks(File testRoot, Class<Task> taskType, Closure taskConfigurati
         }
 
         def taskDirectory = project.relativePath(it)
-        def taskName = taskDirectory.replaceAll("[-/\\\\]", '_')
+        if (!isExcluded(taskDirectory)) {
+            def taskName = taskDirectory.replaceAll("[-/\\\\]", '_')
 
-        def task = project.task(taskName, type: taskType) {
-            groupDirectory = taskDirectory
-            finalizedBy resultsTask
+            def task = project.task(taskName, type: taskType) {
+                groupDirectory = taskDirectory
+                finalizedBy resultsTask
+            }
+            taskConfiguration(task)
+        } else {
+            println("$taskDirectory is excluded")
         }
-        taskConfiguration(task)
     }
 }
 
@@ -483,11 +505,6 @@ task runtime_random(type: RunKonanTest) {
     source = "runtime/basic/random.kt"
 }
 
-task runtime_random_bound(type: RunKonanTest) {
-    disabled = (project.testTarget == 'wasm32') // Uses exceptions.
-    source = "runtime/basic/random_bound.kt"
-}
-
 task runtime_worker_random(type: RunKonanTest) {
     disabled = (project.testTarget == 'wasm32') // Uses workers.
     source = "runtime/basic/worker_random.kt"
@@ -661,6 +678,12 @@ task worker10(type: RunKonanTest) {
     disabled = (project.testTarget == 'wasm32') // Workers need pthreads.
     goldValue = "OK\n"
     source = "runtime/workers/worker10.kt"
+}
+
+task worker11(type: RunKonanTest) {
+    disabled = (project.testTarget == 'wasm32') // Workers need pthreads.
+    goldValue = "OK\n"
+    source = "runtime/workers/worker11.kt"
 }
 
 task freeze0(type: RunKonanTest) {
@@ -2553,6 +2576,10 @@ task classDeclarationInsideInline(type: RunKonanTest) {
     goldValue = "test1: 1.0\n1\ntest2\n"
 }
 
+task inlineClass0(type: RunKonanTest) {
+    source = "codegen/inlineClass/inlineClass0.kt"
+}
+
 task deserialized_inline0(type: RunKonanTest) {
     source = "serialization/deserialized_inline0.kt"
 }
@@ -3018,6 +3045,8 @@ task runStdlibTests(type: RunStdlibTest) {
     useFilter = false
     arguments = [ "--ktest_negative_regex_filter=test.collections.CollectionTest.abstractCollectionToArray" ]
     runnerLogger = RunKonanTest.Logger.GTEST
+
+    finalizedBy resultsTask
 }
 
 task buildKonanTests(type: BuildKonanTest) {

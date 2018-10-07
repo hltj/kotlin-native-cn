@@ -1,4 +1,4 @@
-# Kotlin/Native libraries
+# Kotlin/Native 库
 
 ## Kotlin compiler specifics
 
@@ -31,17 +31,19 @@ the above command will produce a `program.kexe` out of `qux.kt` and `bar.klib`
 ## cinterop tool specifics
 
 The **cinterop** tool produces `.klib` wrappers for native libraries as its main output. 
-For example, using the simple `stdio.def` native library definition file provided in your Kotlin/Native distribution
+For example, using the simple `libgit2.def` native library definition file provided in your Kotlin/Native distribution
 
 
 
 ```bash
-$ cinterop -def  ./samples/csvparser/src/main/c_interop/stdio.def  -o stdio
+$ cinterop -def  samples/gitchurn/src/main/c_interop/libgit2.def -compilerOpts -I/usr/local/include -o libgit2
 ```
 
 
 
-we will obtain `stdio.klib`. 
+we will obtain `libgit2.klib`.
+
+See more details in [INTEROP.md](INTEROP.md)
 
 
 ## klib utility
@@ -103,12 +105,19 @@ $ klib <command> <name> -repository <directory>
 
 ## Several examples
 
-First let's create a library:
+First let's create a library.
+Place the tiny library source code into `kotlinizer.kt`:
 
 
+
+```kotlin
+package kotlinizer
+val String.kotlinized
+    get() = "Kotlin $this"
+```
 
 ```bash
-$ cinterop -h /usr/include/math.h -pkg libc.math -o math
+$ kotlinc kotlinizer.kt -p library -o kotlinizer
 ```
 
 
@@ -118,8 +127,8 @@ The library has been created in the current directory:
 
 
 ```bash
-$ ls math.klib
-math.klib
+$ ls kotlinizer.klib
+kotlinizer.klib
 ```
 
 
@@ -129,39 +138,40 @@ Now let's check out the contents of the library:
 
 
 ```bash
-$ klib contents math
+$ klib contents kotlinizer
 ```
 
 
 
-We can install `math` to the default repository:
+We can install `kotlinizer` to the default repository:
 
 
 
 ```bash
-$ klib install math
+$ klib install kotlinizer
 ```
 
 
 
-Remove any traces of it and its build process from the current directory:
+Remove any traces of it from the current directory:
 
 
 
 ```bash
-$ rm -rf ./math*
+$ rm kotlinizer.klib
 ```
 
 
 
-Create a very short program and place it into a `sin.kt` :
+Create a very short program and place it into a `use.kt` :
 
 
 
 ```kotlin
-import libc.math.*
+import kotlinizer.*
+
 fun main(args: Array<String>) {
-    println(sin(2.0))
+    println("Hello, ${"world".kotlinized}!")
 }
 ```
 
@@ -172,7 +182,7 @@ Now compile the program linking with the library we have just created:
 
 
 ```bash
-$ kotlinc sin.kt -l math -o mysin
+$ kotlinc use.kt -l kotlinizer -o kohello
 ```
 
 
@@ -182,8 +192,8 @@ And run the program:
 
 
 ```bash
-$ ./mysin.kexe
-0.9092974268256817
+$ ./kohello.kexe
+Hello, Kotlin world!
 ```
 
 
@@ -204,10 +214,7 @@ When given a `-library foo` flag, the compiler searches the `foo` library in the
 
     * Libraries installed in `$installation/klib` directory.
 
-
 ## The library format
-
-**WARNING**: the library format is *very* preliminary. It is subject to change right under your fingertips. And it can include changes which will make it incompatible between releases at least until Kotlin/Native is stabilized.
 
 Kotlin/Native libraries are zip files containing a predefined 
 directory structure, with the following layout:
