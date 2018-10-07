@@ -20,7 +20,6 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.Task
-import org.gradle.api.attributes.AttributeCompatibilityRule
 import org.gradle.api.attributes.Usage
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.internal.FeaturePreviews
@@ -35,12 +34,21 @@ import org.gradle.language.plugins.NativeBasePlugin
 import org.gradle.nativeplatform.test.tasks.RunTestExecutable
 import org.gradle.util.GradleVersion
 import org.jetbrains.kotlin.cli.common.arguments.CommonCompilerArguments
-import org.jetbrains.kotlin.gradle.plugin.*
-import org.jetbrains.kotlin.gradle.plugin.experimental.*
+import org.jetbrains.kotlin.gradle.plugin.NATIVE_COMPILER_PLUGIN_CLASSPATH_CONFIGURATION_NAME
+import org.jetbrains.kotlin.gradle.plugin.PLUGIN_CLASSPATH_CONFIGURATION_NAME
+import org.jetbrains.kotlin.gradle.plugin.SubpluginEnvironment
 import org.jetbrains.kotlin.gradle.plugin.experimental.CInteropSettings
+import org.jetbrains.kotlin.gradle.plugin.experimental.KotlinNativeComponent
+import org.jetbrains.kotlin.gradle.plugin.experimental.KotlinNativeLibrary
+import org.jetbrains.kotlin.gradle.plugin.experimental.KotlinNativeTestComponent
 import org.jetbrains.kotlin.gradle.plugin.experimental.internal.*
 import org.jetbrains.kotlin.gradle.plugin.experimental.tasks.CInteropTask
 import org.jetbrains.kotlin.gradle.plugin.experimental.tasks.KotlinNativeCompile
+import org.jetbrains.kotlin.gradle.plugin.konan.KonanPlugin
+import org.jetbrains.kotlin.gradle.plugin.konan.hasProperty
+import org.jetbrains.kotlin.gradle.plugin.konan.konanCompilerDownloadDir
+import org.jetbrains.kotlin.gradle.plugin.konan.setProperty
+import org.jetbrains.kotlin.gradle.plugin.loadKotlinVersionFromResource
 import org.jetbrains.kotlin.gradle.plugin.tasks.KonanCompilerDownloadTask
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.konan.target.HostManager
@@ -123,8 +131,13 @@ class KotlinNativeBasePlugin: Plugin<ProjectInternal> {
             assembleTask.dependsOn(it)
         }
 
-        project.configurations.maybeCreate(PLUGIN_CLASSPATH_CONFIGURATION_NAME).apply {
-            isTransitive = false
+        project.configurations.apply {
+            maybeCreate(NATIVE_COMPILER_PLUGIN_CLASSPATH_CONFIGURATION_NAME).apply {
+                isTransitive = false
+            }
+            maybeCreate(PLUGIN_CLASSPATH_CONFIGURATION_NAME).apply {
+                isTransitive = false
+            }
         }
 
         components.withType(AbstractKotlinNativeBinary::class.java) { binary ->
@@ -142,7 +155,7 @@ class KotlinNativeBasePlugin: Plugin<ProjectInternal> {
 
                 SubpluginEnvironment.loadSubplugins(this, kotlinVersion)
                     .addSubpluginOptions<CommonCompilerArguments>(this, it, it.compilerPluginOptions)
-                it.compilerPluginClasspath = project.configurations.getByName(PLUGIN_CLASSPATH_CONFIGURATION_NAME)
+                it.compilerPluginClasspath = project.configurations.getByName(NATIVE_COMPILER_PLUGIN_CLASSPATH_CONFIGURATION_NAME)
 
                 // Register an API header produced for shared/static library as a task output.
                 if (binary.kind == CompilerOutputKind.DYNAMIC || binary.kind == CompilerOutputKind.STATIC) {

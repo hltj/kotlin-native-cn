@@ -14,17 +14,13 @@
   url: platform_libs.html
   title: "平台库"
 
-- md: MULTIPLATFORM.md
-  url: multiplatform.html
-  title: "多平台项目"
-
 - md: INTEROP.md
   url: c_interop.html
-  title: "与 C 语言交互"
+  title: "与 C 语言互操作"
 
 - md: OBJC_INTEROP.md
   url: objc_interop.html
-  title: "与 Objective-C 及 Swift 交互"
+  title: "与 Objective-C 及 Swift 互操作"
 
 - md: GRADLE_PLUGIN.md
   url: gradle_plugin.html

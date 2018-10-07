@@ -252,6 +252,8 @@ abstract class KonanTest extends JavaExec {
         }
     }
 
+    OutputStream out
+
     @TaskAction
     void executeTest() {
         if (!enabled) {
@@ -274,7 +276,7 @@ abstract class KonanTest extends JavaExec {
 
         def compilerMessagesText = compilerMessages ? project.file("${program}.compilation.log").getText('UTF-8') : ""
 
-        def out = new ByteArrayOutputStream()
+        out = new ByteArrayOutputStream()
         //TODO Add test timeout
         ExecResult execResult = project.execute {
 
@@ -462,9 +464,40 @@ class RunKonanTest extends ExtKonanTest {
 
 class RunStdlibTest extends RunKonanTest {
     public def inDevelopersRun = false
+    public def statistics = new RunExternalTestGroup.Statistics()
 
     RunStdlibTest() {
         super('buildKonanStdlibTests')
+    }
+
+    @Override
+    void executeTest() {
+        try {
+            super.executeTest()
+        } finally {
+            def output = out.toString("UTF-8")
+
+            // NOTE: these regexs assert that GTEST output format is used
+            def matcher = (output =~ ~/\[==========\] Running ([0-9]*) tests from ([0-9]*) test cases \. .*/)
+            def testsTotal = 0
+            if (matcher) {
+                testsTotal = matcher[0][1] as Integer
+            }
+
+            matcher = (output =~ ~/\[  PASSED  \] ([0-9]*) tests\./)
+            if (matcher) {
+                def n = matcher[0][1] as Integer
+                statistics.pass(n)
+            }
+            matcher = (output =~ ~/\[  FAILED  \] ([0-9]*) tests.*/)
+            if (matcher) {
+                def n = matcher[0][1] as Integer
+                statistics.fail(n)
+            }
+            if (statistics.total == 0) {
+                statistics.error(testsTotal != 0 ? testsTotal : 1)
+            }
+        }
     }
 }
 
@@ -858,12 +891,13 @@ fun runTest() {
         def text = project.file(fileName).text
 
         def languageSettings = findLinesWithPrefixesRemoved(text, '// !LANGUAGE: ')
-        if (languageSettings.contains('-ProperIeee754Comparisons')) {
-            // K/N supports only proper IEEE754 comparisons
-            return false
-        }
-        if (languageSettings.contains('+NewInference')) {
-            return false
+        if (!languageSettings.empty) {
+            def settings = languageSettings.first()
+            if (settings.contains('-ProperIeee754Comparisons') ||  // K/N supports only proper IEEE754 comparisons
+                    settings.contains('+NewInference') ||          // New inference is not implemented
+                    settings.contains('-ReleaseCoroutines')) {     // only release coroutines
+                return false
+            }
         }
 
         def version = findLinesWithPrefixesRemoved(text, '// LANGUAGE_VERSION: ')

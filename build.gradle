@@ -49,7 +49,12 @@ ext {
     kotlinScriptRuntimeModule="org.jetbrains.kotlin:kotlin-script-runtime:${kotlinVersion}"
 
     konanVersionFull = KonanVersion.Companion.CURRENT
-    gradlePluginVersion = konanVersionFull.toString()
+
+    if (konanVersionFull.meta == MetaVersion.RELEASE) {
+        gradlePluginVersion = kotlinVersion
+    } else {
+        gradlePluginVersion = "$kotlinVersion-native-${KonanVersion.Companion.CURRENT.toString()}"
+    }
 }
 
 allprojects {
@@ -167,7 +172,7 @@ task gradlePluginJar {
     dependsOn gradle.includedBuild('kotlin-native-gradle-plugin').task(':shadowJar')
 }
 
-task gradlePluginCheck() {
+task gradlePluginCheck {
     dependsOn gradle.includedBuild('kotlin-native-gradle-plugin').task(':check')
 }
 
