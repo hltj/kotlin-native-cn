@@ -1,4 +1,4 @@
-# Kotlin/Native Gradle plugin
+# Kotlin/Native Gradle 插件
 
 Since 1.3.40, a separate Gradle plugin for Kotlin/Native is deprecated in favor of the `kotlin-multiplatform` plugin.
 This plugin provides an IDE support along with support of the new multiplatform project model introduced in Kotlin 1.3.0.
