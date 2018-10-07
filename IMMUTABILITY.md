@@ -1,4 +1,4 @@
-# Immutability in Kotlin/Native
+# Kotlin/Native 中的不可变性
 
  Kotlin/Native implements strict mutability checks, ensuring
 the important invariant that the object is either immutable or
