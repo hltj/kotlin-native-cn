@@ -289,15 +289,14 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
             { findArrayExtension(it.descriptor, "contentHashCode") }
     )
 
-    fun findArrayExtension(descriptor: ClassDescriptor, name: String): IrSimpleFunctionSymbol {
+    private fun findArrayExtension(descriptor: ClassDescriptor, name: String): IrSimpleFunctionSymbol {
         val functionDescriptor = builtInsPackage("kotlin", "collections")
                 .getContributedFunctions(Name.identifier(name), NoLookupLocation.FROM_BACKEND)
                 .singleOrNull {
                     it.valueParameters.isEmpty()
                             && it.extensionReceiverParameter?.type?.constructor?.declarationDescriptor == descriptor
                             && !it.isExpect
-                }
-                ?: throw Error(descriptor.toString())
+                } ?: error(descriptor.toString())
         return symbolTable.referenceSimpleFunction(functionDescriptor)
     }
 
@@ -318,6 +317,15 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
     val arraySet = array.descriptor.unsubstitutedMemberScope
             .getContributedFunctions(Name.identifier("set"), NoLookupLocation.FROM_BACKEND)
             .single().let { symbolTable.referenceSimpleFunction(it) }
+
+    val arraySize = arrays.associateBy(
+            { it },
+            { it.descriptor.unsubstitutedMemberScope
+                    .getContributedVariables(Name.identifier("size"), NoLookupLocation.FROM_BACKEND)
+                    .single().let { symbolTable.referenceSimpleFunction(it.getter!!) } }
+    )
+
+
 
     val valuesForEnum = symbolTable.referenceSimpleFunction(
             context.getInternalFunctions("valuesForEnum").single())
@@ -367,6 +375,9 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
 
     private val coroutinesPackage = context.builtIns.builtInsModule.getPackage(
             context.config.configuration.languageVersionSettings.coroutinesPackageFqName()).memberScope
+
+    val continuationClassDescriptor = coroutinesPackage
+            .getContributedClassifier(Name.identifier("Continuation"), NoLookupLocation.FROM_BACKEND) as ClassDescriptor
 
     val coroutineContextGetter = coroutinesPackage
             .getContributedVariables(Name.identifier("coroutineContext"), NoLookupLocation.FROM_BACKEND)

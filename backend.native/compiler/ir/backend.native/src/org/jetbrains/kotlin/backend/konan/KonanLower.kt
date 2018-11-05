@@ -8,10 +8,12 @@ package org.jetbrains.kotlin.backend.konan
 import org.jetbrains.kotlin.backend.common.runOnFilePostfix
 import org.jetbrains.kotlin.backend.common.lower.*
 import org.jetbrains.kotlin.backend.konan.lower.*
+import org.jetbrains.kotlin.backend.konan.lower.ExpectDeclarationsRemoving
 import org.jetbrains.kotlin.backend.konan.lower.FinallyBlocksLowering
 import org.jetbrains.kotlin.backend.konan.lower.InitializersLowering
 import org.jetbrains.kotlin.backend.konan.lower.LateinitLowering
 import org.jetbrains.kotlin.backend.konan.lower.SharedVariablesLowering
+import org.jetbrains.kotlin.backend.konan.lower.loops.ForLoopsLowering
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.util.checkDeclarationParents
@@ -91,6 +93,13 @@ internal class KonanLower(val context: Context, val parentPhaser: PhaseManager) 
         phaser.phase(KonanPhase.LOWER_ENUMS) {
             EnumClassLowering(context).run(irFile)
         }
+
+        /**
+         * TODO:  this is workaround for issue of unitialized parents in IrDeclaration,
+         * the last one detected in [EnumClassLowering]. The issue appears in [DefaultArgumentStubGenerator].
+         */
+        irFile.patchDeclarationParents()
+
         phaser.phase(KonanPhase.LOWER_INITIALIZERS) {
             InitializersLowering(context).runOnFilePostfix(irFile)
         }
@@ -103,6 +112,12 @@ internal class KonanLower(val context: Context, val parentPhaser: PhaseManager) 
         phaser.phase(KonanPhase.LOWER_CALLABLES) {
             CallableReferenceLowering(context).lower(irFile)
         }
+
+        /**
+         * TODO:  this is workaround for issue of unitialized parents in IrDeclaration,
+         * the last one detected in [CallableReferenceLowering]. The issue appears in [LocalDeclarationsLowering].
+         */
+        irFile.patchDeclarationParents()
         phaser.phase(KonanPhase.LOWER_LOCAL_FUNCTIONS) {
             LocalDeclarationsLowering(context).runOnFilePostfix(irFile)
         }

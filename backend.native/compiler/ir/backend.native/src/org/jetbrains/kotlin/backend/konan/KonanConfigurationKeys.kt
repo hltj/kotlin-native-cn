@@ -20,12 +20,16 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("add debug information")
         val DISABLED_PHASES: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("disable backend phases")
+        val BITCODE_EMBEDDING_MODE: CompilerConfigurationKey<BitcodeEmbedding.Mode>
+                = CompilerConfigurationKey.create("bitcode embedding mode")
         val ENABLE_ASSERTIONS: CompilerConfigurationKey<Boolean>
                 = CompilerConfigurationKey.create("enable runtime assertions in generated code")
         val ENABLED_PHASES: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("enable backend phases")
         val ENTRY: CompilerConfigurationKey<String?>
                 = CompilerConfigurationKey.create("fully qualified main() name")
+        val EXPORTED_LIBRARIES: CompilerConfigurationKey<List<String>>
+                = CompilerConfigurationKey.create<List<String>>("libraries included into produced framework API")
         val FRIEND_MODULES: CompilerConfigurationKey<List<String>>
                 = CompilerConfigurationKey.create<List<String>>("friend module paths")
         val GENERATE_TEST_RUNNER: CompilerConfigurationKey<Boolean>
@@ -98,6 +102,9 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("verify ir")
         val VERBOSE_PHASES: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("verbose backend phases")
+        val DEBUG_INFO_VERSION: CompilerConfigurationKey<Int>
+                = CompilerConfigurationKey.create("debug info format version")
+
     }
 }
 

@@ -65,8 +65,8 @@ class ExperimentalPluginTests {
         }
         val assembleResult = project.createRunner().withArguments("assemble").build()
 
-        assertEquals(TaskOutcome.SUCCESS, assembleResult.task(":compileDebugKotlinNative")?.outcome)
-        assertTrue(projectDirectory.resolve("build/exe/main/debug/test.$exeSuffix").exists())
+        assertEquals(TaskOutcome.SUCCESS, assembleResult.task(":compileDebugExecutableKotlinNative")?.outcome)
+        assertTrue(projectDirectory.resolve("build/exe/main/debug/executable/test.$exeSuffix").exists())
     }
 
     @Test
@@ -316,6 +316,7 @@ class ExperimentalPluginTests {
                 plugins {
                     id 'kotlin-native'
                     id 'maven-publish'
+                    id 'signing'
                 }
 
                 group 'test'
@@ -847,23 +848,228 @@ class ExperimentalPluginTests {
 
     @Test
     fun `Plugin should provide a correct serialization compiler plugin`() {
-        withProject {
-            pluginManager.apply("kotlinx-serialization-native")
-            repositories.apply {
-                jcenter()
-                maven { it.setUrl("http://kotlin.bintray.com/kotlin-eap") }
-                maven { it.setUrl("http://kotlin.bintray.com/kotlin-dev") }
-                maven { it.setUrl(MultiplatformSpecification.KOTLIN_REPO) }
-            }
-            evaluate()
-            tasks.withType(KotlinNativeCompile::class.java).all {
-                val compileClassPath = it.compilerPluginClasspath
-                assertNotNull(compileClassPath)
-                val files = compileClassPath.files
-                assertTrue(files.isNotEmpty(), "No compiler plugins in the classpath")
-                assertEquals(1, files.size, "More than one compiler plugin in the classpath")
-                assertTrue(files.single().absolutePath.contains("kotlin-serialization-unshaded"), "No unshaded version of serialization plugin in the classpath")
-            }
+        val project = KonanProject.createEmpty(projectDirectory).apply {
+            buildFile.writeText("""
+                import org.jetbrains.kotlin.gradle.plugin.experimental.tasks.KotlinNativeCompile
+
+                plugins {
+                    id 'kotlin-native'
+                    id 'kotlinx-serialization-native'
+                }
+
+                repositories {
+                    maven { url "http://kotlin.bintray.com/kotlin-eap" }
+                    maven { url "http://kotlin.bintray.com/kotlin-dev" }
+                    maven { url "${MultiplatformSpecification.KOTLIN_REPO}" }
+                }
+
+                def assertTrue(boolean cond, String message) {
+                    if (!cond) {
+                        throw AssertionError(message)
+                    }
+                }
+
+                task assertClassPath {
+                    doLast {
+                        tasks.withType(KotlinNativeCompile.class).all {
+                            def compileClassPath = it.compilerPluginClasspath
+                            assertTrue(compileClassPath != null, "compileClassPath should not be null")
+                            assertTrue(!compileClassPath.isEmpty(), "No compiler plugins in the classpath")
+                            assertTrue(compileClassPath.singleFile.absolutePath.contains("kotlin-serialization-unshaded"),
+                                        "No unshaded version of serialization plugin in the classpath")
+                        }
+                    }
+                }
+            """.trimIndent())
         }
+        project.createRunner().withArguments("assertClassPath").build()
+    }
+
+    @Test
+    fun `Plugin should be compatible with the MPP one`() {
+        val repo = tmpFolder.newFolder("repo")
+        val repoPath = KonanProject.escapeBackSlashes(repo.absolutePath)
+        val nativeProducer = KonanProject.createEmpty(tmpFolder.newFolder("native-producer")).apply {
+            buildFile.writeText("""
+                plugins {
+                    id 'kotlin-native'
+                    id 'maven-publish'
+                }
+
+                group 'test'
+                version '1.0'
+
+                sourceSets.main.component {
+                    targets = ['wasm32']
+                }
+
+                publishing {
+                    repositories {
+                        maven { url = '$repoPath' }
+                    }
+                }
+            """.trimIndent())
+
+            settingsFile.appendText("enableFeaturePreview('GRADLE_METADATA')")
+            generateSrcFile("native.kt", "fun native() = 42")
+        }
+
+        val mpp = KonanProject.createEmpty(tmpFolder.newFolder("mpp")).apply {
+            buildFile.writeText("""
+                plugins {
+                    id 'org.jetbrains.kotlin.multiplatform' version '${MultiplatformSpecification.KOTLIN_VERSION}'
+                    id 'maven-publish'
+                }
+
+                group 'test'
+                version '1.0'
+
+                repositories {
+                    maven { url '$repoPath' }
+                    maven { url "${MultiplatformSpecification.KOTLIN_REPO}" }
+                    jcenter()
+                }
+
+                kotlin {
+                    sourceSets {
+                        wasmMain {
+                            dependencies {
+                                implementation 'test:native-producer:1.0'
+                            }
+                        }
+                    }
+
+                    targets {
+                        fromPreset(presets.wasm32, 'wasm')
+                    }
+                }
+
+                publishing {
+                    repositories {
+                        maven { url = '$repoPath' }
+                    }
+                }
+            """.trimIndent())
+
+            settingsFile.writeText("""
+                pluginManagement {
+                    repositories {
+                        maven { url "${MultiplatformSpecification.KOTLIN_REPO}" }
+                        jcenter()
+                    }
+                }
+                enableFeaturePreview('GRADLE_METADATA')
+            """.trimIndent())
+
+            propertiesFile.writeText("org.jetbrains.kotlin.native.home=$konanHome")
+            generateSrcFile(listOf("src/wasmMain/kotlin"), "mpp.kt", "fun mpp() = native()")
+        }
+
+        val nativeConsumer = KonanProject.createEmpty(tmpFolder.newFolder("native-consumer")).apply {
+            buildFile.writeText("""
+                plugins {
+                    id 'kotlin-native'
+                }
+
+                repositories {
+                    maven { url '$repoPath' }
+                }
+
+                sourceSets.main.component {
+                    targets = ['wasm32']
+                }
+
+                dependencies {
+                    implementation 'test:mpp:1.0'
+                }
+            """.trimIndent())
+
+            settingsFile.appendText("enableFeaturePreview('GRADLE_METADATA')")
+            generateSrcFile("consumer.kt", "fun consumer() = mpp()")
+        }
+
+        nativeProducer.createRunner().withArguments("publish").build()
+        mpp.createRunner().withArguments("publish").build()
+        nativeConsumer.createRunner().withArguments("build").build()
+
+        val publishedFiles = listOf(
+            "repo/test/native-producer/1.0/native-producer-1.0.module",
+            "repo/test/native-producer_debug/1.0/native-producer_debug-1.0.module",
+            "repo/test/native-producer_debug/1.0/native-producer_debug-1.0.klib",
+            "repo/test/mpp/1.0/mpp-1.0.module",
+            "repo/test/mpp-wasm/1.0/mpp-wasm-1.0.module",
+            "repo/test/mpp-wasm/1.0/mpp-wasm-1.0.klib"
+        )
+
+        publishedFiles.forEach {
+            assertFileExists(it)
+        }
+    }
+
+    @Test
+    fun `Plugin should allow overriding Kotlin-Native version`() {
+        val project = KonanProject.createEmpty(projectDirectory).apply {
+            buildFile.writeText("plugins { id 'kotlin-native' }")
+            propertiesFile.writeText("")
+        }
+
+        val result = project.createRunner().withArguments(
+            "checkKonanCompiler",
+            "-Porg.jetbrains.kotlin.native.version=0.9.3",
+            "-i"
+        ).build()
+        assertTrue(result.output.contains(
+            "Downloading Kotlin/Native compiler from.*kotlin-native-${HostManager.simpleOsName()}-0.9.3".toRegex()
+        ))
+    }
+
+    @Test
+    fun `Plugin should show warning if deprecated properties are used`() {
+        val project = KonanProject.createEmpty(projectDirectory).apply {
+            buildFile.writeText("plugins { id 'kotlin-native' }")
+            val properties = propertiesFile.readText().replace("org.jetbrains.kotlin.native.home", "konan.home")
+            propertiesFile.writeText(properties)
+        }
+
+        val result = project.createRunner().withArguments("tasks").build()
+        assertTrue(result.output.contains(
+            "Project property 'konan.home' is deprecated. Use 'org.jetbrains.kotlin.native.home' instead."
+        ))
+    }
+
+    @Test
+    fun `Plugin should support OptionalExpectation`() {
+        val project = KonanProject.createEmpty(projectDirectory).apply {
+            buildFile.writeText("""
+                plugins {
+                    id 'kotlin-native'
+                }
+
+                components.main.targets = ['host']
+                components.test.targets = ['host']
+            """.trimIndent())
+            generateSrcFile("main.kt", """
+                import kotlin.jvm.*
+
+                class A {
+                    @JvmField
+                    val a = "A.a"
+                }
+
+                fun foo() {
+                    println(A().a)
+                }
+            """.trimIndent())
+            generateSrcFile(listOf("src", "test", "kotlin"), "test.kt", """
+                import kotlin.test.*
+
+                @Test
+                fun test() {
+                    foo()
+                }
+            """.trimIndent())
+        }
+        val result = project.createRunner().withArguments("build").build()
+        assertTrue(result.output.contains("A.a"))
     }
 }

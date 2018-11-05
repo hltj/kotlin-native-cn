@@ -121,9 +121,11 @@ internal object DataFlowIR {
         val RETURNS_NOTHING = 4
     }
 
+    class FunctionParameter(val type: Type, val boxFunction: FunctionSymbol?, val unboxFunction: FunctionSymbol?)
+
     abstract class FunctionSymbol(val attributes: Int, val name: String?) {
-        lateinit var parameterTypes: Array<Type>
-        lateinit var returnType: Type
+        lateinit var parameters: Array<FunctionParameter>
+        lateinit var returnParameter: FunctionParameter
 
         val isGlobalInitializer = attributes.and(FunctionAttributes.IS_GLOBAL_INITIALIZER) != 0
         val returnsUnit = attributes.and(FunctionAttributes.RETURNS_UNIT) != 0
@@ -266,7 +268,7 @@ internal object DataFlowIR {
 
         fun debugOutput() {
             println("FUNCTION $symbol")
-            println("Params: ${symbol.parameterTypes.contentToString()}")
+            println("Params: ${symbol.parameters.contentToString()}")
             val ids = body.nodes.withIndex().associateBy({ it.value }, { it.index })
             body.nodes.forEach {
                 println("    NODE #${ids[it]!!}")
@@ -488,10 +490,13 @@ internal object DataFlowIR {
 
         private fun ClassDescriptor.isFinal() = modality == Modality.FINAL && kind != ClassKind.ENUM_CLASS
 
-        fun mapClassReferenceType(descriptor: ClassDescriptor): Type {
+        fun mapClassReferenceType(descriptor: ClassDescriptor, eraseLocalObjects: Boolean = true): Type {
             // Do not try to devirtualize ObjC classes.
             if (descriptor.module.name == Name.special("<forward declarations>") || descriptor.isObjCClass())
                 return Type.Virtual
+
+            if (eraseLocalObjects && descriptor.isAnonymousObject && descriptor.isLocal)
+                return mapClassReferenceType(descriptor.getSuperClassNotAny() ?: context.irBuiltIns.anyClass.owner)
 
             val isFinal = descriptor.isFinal()
             val isAbstract = descriptor.isAbstract()
@@ -531,7 +536,7 @@ internal object DataFlowIR {
             return erasure.singleOrNull { !it.isInterface } ?: context.ir.symbols.any.owner
         }
 
-        fun mapPrimitiveBinaryType(primitiveBinaryType: PrimitiveBinaryType): Type =
+        private fun mapPrimitiveBinaryType(primitiveBinaryType: PrimitiveBinaryType): Type =
                 primitiveMap.getOrPut(primitiveBinaryType) {
                     Type.Public(
                             primitiveBinaryType.ordinal.toLong(),
@@ -544,13 +549,19 @@ internal object DataFlowIR {
                     )
                 }
 
-        fun mapType(type: IrType): Type {
+        fun mapType(type: IrType, eraseLocalObjects: Boolean = true): Type {
             val binaryType = type.computeBinaryType()
             return when (binaryType) {
                 is BinaryType.Primitive -> mapPrimitiveBinaryType(binaryType.type)
-                is BinaryType.Reference -> mapClassReferenceType(choosePrimary(binaryType.types.toList()))
+                is BinaryType.Reference -> mapClassReferenceType(choosePrimary(binaryType.types.toList()), eraseLocalObjects)
             }
         }
+
+        private fun mapTypeToFunctionParameter(type: IrType) =
+                type.getInlinedClass().let { inlinedClass ->
+                    FunctionParameter(mapType(type), inlinedClass?.let { mapFunction(context.getBoxFunction(it)) },
+                            inlinedClass?.let { mapFunction(context.getUnboxFunction(it)) })
+                }
 
         // TODO: use from LlvmDeclarations.
         private fun getFqName(descriptor: DeclarationDescriptor): FqName =
@@ -599,7 +610,7 @@ internal object DataFlowIR {
                     val bridgeTargetSymbol = if (isSpecialBridge || bridgeTarget == null) null else mapFunction(bridgeTarget)
                     val placeToFunctionsTable = !isAbstract && it !is ConstructorDescriptor && classDescriptor != null
                             && !classDescriptor.isNonGeneratedAnnotation()
-                            && (it.isOverridableOrOverrides || bridgeTarget != null || descriptor.name.asString().contains("<bridge-") || !classDescriptor.isFinal())
+                            && (it.isOverridableOrOverrides || bridgeTarget != null || descriptor.isSpecial || !classDescriptor.isFinal())
                     val symbolTableIndex = if (placeToFunctionsTable) module.numberOfFunctions++ else -1
                     if (it.isExported())
                         FunctionSymbol.Public(name.localHash.value, module, symbolTableIndex, attributes, bridgeTargetSymbol, takeName { name })
@@ -609,17 +620,20 @@ internal object DataFlowIR {
             }
             functionMap[it] = symbol
 
-            symbol.parameterTypes =
+            symbol.parameters =
                     (descriptor.allParameters.map { it.type } + (if (descriptor.isSuspend) listOf(continuationType) else emptyList()))
-                            .map { mapType(it) }
+                            .map { mapTypeToFunctionParameter(it) }
                             .toTypedArray()
-            symbol.returnType = mapType(if (descriptor.isSuspend)
-                                            context.irBuiltIns.anyType
-                                        else
-                                            descriptor.returnType)
+            symbol.returnParameter = mapTypeToFunctionParameter(if (descriptor.isSuspend)
+                                                               context.irBuiltIns.anyType
+                                                           else
+                                                               descriptor.returnType)
 
             return symbol
         }
+
+        private val FunctionDescriptor.isSpecial get() =
+            name.asString().let { it.startsWith("<bridge-") || it == "<box>" || it == "<unbox>" }
 
         private fun mapPropertyInitializer(descriptor: IrField): FunctionSymbol = descriptor.original.let {
             functionMap[it]?.let { return it }
@@ -630,8 +644,8 @@ internal object DataFlowIR {
 
             functionMap[it] = symbol
 
-            symbol.parameterTypes = emptyArray()
-            symbol.returnType = mapClassReferenceType(context.ir.symbols.unit.owner)
+            symbol.parameters = emptyArray()
+            symbol.returnParameter = mapTypeToFunctionParameter(context.irBuiltIns.unitType)
             return symbol
         }
 

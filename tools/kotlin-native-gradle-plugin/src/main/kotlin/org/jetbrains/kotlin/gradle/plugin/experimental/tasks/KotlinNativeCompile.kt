@@ -49,9 +49,7 @@ open class KotlinNativeCompile @Inject constructor(internal val binary: Abstract
     override fun getSource(): FileTree = sources.asFileTree
 
     private val commonSources: FileCollection
-        get() = with(binary.sourceSet) {
-            getCommonMultiplatformSources() + getCommonNativeSources()
-        }
+        get() = binary.commonSources
 
     val libraries: Configuration
         @InputFiles get() = binary.klibs
@@ -83,6 +81,9 @@ open class KotlinNativeCompile @Inject constructor(internal val binary: Abstract
 
     val outputFile: File
         get() = outputLocationProvider.get().asFile
+
+    val konanVersion: String
+        @Input get() = project.konanVersion.toString(true, true)
 
     private val outputPathProvider: Provider<String> = project.provider {
         with(binary) {

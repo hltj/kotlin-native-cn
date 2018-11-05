@@ -6,6 +6,8 @@
 package org.jetbrains.kotlin.backend.konan.llvm
 
 import llvm.LLVMTypeRef
+import org.jetbrains.kotlin.backend.konan.descriptors.externalSymbolOrThrow
+import org.jetbrains.kotlin.backend.konan.descriptors.getAnnotationValue
 import org.jetbrains.kotlin.backend.konan.descriptors.isAbstract
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
 import org.jetbrains.kotlin.backend.konan.isInlined
@@ -22,8 +24,6 @@ import org.jetbrains.kotlin.ir.types.*
 import org.jetbrains.kotlin.konan.library.uniqueName
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.resolve.constants.StringValue
-import org.jetbrains.kotlin.utils.addToStdlib.ifNotEmpty
 
 
 // This file describes the ABI for Kotlin descriptors of exported declarations.
@@ -205,15 +205,15 @@ internal val FunctionDescriptor.symbolName: String
         if (!this.isExported()) {
             throw AssertionError(this.descriptor.toString())
         }
-        this.descriptor.annotations.findAnnotation(symbolNameAnnotation)?.let {
-            if (this.isExternal) {
-                return getStringValue(it)!!
-            } else {
-                // ignore; TODO: report compile error
+
+        if (isExternal) {
+            this.descriptor.externalSymbolOrThrow()?.let {
+                return it
             }
         }
+
         this.descriptor.annotations.findAnnotation(exportForCppRuntimeAnnotation)?.let {
-            val name = getStringValue(it) ?: this.name.asString()
+            val name = getAnnotationValue(it) ?: this.name.asString()
             return name // no wrapping currently required
         }
 
@@ -234,13 +234,6 @@ internal val IrField.symbolName: String
 
     }
 
-internal fun getStringValue(annotation: AnnotationDescriptor): String? {
-    return annotation.allValueArguments.values.ifNotEmpty {
-        val stringValue = single() as? StringValue
-        stringValue?.value
-    }
-}
-
 // TODO: bring here dependencies of this method?
 internal fun RuntimeAware.getLlvmFunctionType(function: FunctionDescriptor): LLVMTypeRef {
     val original = function.original
@@ -258,8 +251,8 @@ internal fun RuntimeAware.getLlvmFunctionType(function: FunctionDescriptor): LLV
 }
 
 internal fun RuntimeAware.getLlvmFunctionType(symbol: DataFlowIR.FunctionSymbol): LLVMTypeRef {
-    val returnType = if (symbol.returnsUnit) voidType else getLLVMType(symbol.returnType)
-    val paramTypes = ArrayList(symbol.parameterTypes.map { getLLVMType(it) })
+    val returnType = if (symbol.returnsUnit) voidType else getLLVMType(symbol.returnParameter.type)
+    val paramTypes = ArrayList(symbol.parameters.map { getLLVMType(it.type) })
     if (isObjectType(returnType)) paramTypes.add(kObjHeaderPtrPtr)
 
     return functionType(returnType, isVarArg = false, paramTypes = *paramTypes.toTypedArray())
