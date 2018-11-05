@@ -27,6 +27,7 @@
 #include "MemoryPrivate.hpp"
 #include "Natives.h"
 #include "Porting.h"
+#include "Runtime.h"
 
 // If garbage collection algorithm for cyclic garbage to be used.
 // We are using the Bacon's algorithm for GC, see
@@ -351,11 +352,6 @@ namespace {
 // TODO: can we pass this variable as an explicit argument?
 THREAD_LOCAL_VARIABLE MemoryState* memoryState = nullptr;
 
-// TODO: use widely.
-inline void EnsureRuntimeInitialized() {
-  RuntimeCheck(memoryState != nullptr, "Unable to execute Kotlin code on uninitialized thread");
-}
-
 constexpr int kFrameOverlaySlots = sizeof(FrameOverlay) / sizeof(ObjHeader**);
 
 inline bool isFreeable(const ContainerHeader* header) {
@@ -420,10 +416,15 @@ void KRefSharedHolder::initRefOwner() {
 void KRefSharedHolder::verifyRefOwner() const {
   // Note: checking for 'permanentOrFrozen()' and retrieving 'type_info()'
   // are supposed to be correct even for unowned object.
-  if (owner_ != memoryState && !obj_->container()->permanentOrFrozen()) {
-    EnsureRuntimeInitialized();
-    // TODO: add some info about the owner.
-    ThrowIllegalObjectSharingException(obj_->type_info(), obj_);
+  if (owner_ != memoryState) {
+    // Initialized runtime is required to throw the exception below
+    // or to provide proper execution context for shared objects:
+    if (memoryState == nullptr) Kotlin_initRuntimeIfNeeded();
+
+    if (!obj_->container()->permanentOrFrozen()) {
+      // TODO: add some info about the owner.
+      ThrowIllegalObjectSharingException(obj_->type_info(), obj_);
+    }
   }
 }
 
@@ -618,6 +619,8 @@ void dumpReachable(const char* prefix, const ContainerHeaderSet* roots) {
 
 #endif
 
+#if USE_GC
+
 void MarkRoots(MemoryState*);
 void DeleteCorpses(MemoryState*);
 void ScanRoots(MemoryState*);
@@ -746,6 +749,7 @@ void CollectWhite(MemoryState* state, ContainerHeader* container) {
   runDeallocationHooks(container);
   scheduleDestroyContainer(state, container);
 }
+#endif
 
 inline void AddRef(ContainerHeader* header) {
   // Looking at container type we may want to skip AddRef() totally
@@ -882,8 +886,10 @@ void FreeAggregatingFrozenContainer(ContainerHeader* container) {
   RuntimeAssert(isAggregatingFrozenContainer(container), "expected fictitious frozen container");
   MEMORY_LOG("%p is fictitious frozen container\n", container);
   RuntimeAssert(!container->buffered(), "frozen objects must not participate in GC")
+#if USE_GC
   // Forbid finalizerQueue handling.
   ++state->finalizerQueueSuspendCount;
+#endif
   // Special container for frozen objects.
   ContainerHeader** subContainer = reinterpret_cast<ContainerHeader**>(container + 1);
   MEMORY_LOG("Total subcontainers = %d\n", container->objectCount());
@@ -891,7 +897,9 @@ void FreeAggregatingFrozenContainer(ContainerHeader* container) {
     MEMORY_LOG("Freeing subcontainer %p\n", *subContainer);
     FreeContainer(*subContainer++);
   }
+#if USE_GC
   --state->finalizerQueueSuspendCount;
+#endif
   scheduleDestroyContainer(state, container);
   MEMORY_LOG("Freeing subcontainers done\n");
 }
@@ -1120,8 +1128,10 @@ void DeinitMemory(MemoryState* memoryState) {
     dumpReachable("", memoryState->containers);
   }
 #else
+#if USE_GC
   if (lastMemoryState)
     RuntimeAssert(allocCount == 0, "Memory leaks found");
+#endif
 #endif
 
   PRINT_EVENT(memoryState)
@@ -1715,7 +1725,8 @@ void FreezeSubgraph(ObjHeader* root) {
 
   // Do DFS cycle detection.
   bool hasCycles = false;
-  KRef firstBlocker = nullptr;
+  KRef firstBlocker = root->has_meta_object() && ((root->meta_object()->flags_ & MF_NEVER_FROZEN) != 0) ?
+    root : nullptr;
   KStdVector<ContainerHeader*> order;
   depthFirstTraversal(rootContainer, &hasCycles, &firstBlocker, order);
   if (firstBlocker != nullptr) {
@@ -1728,6 +1739,7 @@ void FreezeSubgraph(ObjHeader* root) {
     freezeAcyclic(rootContainer );
   }
 
+#if USE_GC
   // Now remove frozen objects from the toFree list.
   // TODO: optimize it by keeping ignored (i.e. freshly frozen) objects in the set,
   // and use it when analyzing toFree during collection.
@@ -1736,6 +1748,7 @@ void FreezeSubgraph(ObjHeader* root) {
       if (!isMarkedAsRemoved(container) && container->frozen())
         container = markAsRemoved(container);
   }
+#endif
 }
 
 // This function is called from field mutators to check if object's header is frozen.

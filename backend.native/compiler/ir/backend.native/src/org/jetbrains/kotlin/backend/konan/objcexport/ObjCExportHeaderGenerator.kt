@@ -10,6 +10,7 @@ import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
 import org.jetbrains.kotlin.builtins.UnsignedType
 import org.jetbrains.kotlin.descriptors.*
+import org.jetbrains.kotlin.descriptors.konan.isKonanStdlib
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.Name
@@ -24,10 +25,24 @@ import org.jetbrains.kotlin.types.typeUtil.supertypes
 import org.jetbrains.kotlin.utils.addIfNotNull
 
 abstract class ObjCExportHeaderGenerator(
-        val moduleDescriptor: ModuleDescriptor,
+        val moduleDescriptors: List<ModuleDescriptor>,
         val builtIns: KotlinBuiltIns,
-        topLevelNamePrefix: String = moduleDescriptor.namePrefix
+        topLevelNamePrefix: String
 ) {
+
+    constructor(
+            moduleDescriptor: ModuleDescriptor,
+            builtIns: KotlinBuiltIns,
+            topLevelNamePrefix: String = moduleDescriptor.namePrefix
+    ) : this(moduleDescriptor, emptyList(), builtIns, topLevelNamePrefix)
+
+    constructor(
+            moduleDescriptor: ModuleDescriptor,
+            exportedDependencies: List<ModuleDescriptor>,
+            builtIns: KotlinBuiltIns,
+            topLevelNamePrefix: String = moduleDescriptor.namePrefix
+    ) : this(listOf(moduleDescriptor) + exportedDependencies, builtIns, topLevelNamePrefix)
+
     internal val mapper: ObjCExportMapper = object : ObjCExportMapper() {
         override fun getCategoryMembersFor(descriptor: ClassDescriptor) =
                 extensions[descriptor].orEmpty()
@@ -39,16 +54,18 @@ abstract class ObjCExportHeaderGenerator(
         }
     }
 
-    internal val namer = ObjCExportNamerImpl(moduleDescriptor, builtIns, mapper, topLevelNamePrefix)
+    internal val namer = ObjCExportNamerImpl(moduleDescriptors.toSet(), builtIns, mapper, topLevelNamePrefix)
 
     internal val generatedClasses = mutableSetOf<ClassDescriptor>()
     internal val topLevel = mutableMapOf<SourceFile, MutableList<CallableMemberDescriptor>>()
+
+    private val stdlibModule = moduleDescriptors.first().allDependencyModules.single { it.isKonanStdlib() }
 
     private val mappedToNSNumber: List<ClassDescriptor> = with(builtIns) {
         val result = mutableListOf(boolean, byte, short, int, long, float, double)
 
         UnsignedType.values().mapTo(result) { unsignedType ->
-            moduleDescriptor.findClassAcrossModuleDependencies(unsignedType.classId)!!
+            stdlibModule.findClassAcrossModuleDependencies(unsignedType.classId)!!
         }
 
         result
@@ -69,7 +86,7 @@ abstract class ObjCExportHeaderGenerator(
         NSNumberKind.values().forEach {
             // TODO: NSNumber seem to have different equality semantics.
             if (it.mappedKotlinClassId != null) {
-                val descriptor = moduleDescriptor.findClassAcrossModuleDependencies(it.mappedKotlinClassId)!!
+                val descriptor = stdlibModule.findClassAcrossModuleDependencies(it.mappedKotlinClassId)!!
                 result += CustomTypeMapper.Simple(descriptor, namer.numberBoxName(descriptor).objCName)
             }
 
@@ -181,7 +198,7 @@ abstract class ObjCExportHeaderGenerator(
 
         genKotlinNumbers()
 
-        val packageFragments = moduleDescriptor.getPackageFragments()
+        val packageFragments = moduleDescriptors.flatMap { it.getPackageFragments() }
 
         packageFragments.forEach { packageFragment ->
             packageFragment.getMemberScope().getContributedDescriptors()
@@ -193,7 +210,7 @@ abstract class ObjCExportHeaderGenerator(
                         if (classDescriptor != null) {
                             extensions.getOrPut(classDescriptor, { mutableListOf() }) += it
                         } else {
-                            topLevel.getOrPut(it.source.containingFile, { mutableListOf() }) += it
+                            topLevel.getOrPut(it.findSourceFile(), { mutableListOf() }) += it
                         }
                     }
 
@@ -263,7 +280,7 @@ abstract class ObjCExportHeaderGenerator(
     }
 
     private fun genKotlinNumber(kotlinClassId: ClassId, kind: NSNumberKind): ObjCInterface {
-        val descriptor = moduleDescriptor.findClassAcrossModuleDependencies(kotlinClassId)!!
+        val descriptor = stdlibModule.findClassAcrossModuleDependencies(kotlinClassId)!!
         val name = namer.numberBoxName(descriptor)
 
         val members = buildMembers {
@@ -731,7 +748,7 @@ abstract class ObjCExportHeaderGenerator(
 
         val arguments = (throwsAnnotation.allValueArguments.values.single() as ArrayValue).value
         for (argument in arguments) {
-            val classDescriptor = TypeUtils.getClassDescriptor((argument as KClassValue).value) ?: continue
+            val classDescriptor = TypeUtils.getClassDescriptor((argument as KClassValue).getArgumentType(method.module)) ?: continue
 
             uncheckedExceptionClasses.firstOrNull { classDescriptor.isSubclassOf(it) }?.let {
                 reportWarning(method,

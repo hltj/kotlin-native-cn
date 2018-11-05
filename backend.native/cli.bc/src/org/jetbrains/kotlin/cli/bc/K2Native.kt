@@ -14,17 +14,14 @@ import org.jetbrains.kotlin.cli.common.CLITool
 import org.jetbrains.kotlin.cli.common.CommonCompilerPerformanceManager
 import org.jetbrains.kotlin.cli.common.ExitCode
 import org.jetbrains.kotlin.cli.common.config.addKotlinSourceRoot
-import org.jetbrains.kotlin.cli.common.config.addKotlinSourceRoots
 import org.jetbrains.kotlin.cli.common.config.kotlinSourceRoots
-import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity.ERROR
-import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity.WARNING
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity.*
 import org.jetbrains.kotlin.cli.jvm.compiler.EnvironmentConfigFiles
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
 import org.jetbrains.kotlin.cli.jvm.plugins.PluginCliParser
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.Services
-import org.jetbrains.kotlin.konan.KonanAbiVersion
 import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
@@ -190,6 +187,11 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                     })
                 if (arguments.friendModules != null)
                     put(FRIEND_MODULES, arguments.friendModules!!.split(File.pathSeparator).filterNot(String::isEmpty))
+
+                put(EXPORTED_LIBRARIES, selectExportedLibraries(configuration, arguments, outputKind))
+
+                put(BITCODE_EMBEDDING_MODE, selectBitcodeEmbeddingMode(this, arguments, outputKind))
+                put(DEBUG_INFO_VERSION, arguments.debugInfoFormatVersion.toInt())
             }
         }
     }
@@ -214,5 +216,62 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
         }
     }
 }
+
+private fun selectBitcodeEmbeddingMode(
+        configuration: CompilerConfiguration,
+        arguments: K2NativeCompilerArguments,
+        outputKind: CompilerOutputKind
+): BitcodeEmbedding.Mode {
+
+    if (outputKind != CompilerOutputKind.FRAMEWORK) {
+        return BitcodeEmbedding.Mode.NONE.also {
+            val flag = when {
+                arguments.embedBitcodeMarker -> EMBED_BITCODE_MARKER_FLAG
+                arguments.embedBitcode -> EMBED_BITCODE_FLAG
+                else -> return@also
+            }
+
+            configuration.report(
+                    STRONG_WARNING,
+                    "'$flag' is only supported when producing frameworks, " +
+                            "but the compiler is producing ${outputKind.name.toLowerCase()}"
+            )
+        }
+    }
+
+    return when {
+        arguments.embedBitcodeMarker -> {
+            if (arguments.embedBitcode) {
+                configuration.report(
+                        STRONG_WARNING,
+                        "'$EMBED_BITCODE_FLAG' is ignored because '$EMBED_BITCODE_MARKER_FLAG' is specified"
+                )
+            }
+            BitcodeEmbedding.Mode.MARKER
+        }
+        arguments.embedBitcode -> {
+            BitcodeEmbedding.Mode.FULL
+        }
+        else -> BitcodeEmbedding.Mode.NONE
+    }
+}
+
+private fun selectExportedLibraries(
+        configuration: CompilerConfiguration,
+        arguments: K2NativeCompilerArguments,
+        outputKind: CompilerOutputKind
+): List<String> {
+    val exportedLibraries = arguments.exportedLibraries?.toList().orEmpty()
+
+    return if (exportedLibraries.isNotEmpty() && outputKind != CompilerOutputKind.FRAMEWORK) {
+        configuration.report(STRONG_WARNING, "-Xexport-library is only supported when producing frameworks, " +
+                "but the compiler is producing ${outputKind.name.toLowerCase()}")
+
+        emptyList()
+    } else {
+        exportedLibraries
+    }
+}
+
 fun main(args: Array<String>) = K2Native.main(args)
 

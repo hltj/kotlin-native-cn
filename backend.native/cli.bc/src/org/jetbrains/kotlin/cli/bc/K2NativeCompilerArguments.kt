@@ -9,6 +9,7 @@ import org.jetbrains.kotlin.cli.common.arguments.CommonCompilerArguments
 import org.jetbrains.kotlin.cli.common.arguments.Argument
 import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.config.AnalysisFlag
+import org.jetbrains.kotlin.config.AnalysisFlags
 
 class K2NativeCompilerArguments : CommonCompilerArguments() {
     // First go the options interesting to the general public.
@@ -93,8 +94,22 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = "-Xdisable", deprecatedName = "--disable", valueDescription = "<Phase>", description = "Disable backend phase")
     var disablePhases: Array<String>? = null
 
+    @Argument(value = EMBED_BITCODE_FLAG, description = "Embed LLVM IR bitcode as data")
+    var embedBitcode: Boolean = false
+
+    @Argument(value = EMBED_BITCODE_MARKER_FLAG, description = "Embed placeholder LLVM IR data as a marker")
+    var embedBitcodeMarker: Boolean = false
+
     @Argument(value = "-Xenable", deprecatedName = "--enable", valueDescription = "<Phase>", description = "Enable backend phase")
     var enablePhases: Array<String>? = null
+
+    @Argument(
+            value = "-Xexport-library",
+            valueDescription = "<path>",
+            description = "Path to the library to be included into produced framework API\n" +
+                    "Must be the path of a library passed with '-library'"
+    )
+    var exportedLibraries: Array<String>? = null
 
     @Argument(value=  "-Xlist-phases", deprecatedName = "--list_phases", description = "List all backend phases")
     var listPhases: Boolean = false
@@ -145,10 +160,15 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     )
     var friendModules: String? = null
 
+    @Argument(value = "-Xdebug-info-version", description = "generate debug info of given version (1, 2)")
+    var debugInfoFormatVersion: String = "1" /* command line parser doesn't accept kotlin.Int type */
+
     override fun configureAnalysisFlags(collector: MessageCollector): MutableMap<AnalysisFlag<*>, Any> =
             super.configureAnalysisFlags(collector).also {
-                val useExperimental = it[AnalysisFlag.useExperimental] as List<*>
-                it[AnalysisFlag.useExperimental] = useExperimental + listOf("kotlin.ExperimentalUnsignedTypes")
+                val useExperimental = it[AnalysisFlags.useExperimental] as List<*>
+                it[AnalysisFlags.useExperimental] = useExperimental + listOf("kotlin.ExperimentalUnsignedTypes")
             }
 }
 
+const val EMBED_BITCODE_FLAG = "-Xembed-bitcode"
+const val EMBED_BITCODE_MARKER_FLAG = "-Xembed-bitcode-marker"

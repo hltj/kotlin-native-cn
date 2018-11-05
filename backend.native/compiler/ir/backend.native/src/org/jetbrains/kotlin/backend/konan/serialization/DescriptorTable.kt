@@ -5,6 +5,7 @@
 
 package org.jetbrains.kotlin.backend.konan.serialization
 
+import org.jetbrains.kotlin.backend.konan.descriptors.externalSymbolOrThrow
 import org.jetbrains.kotlin.backend.konan.descriptors.isExpectMember
 import org.jetbrains.kotlin.backend.konan.getInlinedClass
 import org.jetbrains.kotlin.backend.konan.getObjCMethodInfo
@@ -24,7 +25,9 @@ import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
 import org.jetbrains.kotlin.types.TypeUtils
 import org.jetbrains.kotlin.utils.addToStdlib.ifNotEmpty
 
-internal fun DeclarationDescriptor.symbolName(): String = when (this) {
+
+// TODO: merge with FunctionDescriptor.symbolName in BinaryInterface.kt.
+internal val DeclarationDescriptor.symbolName: String get() = when (this) {
     is FunctionDescriptor 
         -> this.uniqueName
     is PropertyDescriptor 
@@ -35,7 +38,7 @@ internal fun DeclarationDescriptor.symbolName(): String = when (this) {
 }
 
 internal val DeclarationDescriptor.uniqId 
-    get() = this.symbolName().localHash.value
+    get() = this.symbolName.localHash.value
 
 internal val DeclarationDescriptor.isSerializableExpectClass: Boolean
     get() = this is ClassDescriptor && ExpectedActualDeclarationChecker.shouldGenerateExpectClass(this)
@@ -244,13 +247,13 @@ private val FunctionDescriptor.uniqueName: String
             throw AssertionError(this.toString())
         }
 
-        this.annotations.findAnnotation(symbolNameAnnotation)?.let {
-            if (this.isExternal) {
-                return getStringValue(it)!!
-            } else {
-                // ignore; TODO: report compile error
+        if (this.isExternal) {
+            externalSymbolOrThrow()?.let {
+                return it
             }
         }
+        // TODO: check that only external function has @SymbolName.
+
 
         this.annotations.findAnnotation(exportForCppRuntimeAnnotation)?.let {
             val name = getStringValue(it) ?: this.name.asString()

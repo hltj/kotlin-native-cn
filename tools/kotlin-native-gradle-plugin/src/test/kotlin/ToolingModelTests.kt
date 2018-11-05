@@ -129,7 +129,7 @@ open class ToolingModelTests {
                 }
 
                 import org.jetbrains.kotlin.gradle.plugin.model.*
-                import org.jetbrains.kotlin.konan.target.CompilerOutputKind
+                import shadow.org.jetbrains.kotlin.konan.target.CompilerOutputKind
 
                 public <T> void assertEquals(
                         T actual,
@@ -153,7 +153,7 @@ open class ToolingModelTests {
                     dependsOn('compileKonanBaz')
                     doLast {
                         def model = KonanToolingModelBuilder.INSTANCE.buildAll("KonanModel", project)
-                        assertEquals(model.konanHome, file(project.getProperty('konan.home')))
+                        assertEquals(model.konanHome, file(project.getProperty('org.jetbrains.kotlin.native.home')))
                         assertEquals(model.konanVersion.toString(), "$konanVersion")
 
                         assertEquals(model.languageVersion, "1.2")

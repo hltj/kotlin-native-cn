@@ -44,10 +44,7 @@ import org.jetbrains.kotlin.gradle.plugin.experimental.KotlinNativeTestComponent
 import org.jetbrains.kotlin.gradle.plugin.experimental.internal.*
 import org.jetbrains.kotlin.gradle.plugin.experimental.tasks.CInteropTask
 import org.jetbrains.kotlin.gradle.plugin.experimental.tasks.KotlinNativeCompile
-import org.jetbrains.kotlin.gradle.plugin.konan.KonanPlugin
-import org.jetbrains.kotlin.gradle.plugin.konan.hasProperty
-import org.jetbrains.kotlin.gradle.plugin.konan.konanCompilerDownloadDir
-import org.jetbrains.kotlin.gradle.plugin.konan.setProperty
+import org.jetbrains.kotlin.gradle.plugin.konan.*
 import org.jetbrains.kotlin.gradle.plugin.loadKotlinVersionFromResource
 import org.jetbrains.kotlin.gradle.plugin.tasks.KonanCompilerDownloadTask
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
@@ -288,6 +285,7 @@ class KotlinNativeBasePlugin: Plugin<ProjectInternal> {
 
     private fun ProjectInternal.addCompilerDownloadingTask(): KonanCompilerDownloadTask {
         val result = tasks.create(KonanPlugin.KONAN_DOWNLOAD_TASK_NAME, KonanCompilerDownloadTask::class.java)
+        project.warnAboutDeprecatedProperty(KonanPlugin.ProjectProperty.KONAN_HOME)
         if (!hasProperty(KonanPlugin.ProjectProperty.KONAN_HOME)) {
             setProperty(KonanPlugin.ProjectProperty.KONAN_HOME, project.konanCompilerDownloadDir())
             setProperty(KonanPlugin.ProjectProperty.DOWNLOAD_COMPILER, true)
@@ -314,7 +312,6 @@ class KotlinNativeBasePlugin: Plugin<ProjectInternal> {
         // TODO: Deal with compiler downloading.
         // Apply base plugins
         project.pluginManager.apply(LifecycleBasePlugin::class.java)
-        project.pluginManager.apply(NativeBasePlugin::class.java)
 
         checkGradleMetadataFeature()
         checkGradleVersion()
@@ -322,6 +319,11 @@ class KotlinNativeBasePlugin: Plugin<ProjectInternal> {
 
         setUpMatchingStrategy()
         addCompilationTasks()
+
+        // The NativeBasePlugin accesses some properties which are set by the methods above
+        // (e.g. linkFile for libraries). Thus we have to apply it after setting there properties.
+        project.pluginManager.apply(NativeBasePlugin::class.java)
+
         addInteropTasks()
         addTargetInfoTask()
     }

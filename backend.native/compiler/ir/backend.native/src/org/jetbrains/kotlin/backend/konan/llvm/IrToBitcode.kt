@@ -383,6 +383,9 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
         codegen.objCDataGenerator?.finishModule()
 
+        BitcodeEmbedding.processModule(context.llvm)
+
+        appendDebugSelector()
         appendLlvmUsed("llvm.used", context.llvm.usedFunctions + context.llvm.usedGlobals)
         appendLlvmUsed("llvm.compiler.used", context.llvm.compilerUsedGlobals)
         appendStaticInitializers()
@@ -843,6 +846,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             is IrSuspendableExpression ->
                                         return evaluateSuspendableExpression  (value)
             is IrSuspensionPoint     -> return evaluateSuspensionPoint        (value)
+            is IrPrivateFunctionCall -> return evaluatePrivateFunctionCall    (value)
             is IrPrivateClassReference ->
                                         return evaluatePrivateClassReference  (value)
             else                     -> {
@@ -1903,13 +1907,13 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             val path = this.fileEntry.name.toFileAndFolder()
             DICreateCompilationUnit(
                     builder     = context.debugInfo.builder,
-                    lang        = DwarfLanguage.DW_LANG_Kotlin.value,
+                    lang        = DWARF.language(context.config),
                     File        = path.file,
                     dir         = path.folder,
                     producer    = DWARF.producer,
                     isOptimized = 0,
                     flags       = "",
-                    rv          = DWARF.runtimeVersion)
+                    rv          = DWARF.runtimeVersion(context.config))
             DICreateFile(context.debugInfo.builder, path.file, path.folder)!!
         }
     }
@@ -2090,9 +2094,6 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             return evaluateIntrinsicCall(callee, argsWithContinuationIfNeeded)
         }
 
-        if (callee is IrPrivateFunctionCall)
-            return evaluatePrivateFunctionCall(callee, argsWithContinuationIfNeeded, callee.virtualCallee?.let { resultLifetime(it) } ?: resultLifetime)
-
         when {
             descriptor.origin == IrDeclarationOrigin.IR_BUILTINS_STUB ->
                 return evaluateOperatorCall(callee, argsWithContinuationIfNeeded)
@@ -2106,7 +2107,14 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
     //-------------------------------------------------------------------------//
 
-    private fun evaluatePrivateFunctionCall(callee: IrPrivateFunctionCall, args: List<LLVMValueRef>, resultLifetime: Lifetime): LLVMValueRef {
+    private fun evaluatePrivateFunctionCall(callee: IrPrivateFunctionCall): LLVMValueRef {
+        val args = (0 until callee.valueArgumentsCount).map { index ->
+            callee.getValueArgument(index)?.let { evaluateExpression(it) }
+                    ?: run {
+                        assert(index == callee.valueArgumentsCount - 1) { "Only last argument may be null - for suspend functions" }
+                        getContinuation()
+                    }
+        }
         val dfgSymbol = callee.dfgSymbol
         val functionIndex = callee.functionIndex
         val function = if (callee.moduleDescriptor == context.irModule!!.descriptor) {
@@ -2119,7 +2127,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
             )
         }
-        return call(callee.symbol.owner, function, args, resultLifetime)
+        return call(dfgSymbol, function, args, resultLifetime = Lifetime.GLOBAL)
     }
 
     //-------------------------------------------------------------------------//
@@ -2565,6 +2573,25 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         return result
     }
 
+
+    // TODO: it seems to be much more reliable to get args as a mapping from parameter descriptor to LLVM value,
+    // instead of a plain list.
+    // In such case it would be possible to check that all args are available and in the correct order.
+    // However, it currently requires some refactoring to be performed.
+    private fun call(symbol: DataFlowIR.FunctionSymbol, function: LLVMValueRef, args: List<LLVMValueRef>,
+                     resultLifetime: Lifetime): LLVMValueRef {
+        val result = call(function, args, resultLifetime)
+        if (symbol.returnsNothing) {
+            functionGenerationContext.unreachable()
+        }
+
+        if (LLVMGetReturnType(getFunctionType(function)) == voidType) {
+            return codegen.theUnitInstanceRef.llvm
+        }
+
+        return result
+    }
+
     private fun call(function: LLVMValueRef, args: List<LLVMValueRef>,
                      resultLifetime: Lifetime = Lifetime.IRRELEVANT): LLVMValueRef {
         return functionGenerationContext.call(function, args, resultLifetime, currentCodeContext.exceptionHandler)
@@ -2600,14 +2627,21 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     private fun appendLlvmUsed(name: String, args: List<LLVMValueRef>) {
         if (args.isEmpty()) return
 
-        memScoped {
-            val argsCasted = args.map { it -> constPointer(it).bitcast(int8TypePtr) }
-            val llvmUsedGlobal =
+        val argsCasted = args.map { it -> constPointer(it).bitcast(int8TypePtr) }
+        val llvmUsedGlobal =
                 context.llvm.staticData.placeGlobalArray(name, int8TypePtr, argsCasted)
 
-            LLVMSetLinkage(llvmUsedGlobal.llvmGlobal, LLVMLinkage.LLVMAppendingLinkage)
-            LLVMSetSection(llvmUsedGlobal.llvmGlobal, "llvm.metadata")
-        }
+        LLVMSetLinkage(llvmUsedGlobal.llvmGlobal, LLVMLinkage.LLVMAppendingLinkage)
+        LLVMSetSection(llvmUsedGlobal.llvmGlobal, "llvm.metadata")
+    }
+
+    private fun appendDebugSelector() {
+        if (!context.config.produce.isNativeBinary) return
+        val llvmDebugSelector =
+                context.llvm.staticData.placeGlobal("KonanNeedDebugInfo",
+                        Int32(if (context.shouldContainDebugInfo()) 1 else 0))
+        llvmDebugSelector.setConstant(true)
+        llvmDebugSelector.setLinkage(LLVMLinkage.LLVMExternalLinkage)
     }
 
     //-------------------------------------------------------------------------//
