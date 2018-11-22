@@ -93,6 +93,7 @@ Following flags are supported:
   -shims <boolean> adds generation of shims tracing native library calls
   -pkg <fully qualified package name> place the resulting definitions into the package
   -h <file>.h header files to parse
+  -o <file>.klib specifies the resulting library file
 """)
 }
 
@@ -241,7 +242,7 @@ private fun processCLib(args: Array<String>): Array<String>? {
             target = tool.target
     )
 
-    val nativeIndex = buildNativeIndex(library)
+    val nativeIndex = buildNativeIndex(library, verbose)
 
     val gen = StubGenerator(nativeIndex, configuration, libName, generateShims, verbose, flavor, imports)
 
