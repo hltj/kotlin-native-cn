@@ -17,10 +17,10 @@ public final class ImmutableBlob private constructor() {
 
     // Data layout is the same as for ByteArray, so we can share native functions.
     @SymbolName("Kotlin_ByteArray_get")
-    external public operator fun get(index: Int): Byte
+    public external operator fun get(index: Int): Byte
 
     @SymbolName("Kotlin_ByteArray_getArrayLength")
-    external private fun getArrayLength(): Int
+    private external fun getArrayLength(): Int
 
     /** Creates an iterator over the elements of the array. */
     public operator fun iterator(): ByteIterator {
@@ -42,19 +42,23 @@ private class ImmutableBlobIteratorImpl(val blob: ImmutableBlob) : ByteIterator(
 }
 
 /**
- * Allocates new [ByteArray] and copies the data from blob starting from [start]
- * and with [count] amount of bytes.
+ * Copies the data from this blob into a new [ByteArray].
+ *
+ * @param startIndex the beginning (inclusive) of the subrange to copy, 0 by default.
+ * @param endIndex the end (exclusive) of the subrange to copy, size of this blob by default.
  */
 @SymbolName("Kotlin_ImmutableBlob_toByteArray")
-public external fun ImmutableBlob.toByteArray(start: Int = 0, count: Int = size): ByteArray
+public external fun ImmutableBlob.toByteArray(startIndex: Int = 0, endIndex: Int = size): ByteArray
 
 /**
- * Allocates new [UByteArray] and copies the data from blob starting from [start]
- * and with [count] amount of bytes.
+ * Copies the data from this blob into a new [UByteArray].
+ *
+ * @param startIndex the beginning (inclusive) of the subrange to copy, 0 by default.
+ * @param endIndex the end (exclusive) of the subrange to copy, size of this blob by default.
  */
 @ExperimentalUnsignedTypes
 @SymbolName("Kotlin_ImmutableBlob_toByteArray")
-public external fun ImmutableBlob.toUByteArray(start: Int = 0, count: Int = size): UByteArray
+public external fun ImmutableBlob.toUByteArray(startIndex: Int = 0, endIndex: Int = size): UByteArray
 
 /**
  * Returns stable C pointer to data at certain [offset], useful as a way to pass resource
@@ -71,9 +75,10 @@ public fun ImmutableBlob.asUCPointer(offset: Int = 0): CPointer<UByteVar> =
 private external fun ImmutableBlob.asCPointerImpl(offset: Int): kotlin.native.internal.NativePtr
 
 /**
- * Creates ImmutableBlob out of compile-time constant data.
- * This method accepts Short type, so that values in range 0x80 .. 0xff can be
- * provided without toByte() cast or 'u' suffix.
+ * Creates [ImmutableBlob] out of compile-time constant data.
+ *
+ * This method accepts values of [Short] type in range `0x00..0xff`, other values are prohibited.
+ *
  * One element still represent one byte in the output data.
  * This is the only way to create ImmutableBlob for now.
  */
