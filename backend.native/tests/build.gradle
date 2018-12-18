@@ -46,7 +46,7 @@ repositories {
 
 dependencies {
     cli_bc project(path: ':backend.native', configuration: 'cli_bc')
-    update_tests (group: 'org',  name: 'Kotlin_dev_CompilerAllPlugins', version: testKotlinVersion) {
+    update_tests (group: 'org',  name: 'Kotlin_1320_CompilerAllPlugins', version: testKotlinVersion) {
         artifact {
             name = 'internal/kotlin-test-data'
             type = 'zip'
@@ -87,6 +87,13 @@ konanArtifacts {
             dependsOn ':dist'
         }
         srcDir 'testLibrary'
+    }
+    def target = project.testTarget ?: 'host'
+    library('baseTestClass', targets: [target]) {
+        if (!useCustomDist) {
+            dependsOn ':dist'
+        }
+        srcFiles 'testing/library.kt'
     }
 }
 
@@ -1041,6 +1048,19 @@ task initializers_correctOrder2(type: RunKonanTest) {
     source = "codegen/initializers/correctOrder2.kt"
 }
 
+task arithmetic_basic(type: RunKonanTest) {
+    source = "codegen/arithmetic/basic.kt"
+}
+
+task arithmetic_division(type: RunKonanTest) {
+    expectedFail = (project.testTarget == 'wasm32') // Uses exceptions.
+    source = "codegen/arithmetic/division.kt"
+}
+
+task arithmetic_github1856(type: RunKonanTest) {
+    source = "codegen/arithmetic/github1856.kt"
+}
+
 task bridges_test0(type: RunKonanTest) {
     goldValue = "42\n42\n"
     source = "codegen/bridges/test0.kt"
@@ -1181,6 +1201,11 @@ task classDelegation_linkTest(type: LinkKonanTest) {
     goldValue = "qxx\n123\n42\n117\nzzz\n"
     source = "codegen/classDelegation/linkTest_main.kt"
     lib = "codegen/classDelegation/linkTest_lib.kt"
+}
+
+task contracts(type: RunStandaloneKonanTest) {
+    flags = [ '-Xuse-experimental=kotlin.Experimental', '-tr' ]
+    source = "codegen/contracts/contracts.kt"
 }
 
 task delegatedProperty_simpleVal(type: RunKonanTest) {
@@ -1542,7 +1567,7 @@ task sort1(type: RunKonanTest) {
 // when KT-26315 is fixed.
 task sortWith(type: RunStandaloneKonanTest) {
     source = "runtime/collections/SortWith.kt"
-    flags = ['-tr', '--disable', 'devirtualization']
+    flags = ['-tr', '-Xdisable=devirtualization']
     arguments = ['--ktest_logger=SILENT']
 }
 
@@ -1879,6 +1904,7 @@ task listof0(type: RunKonanTest) {
 }
 
 task listof1(type: RunKonanTest) {
+    disabled = true
     goldValue = "true\n[a, b, c]\n"
     source = "datagen/literals/listof1.kt"
 }
@@ -2755,6 +2781,15 @@ task testing_custom_main(type: RunStandaloneKonanTest) {
             'Testing finished\n'
 }
 
+task testing_library_usage(type: RunStandaloneKonanTest) {
+    def target = project.testTarget ?: 'host'
+    dependsOn konanArtifacts.baseTestClass.getByTarget(target)
+    def klib = konanArtifacts.baseTestClass.getArtifactByTarget(target)
+    source = 'testing/library_user.kt'
+    flags = ['-tr', '-e', 'main', '-l', klib.absolutePath]
+    arguments = ['--ktest_logger=SILENT']
+}
+
 // Just check that the driver is able to produce runnable binaries.
 task driver0(type: RunDriverKonanTest) {
     goldValue = "Hello, world!\n"
@@ -2816,8 +2851,8 @@ kotlinNativeInterop {
         defFile 'interop/basics/cunsupported.def'
     }
 
-    cstructs {
-        defFile 'interop/basics/cstructs.def'
+    ctypes {
+        defFile 'interop/basics/ctypes.def'
     }
 
     if (isMac()) {
@@ -2913,10 +2948,10 @@ task interop_unsupported(type: RunInteropKonanTest) {
     interop = 'cunsupported'
 }
 
-task interop_structs(type: RunInteropKonanTest) {
+task interop_types(type: RunInteropKonanTest) {
     disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
-    source = "interop/basics/structs.kt"
-    interop = 'cstructs'
+    source = "interop/basics/types.kt"
+    interop = 'ctypes'
 }
 
 task interop_echo_server(type: RunInteropKonanTest) {

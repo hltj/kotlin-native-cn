@@ -5,10 +5,8 @@
 
 package org.jetbrains.kotlin.backend.konan.llvm
 
-import llvm.LLVMLinkage
-import llvm.LLVMSetLinkage
-import llvm.LLVMTypeRef
-import llvm.LLVMValueRef
+import kotlinx.cinterop.cValuesOf
+import llvm.*
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.fqNameSafe
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.llvmSymbolOrigin
 import org.jetbrains.kotlin.descriptors.ClassDescriptor
@@ -17,23 +15,30 @@ import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 
+private fun ConstPointer.add(index: Int): ConstPointer {
+    return constPointer(LLVMConstGEP(llvm, cValuesOf(Int32(index).llvm), 1)!!)
+}
+
+// Must match OBJECT_TAG_PERMANENT_CONTAINER in C++.
+private fun StaticData.permanentTag(typeInfo: ConstPointer): ConstPointer {
+    // Only pointer arithmetic via GEP works on constant pointers in LLVM.
+    return typeInfo.bitcast(int8TypePtr).add(1).bitcast(kTypeInfoPtr)
+}
 
 private fun StaticData.objHeader(typeInfo: ConstPointer): Struct {
-    val container = constValue(context.llvm.staticContainer)
-    return Struct(runtime.objHeaderType, typeInfo, container)
+    return Struct(runtime.objHeaderType, permanentTag(typeInfo))
 }
 
 private fun StaticData.arrayHeader(typeInfo: ConstPointer, length: Int): Struct {
     assert (length >= 0)
-    val container = constValue(context.llvm.staticContainer)
-    return Struct(runtime.arrayHeaderType, typeInfo, container, Int32(length))
+    return Struct(runtime.arrayHeaderType, permanentTag(typeInfo), Int32(length))
 }
 
 internal fun StaticData.createKotlinStringLiteral(value: String): ConstPointer {
     val name = "kstr:" + value.globalHashBase64
     val elements = value.toCharArray().map(::Char16)
 
-    val objRef = createKotlinArray(context.ir.symbols.string.owner, elements)
+    val objRef = createConstKotlinArray(context.ir.symbols.string.owner, elements)
 
     val res = createAlias(name, objRef)
     LLVMSetLinkage(res.llvm, LLVMLinkage.LLVMWeakAnyLinkage)
@@ -43,10 +48,10 @@ internal fun StaticData.createKotlinStringLiteral(value: String): ConstPointer {
 
 private fun StaticData.createRef(objHeaderPtr: ConstPointer) = objHeaderPtr.bitcast(kObjHeaderPtr)
 
-internal fun StaticData.createKotlinArray(arrayClass: IrClass, elements: List<LLVMValueRef>) =
-        createKotlinArray(arrayClass, elements.map { constValue(it) }).llvm
+internal fun StaticData.createConstKotlinArray(arrayClass: IrClass, elements: List<LLVMValueRef>) =
+        createConstKotlinArray(arrayClass, elements.map { constValue(it) }).llvm
 
-internal fun StaticData.createKotlinArray(arrayClass: IrClass, elements: List<ConstValue>): ConstPointer {
+internal fun StaticData.createConstKotlinArray(arrayClass: IrClass, elements: List<ConstValue>): ConstPointer {
     val typeInfo = arrayClass.typeInfoPtr
 
     val bodyElementType: LLVMTypeRef = elements.firstOrNull()?.llvmType ?: int8Type
@@ -61,27 +66,25 @@ internal fun StaticData.createKotlinArray(arrayClass: IrClass, elements: List<Co
     val arrayHeader = arrayHeader(typeInfo, elements.size)
 
     global.setInitializer(Struct(compositeType, arrayHeader, arrayBody))
+    global.setConstant(true)
 
     return createRef(objHeaderPtr)
 }
 
-internal fun StaticData.createKotlinObject(type: IrClass, body: ConstValue): ConstPointer {
+internal fun StaticData.createConstKotlinObject(type: IrClass, vararg fields: ConstValue): ConstPointer {
     val typeInfo = type.typeInfoPtr
-
-    val compositeType = structType(runtime.objHeaderType, body.llvmType)
-
-    val global = this.createGlobal(compositeType, "")
-
-    val objHeaderPtr = global.pointer.getElementPtr(0)
     val objHeader = objHeader(typeInfo)
 
-    global.setInitializer(Struct(compositeType, objHeader, body))
+    val global = this.placeGlobal("", Struct(objHeader, *fields))
+    global.setConstant(true)
+
+    val objHeaderPtr = global.pointer.getElementPtr(0)
 
     return createRef(objHeaderPtr)
 }
 
-internal fun StaticData.createInitializer(type: IrClass, body: ConstValue): ConstValue =
-        Struct(objHeader(type.typeInfoPtr), body)
+internal fun StaticData.createInitializer(type: IrClass, vararg fields: ConstValue): ConstValue =
+        Struct(objHeader(type.typeInfoPtr), *fields)
 
 private fun StaticData.getArrayListClass(): ClassDescriptor {
     val module = context.irModule!!.descriptor
@@ -98,7 +101,7 @@ private fun StaticData.getArrayListClass(): ClassDescriptor {
  * @param array value for `array: Array<E>` field.
  * @param length value for `length: Int` field.
  */
-internal fun StaticData.createArrayList(array: ConstPointer, length: Int): ConstPointer {
+internal fun StaticData.createConstArrayList(array: ConstPointer, length: Int): ConstPointer {
     val arrayListClass = context.ir.symbols.arrayList.owner
 
     val arrayListFqName = arrayListClass.fqNameSafe
@@ -115,20 +118,19 @@ internal fun StaticData.createArrayList(array: ConstPointer, length: Int): Const
         val fqName = it.fqNameSafe.asString()
         sorted.put(fqName, arrayListFields[fqName]!!)
     }
-        
-    val body = Struct(*(sorted.values.toTypedArray()))
 
-    return createKotlinObject(arrayListClass, body)
+    return createConstKotlinObject(arrayListClass, *sorted.values.toTypedArray())
 }
 
 internal fun StaticData.createUniqueInstance(
         kind: UniqueKind, bodyType: LLVMTypeRef, typeInfo: ConstPointer): ConstPointer {
-    assert (getStructElements(bodyType).isEmpty())
+    assert (getStructElements(bodyType).size == 1) // ObjHeader only.
     val objHeader = when (kind) {
         UniqueKind.UNIT -> objHeader(typeInfo)
         UniqueKind.EMPTY_ARRAY -> arrayHeader(typeInfo, 0)
     }
     val global = this.placeGlobal(kind.llvmName, objHeader, isExported = true)
+    global.setConstant(true)
     return global.pointer
 }
 

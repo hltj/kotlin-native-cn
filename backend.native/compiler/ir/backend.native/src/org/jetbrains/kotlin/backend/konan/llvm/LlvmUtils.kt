@@ -91,6 +91,14 @@ internal class Int64(val value: Long) : ConstValue {
     override val llvm = LLVMConstInt(LLVMInt64Type(), value, 1)!!
 }
 
+internal class Float32(val value: Float) : ConstValue {
+    override val llvm = LLVMConstReal(LLVMFloatType(), value.toDouble())!!
+}
+
+internal class Float64(val value: Double) : ConstValue {
+    override val llvm = LLVMConstReal(LLVMDoubleType(), value)!!
+}
+
 internal class Zero(val type: LLVMTypeRef) : ConstValue {
     override val llvm = LLVMConstNull(type)!!
 }
@@ -113,6 +121,8 @@ internal val int16Type = LLVMInt16Type()!!
 internal val int32Type = LLVMInt32Type()!!
 internal val int64Type = LLVMInt64Type()!!
 internal val int8TypePtr = pointerType(int8Type)
+internal val floatType = LLVMFloatType()!!
+internal val doubleType = LLVMDoubleType()!!
 
 internal val voidType = LLVMVoidType()!!
 
@@ -271,13 +281,16 @@ private val nounwindAttrKindId by lazy {
     getAttributeKindId("nounwind")
 }
 
+private val noreturnAttrKindId by lazy {
+    getAttributeKindId("noreturn")
+}
+
 private val signextAttrKindId by lazy {
     getAttributeKindId("signext")
 }
 
 
 fun isFunctionNoUnwind(function: LLVMValueRef): Boolean {
-
     val attribute = LLVMGetEnumAttributeAtIndex(function, LLVMAttributeFunctionIndex, nounwindAttrKindId)
     return attribute != null
 }
@@ -292,6 +305,11 @@ private fun getAttributeKindId(attributeName: String): Int {
 
 fun setFunctionNoUnwind(function: LLVMValueRef) {
     val attribute = LLVMCreateEnumAttribute(LLVMGetTypeContext(function.type), nounwindAttrKindId, 0)!!
+    LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, attribute)
+}
+
+fun setFunctionNoReturn(function: LLVMValueRef) {
+    val attribute = LLVMCreateEnumAttribute(LLVMGetTypeContext(function.type), noreturnAttrKindId, 0)!!
     LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, attribute)
 }
 

@@ -18,6 +18,7 @@ import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.resolve.descriptorUtil.*
 import org.jetbrains.kotlin.types.KotlinType
 import org.jetbrains.kotlin.types.TypeUtils
+import org.jetbrains.kotlin.types.typeUtil.isNothing
 import org.jetbrains.kotlin.types.typeUtil.isUnit
 
 internal abstract class ObjCExportMapper {
@@ -54,10 +55,13 @@ internal fun ObjCExportMapper.shouldBeExposed(descriptor: CallableMemberDescript
         descriptor.isEffectivelyPublicApi && !descriptor.isSuspend && !descriptor.isExpect
 
 internal fun ObjCExportMapper.shouldBeExposed(descriptor: ClassDescriptor): Boolean =
-        descriptor.isEffectivelyPublicApi && !descriptor.defaultType.isObjCObjectType() && when (descriptor.kind) {
-            ClassKind.CLASS, ClassKind.INTERFACE, ClassKind.ENUM_CLASS, ClassKind.OBJECT -> true
-            ClassKind.ENUM_ENTRY, ClassKind.ANNOTATION_CLASS -> false
-        } && !descriptor.isExpect && !isSpecialMapped(descriptor) && !descriptor.isInlined()
+        shouldBeVisible(descriptor) && !descriptor.defaultType.isObjCObjectType()
+
+internal fun ObjCExportMapper.shouldBeVisible(descriptor: ClassDescriptor): Boolean =
+        descriptor.isEffectivelyPublicApi && when (descriptor.kind) {
+        ClassKind.CLASS, ClassKind.INTERFACE, ClassKind.ENUM_CLASS, ClassKind.OBJECT -> true
+        ClassKind.ENUM_ENTRY, ClassKind.ANNOTATION_CLASS -> false
+    } && !descriptor.isExpect && !isSpecialMapped(descriptor) && !descriptor.isInlined()
 
 private fun ObjCExportMapper.isBase(descriptor: CallableMemberDescriptor): Boolean =
         descriptor.overriddenDescriptors.all { !shouldBeExposed(it) }
@@ -156,7 +160,7 @@ private fun ObjCExportMapper.bridgeReturnType(
             MethodBridge.ReturnValue.Mapped(bridgePropertyType(descriptor.correspondingProperty))
         }
 
-        returnType.isUnit() -> if (convertExceptionsToErrors) {
+        returnType.isUnit() || returnType.isNothing() -> if (convertExceptionsToErrors) {
             MethodBridge.ReturnValue.WithError.Success
         } else {
             MethodBridge.ReturnValue.Void

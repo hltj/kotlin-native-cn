@@ -12,6 +12,7 @@ import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.ir.types.isNothing
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.visitors.IrElementVisitorVoid
 import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
@@ -133,7 +134,8 @@ private fun Context.getDeclaredFields(classDescriptor: ClassDescriptor): List<Ir
 }
 
 private fun ContextUtils.createClassBodyType(name: String, fields: List<IrField>): LLVMTypeRef {
-    val fieldTypes = fields.map { getLLVMType(it.type) }
+    val fieldTypes = listOf(runtime.objHeaderType) + fields.map { getLLVMType(it.type) }
+    // TODO: consider adding synthetic ObjHeader field to Any.
 
     val classType = LLVMStructCreateNamed(LLVMGetModuleContext(context.llvmModule), name)!!
 
@@ -369,7 +371,7 @@ private class DeclarationsGeneratorVisitor(override val context: Context) :
                 error(containingClass.descriptor.toString())
             val allFields = classDeclarations.fields
             this.fields[descriptor] = FieldLlvmDeclarations(
-                    allFields.indexOf(descriptor),
+                    allFields.indexOf(descriptor) + 1, // First field is ObjHeader.
                     classDeclarations.bodyType
             )
         } else {
@@ -396,7 +398,7 @@ private class DeclarationsGeneratorVisitor(override val context: Context) :
         }
 
         val llvmFunction = if (descriptor.isExternal) {
-            if (descriptor.isIntrinsic || descriptor.isObjCBridgeBased()) {
+            if (descriptor.isTypedIntrinsic || descriptor.isIntrinsic || descriptor.isObjCBridgeBased()) {
                 return
             }
 
@@ -417,7 +419,10 @@ private class DeclarationsGeneratorVisitor(override val context: Context) :
             } else {
                 "kfun:" + qualifyInternalName(descriptor)
             }
-            LLVMAddFunction(context.llvmModule, symbolName, llvmFunctionType)!!
+            val function = LLVMAddFunction(context.llvmModule, symbolName, llvmFunctionType)!!
+            if (descriptor.returnType.isNothing())
+                setFunctionNoReturn(function)
+            function
         }
 
         // TODO: do we still need it?

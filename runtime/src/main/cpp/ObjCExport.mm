@@ -113,7 +113,7 @@ static void initializeClass(Class clazz);
 extern "C" ALWAYS_INLINE void Kotlin_ObjCExport_releaseAssociatedObject(void* associatedObject);
 
 static inline id AtomicSetAssociatedObject(ObjHeader* obj, id associatedObject) {
-  if (!obj->container()->permanentOrFrozen()) {
+  if (!PermanentOrFrozen(obj)) {
     SetAssociatedObject(obj, associatedObject);
     return associatedObject;
   } else {
@@ -671,7 +671,6 @@ static const TypeInfo* createTypeInfo(
 
   result->flags_ = 0;
 
-  MakeGlobalHash(nullptr, 0, &result->name_);
   result->instanceSize_ = superType->instanceSize_;
   result->superType_ = superType;
   result->objOffsets_ = superType->objOffsets_;
@@ -704,9 +703,6 @@ static const TypeInfo* createTypeInfo(
 
   result->openMethods_ = openMethods_;
   result->openMethodsCount_ = methodTable.size();
-
-  result->fields_ = nullptr;
-  result->fieldsCount_ = 0;
 
   result->packageName_ = nullptr;
   result->relativeName_ = nullptr; // TODO: add some info.

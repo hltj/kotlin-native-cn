@@ -1,3 +1,12 @@
+## v1.1.0 (Dec 2018)
+  * Performance optimizations:
+    * runtime: optimization of queue of finalization
+    * compiler: loop generation optimization
+	* compiler: reduce RTTI size
+	* runtime: reduce size of the object header
+  * Contracts support
+  * Regex engine: fix quantifier processing
+
 ## v0.9.3 (Sep 2018)
   * Bugfixes
 

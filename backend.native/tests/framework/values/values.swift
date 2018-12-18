@@ -271,6 +271,35 @@ func testFunctions() throws {
 
     try assertEquals(actual: ValuesKt.argsFun(i: 10, l: 20, d: 3.5, s: "res") as! String,
             expected: "res10203.5")
+
+    try assertEquals(actual: ValuesKt.multiply(int: 3, long: 2), expected: 6)
+}
+
+
+func testExceptions() throws {
+    let bridge = Bridge()
+    do {
+        try bridge.foo1()
+    } catch let error as NSError {
+        try assertTrue(error.kotlinException is MyException)
+    }
+    do {
+        var result: Int32 = 0
+        try bridge.foo2(result: &result)
+    } catch let error as NSError {
+        try assertTrue(error.kotlinException is MyException)
+    }
+    do {
+        try bridge.foo3()
+    } catch let error as NSError {
+        try assertTrue(error.kotlinException is MyException)
+    }
+    do {
+        var result: KotlinNothing? = nil
+        try bridge.foo4(result: &result)
+    } catch let error as NSError {
+        try assertTrue(error.kotlinException is MyException)
+    }
 }
 
 func testFuncType() throws {
@@ -460,6 +489,7 @@ class ValuesTests : TestProvider {
             TestCase(name: "TestNulls", method: withAutorelease(testNulls)),
             TestCase(name: "TestAnyVar", method: withAutorelease(testAnyVar)),
             TestCase(name: "TestFunctions", method: withAutorelease(testFunctions)),
+            TestCase(name: "TestExceptions", method: withAutorelease(testExceptions)),
             TestCase(name: "TestFuncType", method: withAutorelease(testFuncType)),
             TestCase(name: "TestGenericsFoo", method: withAutorelease(testGenericsFoo)),
             TestCase(name: "TestVararg", method: withAutorelease(testVararg)),
