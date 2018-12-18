@@ -260,6 +260,9 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
 
     override val areEqual get() = error("Must not be used")
 
+    val throwArithmeticException = symbolTable.referenceSimpleFunction(
+            context.getInternalFunctions("ThrowArithmeticException").single())
+
     override val ThrowNullPointerException = symbolTable.referenceSimpleFunction(
             context.getInternalFunctions("ThrowNullPointerException").single())
 
@@ -306,7 +309,6 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
                 } ?: error(descriptor.toString())
         return symbolTable.referenceSimpleFunction(functionDescriptor)
     }
-
     override val copyRangeTo = arrays.map { symbol ->
         val packageViewDescriptor = builtIns.builtInsModule.getPackage(KotlinBuiltIns.COLLECTIONS_PACKAGE_FQ_NAME)
         val functionDescriptor = packageViewDescriptor.memberScope
@@ -317,21 +319,18 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
         symbol.descriptor to symbolTable.referenceSimpleFunction(functionDescriptor)
     }.toMap()
 
-    val arrayGet = array.descriptor.unsubstitutedMemberScope
+    val arrayGet = arrays.associateWith { it.descriptor.unsubstitutedMemberScope
             .getContributedFunctions(Name.identifier("get"), NoLookupLocation.FROM_BACKEND)
-            .single().let { symbolTable.referenceSimpleFunction(it) }
+            .single().let { symbolTable.referenceSimpleFunction(it) } }
 
-    val arraySet = array.descriptor.unsubstitutedMemberScope
-            .getContributedFunctions(Name.identifier("set"), NoLookupLocation.FROM_BACKEND)
-            .single().let { symbolTable.referenceSimpleFunction(it) }
+    val arraySet = arrays.associateWith { it.descriptor.unsubstitutedMemberScope
+                    .getContributedFunctions(Name.identifier("set"), NoLookupLocation.FROM_BACKEND)
+                    .single().let { symbolTable.referenceSimpleFunction(it) } }
 
-    val arraySize = arrays.associateBy(
-            { it },
-            { it.descriptor.unsubstitutedMemberScope
+
+    val arraySize = arrays.associateWith { it.descriptor.unsubstitutedMemberScope
                     .getContributedVariables(Name.identifier("size"), NoLookupLocation.FROM_BACKEND)
                     .single().let { symbolTable.referenceSimpleFunction(it.getter!!) } }
-    )
-
 
 
     val valuesForEnum = symbolTable.referenceSimpleFunction(

@@ -6,32 +6,71 @@
 package org.jetbrains.kotlin.backend.konan.llvm
 
 import llvm.*
+import org.jetbrains.kotlin.backend.common.ir.ir2string
 import org.jetbrains.kotlin.backend.konan.Context
+import org.jetbrains.kotlin.backend.konan.computePrimitiveBinaryTypeOrNull
 import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrProperty
+import org.jetbrains.kotlin.ir.types.*
+import org.jetbrains.kotlin.ir.util.isAnnotationClass
+import org.jetbrains.kotlin.ir.util.isInterface
+import org.jetbrains.kotlin.konan.KonanAbiVersion
 import org.jetbrains.kotlin.name.FqName
 
-
 internal class RTTIGenerator(override val context: Context) : ContextUtils {
+
+    private val acyclicCache = mutableMapOf<IrType, Boolean>()
+    private val safeAcyclicFieldTypes = setOf(
+            context.irBuiltIns.stringClass,
+            context.irBuiltIns.booleanClass, context.irBuiltIns.charClass,
+            context.irBuiltIns.byteClass, context.irBuiltIns.shortClass, context.irBuiltIns.intClass,
+            context.irBuiltIns.longClass,
+            context.irBuiltIns.floatClass,context.irBuiltIns.doubleClass) +
+            context.ir.symbols.primitiveArrays.values +
+            context.ir.symbols.unsignedArrays.values
+
+    // TODO: extend logic here by taking into account final acyclic classes.
+    private fun checkAcyclicFieldType(type: IrType): Boolean = acyclicCache.getOrPut(type) {
+        when {
+            type.isInterface() -> false
+            type.computePrimitiveBinaryTypeOrNull() != null -> true
+            else -> {
+                val classifier = type.classifierOrNull
+                (classifier != null && classifier in safeAcyclicFieldTypes)
+            }
+        }
+    }
+
+    private fun checkAcyclicClass(classDescriptor: ClassDescriptor): Boolean = when {
+        classDescriptor.symbol == context.ir.symbols.array -> false
+        classDescriptor.isArray -> true
+        context.llvmDeclarations.forClass(classDescriptor).fields.all { checkAcyclicFieldType(it.type) } -> true
+        else -> false
+    }
 
     private fun flagsFromClass(classDescriptor: ClassDescriptor): Int {
         var result = 0
         if (classDescriptor.isFrozen)
            result = result or TF_IMMUTABLE
+        // TODO: maybe perform deeper analysis to find surely acyclic types.
+        if (!classDescriptor.isInterface && !classDescriptor.isAbstract() && !classDescriptor.isAnnotationClass) {
+            if (checkAcyclicClass(classDescriptor)) {
+                result = result or TF_ACYCLIC
+            }
+        }
+        if (classDescriptor.isInterface)
+            result = result or TF_INTERFACE
         return result
     }
 
-    private inner class FieldTableRecord(val nameSignature: LocalHash, val fieldOffset: Int) :
-            Struct(runtime.fieldTableRecordType, nameSignature, Int32(fieldOffset))
-
-    inner class MethodTableRecord(val nameSignature: LocalHash, val methodEntryPoint: ConstPointer?) :
+    inner class MethodTableRecord(val nameSignature: LocalHash, methodEntryPoint: ConstPointer?) :
             Struct(runtime.methodTableRecordType, nameSignature, methodEntryPoint)
 
     private inner class TypeInfo(
             selfPtr: ConstPointer,
-            name: ConstValue,
+            extendedInfo: ConstPointer,
             size: Int,
             superType: ConstValue,
             objOffsets: ConstValue,
@@ -40,12 +79,9 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
             interfacesCount: Int,
             methods: ConstValue,
             methodsCount: Int,
-            fields: ConstValue,
-            fieldsCount: Int,
             packageName: String?,
             relativeName: String?,
             flags: Int,
-            extendedInfo: ConstPointer,
             writableTypeInfo: ConstPointer?) :
 
             Struct(
@@ -53,7 +89,10 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
                     selfPtr,
 
-                    name,
+                    extendedInfo,
+
+                    Int32(KonanAbiVersion.CURRENT.version),
+
                     Int32(size),
 
                     superType,
@@ -67,15 +106,10 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                     methods,
                     Int32(methodsCount),
 
-                    fields,
-                    Int32(fieldsCount),
-
                     kotlinStringLiteral(packageName),
                     kotlinStringLiteral(relativeName),
 
                     Int32(flags),
-
-                    extendedInfo,
 
                     *listOfNotNull(writableTypeInfo).toTypedArray()
             )
@@ -141,8 +175,6 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
         val bodyType = llvmDeclarations.bodyType
 
-        val name = className.globalHash
-
         val size = getInstanceSize(bodyType, className)
 
         val superTypeOrAny = classDesc.getSuperClassNotAny() ?: context.ir.symbols.any.owner
@@ -153,7 +185,6 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         val interfacesPtr = staticData.placeGlobalConstArray("kintf:$className",
                 pointerType(runtime.typeInfoType), interfaces)
 
-        // TODO: reuse offsets obtained for 'fields' below
         val objOffsets = getStructElements(bodyType).mapIndexedNotNull { index, type ->
             if (isObjectType(type)) {
                 LLVMOffsetOfElement(llvmTargetData, bodyType, index)
@@ -171,16 +202,6 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
             objOffsets.size
         }
 
-        val fields = llvmDeclarations.fields.mapIndexed { index, field ->
-            // Note: using FQ name because a class may have multiple fields with the same name due to property overriding
-            val nameSignature = field.fqNameSafe.localHash // FIXME: add signature
-            val fieldOffset = LLVMOffsetOfElement(llvmTargetData, bodyType, index)
-            FieldTableRecord(nameSignature, fieldOffset.toInt())
-        }.sortedBy { it.nameSignature.value }
-
-        val fieldsPtr = staticData.placeGlobalConstArray("kfields:$className",
-                runtime.fieldTableRecordType, fields)
-
         val methods = if (classDesc.isAbstract()) {
             emptyList()
         } else {
@@ -194,17 +215,15 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         val typeInfoGlobal = llvmDeclarations.typeInfoGlobal
         val typeInfo = TypeInfo(
                 classDesc.typeInfoPtr,
-                name,
+                makeExtendedInfo(classDesc),
                 size,
                 superType,
                 objOffsetsPtr, objOffsetsCount,
                 interfacesPtr, interfaces.size,
                 methodsPtr, methods.size,
-                fieldsPtr, if (classDesc.isInterface) -1 else fields.size,
                 reflectionInfo.packageName,
                 reflectionInfo.relativeName,
                 flagsFromClass(classDesc),
-                makeExtendedInfo(classDesc),
                 llvmDeclarations.writableTypeInfoGlobal?.pointer
         )
 
@@ -270,9 +289,9 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                     NullPointer(int32Type), NullPointer(int8Type), NullPointer(kInt8Ptr))
         } else {
             data class FieldRecord(val offset: Int, val type: Int, val name: String)
-            val fields = getStructElements(bodyType).mapIndexedNotNull { index, type ->
+            val fields = getStructElements(bodyType).drop(1).mapIndexedNotNull { index, type ->
                 FieldRecord(
-                        LLVMOffsetOfElement(llvmTargetData, bodyType, index).toInt(),
+                        LLVMOffsetOfElement(llvmTargetData, bodyType, index + 1).toInt(),
                         mapRuntimeType(type),
                         llvmDeclarations.fields[index].name.asString())
             }
@@ -285,6 +304,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
             Struct(runtime.extendedTypeInfoType, Int32(fields.size), offsetsPtr, typesPtr, namesPtr)
         }
         val result = staticData.placeGlobal("", value)
+        result.setConstant(true)
         return result.pointer
     }
 
@@ -296,9 +316,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
     ): ConstPointer {
         assert(descriptor.isInterface)
 
-        val name = "".globalHash
-
-        val size = 0
+        val size = LLVMStoreSizeOfType(llvmTargetData, kObjHeader).toInt()
 
         val superClass = context.ir.symbols.any.owner
 
@@ -310,8 +328,6 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         assert(superClass.declarations.all { it !is IrProperty && it !is IrField })
         val objOffsetsPtr = NullPointer(int32Type)
         val objOffsetsCount = 0
-        val fieldsPtr = NullPointer(runtime.fieldTableRecordType)
-        val fieldsCount = 0
 
         val methods = (methodTableRecords(superClass) + methodImpls.map { (method, impl) ->
             assert(method.containingDeclaration == descriptor)
@@ -338,17 +354,15 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         val result = typeInfoWithVtableGlobal.pointer.getElementPtr(0)
         val typeInfoWithVtable = Struct(TypeInfo(
                 selfPtr = result,
-                name = name,
+                extendedInfo = NullPointer(runtime.extendedTypeInfoType),
                 size = size,
                 superType = superClass.typeInfoPtr,
                 objOffsets = objOffsetsPtr, objOffsetsCount = objOffsetsCount,
                 interfaces = interfacesPtr, interfacesCount = interfaces.size,
                 methods = methodsPtr, methodsCount = methods.size,
-                fields = fieldsPtr, fieldsCount = fieldsCount,
                 packageName = reflectionInfo.packageName,
                 relativeName = reflectionInfo.relativeName,
                 flags = flagsFromClass(descriptor) or (if (immutable) TF_IMMUTABLE else 0),
-                extendedInfo = NullPointer(runtime.extendedTypeInfoType),
                 writableTypeInfo = writableTypeInfo
               ), vtable)
 
@@ -378,4 +392,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
     }
 }
 
+// Keep in sync with Konan_TypeFlags in TypeInfo.h.
 private const val TF_IMMUTABLE = 1
+private const val TF_ACYCLIC   = 2
+private const val TF_INTERFACE = 4

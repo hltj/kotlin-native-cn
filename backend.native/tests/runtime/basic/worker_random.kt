@@ -28,9 +28,11 @@ fun testRandomWorkers() {
         })
         // Now collect all results into current attempt's list
         val futureSet = futures.toSet()
-        for (i in 0 until futureSet.size) {
-            val ready = futureSet.waitForMultipleFutures(10000)
+        var finished = 0
+        while (finished < futureSet.size) {
+            val ready = waitForMultipleFutures(futureSet, 10000)
             ready.forEach { results[attempt].addAll(it.result) }
+            finished += ready.size
         }
     }
 

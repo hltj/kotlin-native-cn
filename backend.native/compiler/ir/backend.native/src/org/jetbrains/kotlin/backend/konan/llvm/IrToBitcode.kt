@@ -38,7 +38,6 @@ import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.resolve.descriptorUtil.classId
 import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameUnsafe
-import org.jetbrains.kotlin.resolve.hasBackingField
 
 private val threadLocalAnnotationFqName = FqName("kotlin.native.ThreadLocal")
 private val sharedAnnotationFqName = FqName("kotlin.native.SharedImmutable")
@@ -291,6 +290,8 @@ internal interface CodeContext {
 internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrElement, Lifetime>) : IrElementVisitorVoid {
 
     val codegen = CodeGenerator(context)
+
+    val intrinsicGenerator = IntrinsicGenerator(codegen)
 
     //-------------------------------------------------------------------------//
 
@@ -720,6 +721,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
     override fun visitFunction(declaration: IrFunction) {
         context.log{"visitFunction                  : ${ir2string(declaration)}"}
+
         val body = declaration.body
 
         if (declaration.descriptor.modality == Modality.ABSTRACT) return
@@ -955,7 +957,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         // Note: even if all elements are const, they aren't guaranteed to be statically initialized.
         // E.g. an element may be a pointer to lazy-initialized object (aka singleton).
         // However it is guaranteed that all elements are already initialized at this point.
-        return codegen.staticData.createKotlinArray(arrayClass, elements)
+        return codegen.staticData.createConstKotlinArray(arrayClass, elements)
     }
 
     //-------------------------------------------------------------------------//
@@ -1247,7 +1249,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         val location = codegen.generateLocationInfo(locationInfo)
         val file = (currentCodeContext.fileScope() as FileScope).file.file()
         return when (element) {
-            is IrVariable -> if (element.origin != IrDeclarationOrigin.IR_TEMPORARY_VARIABLE) debugInfoLocalVariableLocation(
+            is IrVariable -> if (shouldGenerateDebugInfo(element)) debugInfoLocalVariableLocation(
                     builder       = context.debugInfo.builder,
                     functionScope = locationInfo.scope,
                     diType        = element.descriptor.type.diType(context, codegen.llvmTargetData),
@@ -1261,12 +1263,19 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                     functionScope = locationInfo.scope,
                     diType        = element.descriptor.type.diType(context, codegen.llvmTargetData),
                     name          = element.descriptor.name,
-                    argNo         = element.index + 1,
+                    argNo         = function.allParameters.indexOf(element) + 1,
                     file          = file,
                     line          = locationInfo.line,
                     location      = location)
             else -> throw Error("Unsupported element type: ${ir2string(element)}")
         }
+    }
+
+    private fun shouldGenerateDebugInfo(variable: IrVariable) = when(variable.origin) {
+        IrDeclarationOrigin.FOR_LOOP_IMPLICIT_VARIABLE,
+        IrDeclarationOrigin.FOR_LOOP_ITERATOR,
+        IrDeclarationOrigin.IR_TEMPORARY_VARIABLE -> false
+        else -> true
     }
 
     private fun generateVariable(variable: IrVariable) {
@@ -1585,7 +1594,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
             functionGenerationContext.gep(objCPtr, bodyOffset)
         } else {
-            LLVMBuildGEP(functionGenerationContext.builder, objectPtr, cValuesOf(kImmOne), 1, "")!!
+            objectPtr
         }
     }
 
@@ -1839,12 +1848,9 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         val args = evaluateExplicitArgs(value)
 
         updateBuilderDebugLocation(value)
-        when {
-            value is IrDelegatingConstructorCall   ->
-                return delegatingConstructorCall(value.symbol.owner, args)
-
-            else ->
-                return evaluateFunctionCall(value as IrCall, args, resultLifetime(value))
+        return when (value) {
+            is IrDelegatingConstructorCall -> delegatingConstructorCall(value.symbol.owner, args)
+            else -> evaluateFunctionCall(value as IrCall, args, resultLifetime(value))
         }
     }
 
@@ -2085,23 +2091,17 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
     private fun evaluateFunctionCall(callee: IrCall, args: List<LLVMValueRef>,
                                      resultLifetime: Lifetime): LLVMValueRef {
-        val descriptor = callee.symbol.owner
+        val function = callee.symbol.owner
 
-        val argsWithContinuationIfNeeded = if (descriptor.isSuspend)
+        val argsWithContinuationIfNeeded = if (function.isSuspend)
                                                args + getContinuation()
                                            else args
-        if (descriptor.isIntrinsic) {
-            return evaluateIntrinsicCall(callee, argsWithContinuationIfNeeded)
-        }
-
-        when {
-            descriptor.origin == IrDeclarationOrigin.IR_BUILTINS_STUB ->
-                return evaluateOperatorCall(callee, argsWithContinuationIfNeeded)
-
-            descriptor is ConstructorDescriptor -> return evaluateConstructorCall(callee, argsWithContinuationIfNeeded)
-
-            else -> return evaluateSimpleFunctionCall(
-                    descriptor, argsWithContinuationIfNeeded, resultLifetime, callee.superQualifierSymbol?.owner)
+        return when {
+            function.isTypedIntrinsic -> intrinsicGenerator.evaluateCall(callee, args, functionGenerationContext, currentCodeContext.exceptionHandler)
+            function.isIntrinsic -> evaluateIntrinsicCall(callee, argsWithContinuationIfNeeded)
+            function.origin == IrDeclarationOrigin.IR_BUILTINS_STUB -> evaluateOperatorCall(callee, argsWithContinuationIfNeeded)
+            function is ConstructorDescriptor -> evaluateConstructorCall(callee, argsWithContinuationIfNeeded)
+            else -> evaluateSimpleFunctionCall(function, argsWithContinuationIfNeeded, resultLifetime, callee.superQualifierSymbol?.owner)
         }
     }
 
@@ -2200,6 +2200,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
     //-------------------------------------------------------------------------//
 
+    // TODO: Move to [IntrinsicsGenerator]
     private fun evaluateIntrinsicCall(callee: IrCall, args: List<LLVMValueRef>): LLVMValueRef {
         val descriptor = callee.descriptor.original
         val function = callee.symbol.owner
@@ -2323,11 +2324,11 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                 // TODO: store length in `vararg` itself when more abstract types will be used for values.
 
                 val array = constPointer(vararg)
-                // Note: dirty hack here: `vararg` has type `Array<out E>`, but `createArrayList` expects `Array<E>`;
+                // Note: dirty hack here: `vararg` has type `Array<out E>`, but `createConstArrayList` expects `Array<E>`;
                 // however `vararg` is immutable, and in current implementation it has type `Array<E>`,
                 // so let's ignore this mismatch currently for simplicity.
 
-                return context.llvm.staticData.createArrayList(array, length).llvm
+                return context.llvm.staticData.createConstArrayList(array, length).llvm
             }
 
             else -> TODO(callee.descriptor.original.toString())

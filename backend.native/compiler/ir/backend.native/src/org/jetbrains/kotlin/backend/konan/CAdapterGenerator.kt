@@ -12,6 +12,7 @@ import org.jetbrains.kotlin.backend.common.descriptors.allParameters
 import org.jetbrains.kotlin.backend.common.descriptors.explicitParameters
 import org.jetbrains.kotlin.backend.common.pop
 import org.jetbrains.kotlin.backend.common.push
+import org.jetbrains.kotlin.backend.konan.descriptors.isNothing
 import org.jetbrains.kotlin.backend.konan.descriptors.isUnit
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.builtins.UnsignedType
@@ -57,7 +58,7 @@ private operator fun String.times(count: Int): String {
     return builder.toString()
 }
 
-private val cKeywords = setOf(
+internal val cKeywords = setOf(
         // Actual C keywords.
         "auto", "break", "case",
         "char", "const", "continue",
@@ -934,7 +935,7 @@ internal class CAdapterGenerator(
                     descriptor.defaultType.binaryTypeIsReference()
 
     internal fun isMappedToVoid(descriptor: ClassDescriptor): Boolean {
-        return descriptor.isUnit()
+        return descriptor.isUnit() || descriptor.isNothing()
     }
 
     fun translateName(name: String): String {
