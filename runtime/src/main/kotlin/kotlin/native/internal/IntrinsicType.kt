@@ -2,6 +2,7 @@ package kotlin.native.internal
 
 class IntrinsicType {
     companion object {
+        // Arithmetic
         const val PLUS                  = "PLUS"
         const val MINUS                 = "MINUS"
         const val TIMES                 = "TIMES"
@@ -31,7 +32,46 @@ class IntrinsicType {
         const val SIGNED_COMPARE_TO     = "SIGNED_COMPARE_TO"
         const val UNSIGNED_COMPARE_TO   = "UNSIGNED_COMPARE_TO"
         const val NOT                   = "NOT"
-        const val TO_BITS               = "TO_BITS"
-        const val FROM_BITS             = "FROM_BITS"
+        const val REINTERPRET           = "REINTERPRET"
+        const val ARE_EQUAL_BY_VALUE    = "ARE_EQUAL_BY_VALUE"
+        const val IEEE_754_EQUALS       = "IEEE_754_EQUALS"
+
+        // ObjC related stuff
+        const val OBJC_GET_MESSENGER            = "OBJC_GET_MESSENGER"
+        const val OBJC_GET_MESSENGER_STRET      = "OBJC_GET_MESSENGER_STRET"
+        const val OBJC_GET_OBJC_CLASS           = "OBJC_GET_OBJC_CLASS"
+        const val OBJC_GET_RECEIVER_OR_SUPER    = "OBJC_GET_RECEIVER_OR_SUPER"
+        const val OBJC_INIT_BY                  = "OBJC_INIT_BY"
+
+        // Other
+        const val GET_CLASS_TYPE_INFO           = "GET_CLASS_TYPE_INFO"
+        const val INTEROP_READ_BITS             = "INTEROP_READ_BITS"
+        const val INTEROP_WRITE_BITS            = "INTEROP_WRITE_BITS"
+        const val CREATE_UNINITIALIZED_INSTANCE = "CREATE_UNINITIALIZED_INSTANCE"
+        const val LIST_OF_INTERNAL              = "LIST_OF_INTERNAL"
+        const val IDENTITY                      = "IDENTITY"
+        const val IMMUTABLE_BLOB                = "IMMUTABLE_BLOB"
+        const val INIT_INSTANCE                 = "INIT_INSTANCE"
+
+        const val GET_CONTINUATION              = "GET_CONTINUATION"
+        const val RETURN_IF_SUSPEND             = "RETURN_IF_SUSPEND"
+
+        // Interop
+        const val INTEROP_READ_PRIMITIVE        = "INTEROP_READ_PRIMITIVE"
+        const val INTEROP_WRITE_PRIMITIVE       = "INTEROP_WRITE_PRIMITIVE"
+        const val INTEROP_GET_POINTER_SIZE      = "INTEROP_GET_POINTER_SIZE"
+        const val INTEROP_NATIVE_PTR_TO_LONG    = "INTEROP_NATIVE_PTR_TO_LONG"
+        const val INTEROP_NATIVE_PTR_PLUS_LONG  = "INTEROP_NATIVE_PTR_PLUS_LONG"
+        const val INTEROP_GET_NATIVE_NULL_PTR   = "INTEROP_GET_NATIVE_NULL_PTR"
+        const val INTEROP_CONVERT               = "INTEROP_CONVERT"
+        const val INTEROP_BITS_TO_FLOAT         = "INTEROP_BITS_TO_FLOAT"
+        const val INTEROP_BITS_TO_DOUBLE        = "INTEROP_BITS_TO_DOUBLE"
+        const val INTEROP_SIGN_EXTEND           = "INTEROP_SIGN_EXTEND"
+        const val INTEROP_NARROW                = "INTEROP_NARROW"
+        const val INTEROP_STATIC_C_FUNCTION     = "INTEROP_STATIC_C_FUNCTION"
+        const val INTEROP_FUNPTR_INVOKE         = "INTEROP_FUNPTR_INVOKE"
+
+        // Worker
+        const val WORKER_EXECUTE                = "WORKER_EXECUTE"
     }
 }

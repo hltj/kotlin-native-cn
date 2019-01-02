@@ -7,6 +7,8 @@ import groovy.json.JsonOutput
 import org.jetbrains.kotlin.*
 import org.jetbrains.kotlin.konan.target.KonanTarget
 
+import java.nio.file.Paths
+
 buildscript {
     repositories {
         maven {
@@ -46,7 +48,7 @@ repositories {
 
 dependencies {
     cli_bc project(path: ':backend.native', configuration: 'cli_bc')
-    update_tests (group: 'org',  name: 'Kotlin_1320_CompilerAllPlugins', version: testKotlinVersion) {
+    update_tests (group: 'org',  name: 'Kotlin_dev_CompilerAllPlugins', version: testKotlinVersion) {
         artifact {
             name = 'internal/kotlin-test-data'
             type = 'zip'
@@ -108,8 +110,21 @@ def update_external_tests() {
     // Copy only used tests into the test directory.
     delete(externalTestsDir)
     externalTestsDir.mkdirs()
+
+    def files = configurations.update_tests.asFileTree
+    if (project.hasProperty("kotlinProjectPath")) {
+        def f = Paths.get(project.property("kotlinProjectPath").toString(), "dist", "kotlin-test-data.zip").toFile()
+        if (f.exists()) {
+            println("""
+                |Using $f as a source of codegen/box* and stdlib tests
+                |Update test data zip with :kotlin:zipTestData task
+            """.stripMargin())
+            files = project.files(f)
+        }
+    }
+
     copy {
-        configurations.update_tests.asFileTree.each {
+        files.each {
             from(zipTree(it))
             into(externalTestsDir)
             include 'compiler/codegen/box/**'
@@ -121,7 +136,7 @@ def update_external_tests() {
     delete(externalStdlibTestsDir)
     externalStdlibTestsDir.mkdirs()
     copy {
-        configurations.update_tests.asFileTree.each {
+        files.each {
             from(zipTree(it))
             into(externalStdlibTestsDir)
             include 'stdlib/common/**'
@@ -137,7 +152,7 @@ clean {
     }
 }
 
-def tasksOf(Closure<Task> filter) {
+TaskCollection<KonanTest> tasksOf(Closure<Boolean> filter) {
     String prefix = project.findProperty("prefix")
     project.tasks.withType(KonanTest)
             .matching { filter(it) && it.enabled && (prefix != null ? it.name.startsWith(prefix) : true) }
@@ -149,6 +164,12 @@ run {
 
     // Add framework tests
     dependsOn(project.tasks.withType(FrameworkTest))
+}
+
+task sanity {
+    dependsOn(tasksOf { it instanceof KonanTest && it.inDevelopersRun &&
+            !it.getDependsOn().contains(':distPlatformLibs') })
+    dependsOn(tasksOf { it instanceof RunStdlibTest })
 }
 
 // Collect results in one json.
@@ -210,6 +231,16 @@ def createTestTasks(File testRoot, Class<Task> taskType, Closure taskConfigurati
             taskConfiguration(task)
         } else {
             println("$taskDirectory is excluded")
+        }
+    }
+}
+
+void dependsOnPlatformLibs(Task t) {
+    if (!useCustomDist) {
+        t.dependsOn(':distPlatformLibs')
+        def testTarget = project.testTarget
+        if (testTarget != null && testTarget != project.hostName) {
+            t.dependsOn(":${testTarget}PlatformLibs")
         }
     }
 }
@@ -1710,9 +1741,7 @@ task link_omit_unused(type: LinkKonanTest) {
 }
 
 task link_default_libs(type: RunStandaloneKonanTest) {
-    if (!useCustomDist) {
-        dependsOn ':distPlatformLibs'
-    }
+    dependsOnPlatformLibs(it)
     disabled = (project.testTarget == 'wasm32') // there will be no posix.klib for wasm
     goldValue = "sizet = 0\n"
     source = "link/default/default.kt"
@@ -1731,9 +1760,7 @@ task link_testLib_explicitly(type: RunStandaloneKonanTest) {
 }
 
 task no_purge_for_dependencies(type: LinkKonanTest) {
-    if (!useCustomDist) {
-        dependsOn ':distPlatformLibs'
-    }
+    dependsOnPlatformLibs(it)
     disabled = (project.testTarget == 'wasm32') // there will be no posix.klib for wasm
     goldValue = "linked library\nand symbols from posix available: 17; 1.0\n"
     source = "link/purge1/prog.kt"
@@ -2910,6 +2937,7 @@ task interop4(type: RunInteropKonanTest) {
 }
 
 task interop5(type: RunStandaloneKonanTest) {
+    dependsOnPlatformLibs(it)
     disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
     goldValue = "Hello!\n"
     source = "interop/basics/5.kt"
@@ -2967,9 +2995,7 @@ task interop_echo_server(type: RunInteropKonanTest) {
 
 if (isMac()) {
     task interop_opengl_teapot(type: RunStandaloneKonanTest) {
-        if (!useCustomDist) {
-            dependsOn ':distPlatformLibs'
-        }
+        dependsOnPlatformLibs(it as Task)
         disabled = (project.testTarget == 'wasm32') ||    // No interop for wasm yet.
                 (project.testTarget == 'ios_x64')         // No GLUT in iOS
         run = false
@@ -3018,12 +3044,14 @@ task jsinterop_math(type: RunStandaloneKonanTest) {
 }
 
 task interop_libiconv(type: RunStandaloneKonanTest) {
+    dependsOnPlatformLibs(it)
     disabled = (project.testTarget != null)
     source = "interop/libiconv.kt"
     goldValue = "72 72\n101 101\n108 108\n108 108\n111 111\n33 33\n"
 }
 
 task interop_zlib(type: RunStandaloneKonanTest) {
+    dependsOnPlatformLibs(it)
     disabled = (project.testTarget != null)
     source = "interop/platform_zlib.kt"
     goldValue = "Hello!\nHello!\n"
@@ -3050,6 +3078,9 @@ task produce_dynamic(type: DynamicKonanTest) {
 }
 
 task library_mismatch(type: RunStandaloneKonanTest) {
+    // Does not work for cross targets yet.
+    disabled = (project.testTarget != null && project.testTarget != project.hostName)
+
     def dir = buildDir.absolutePath
     def lib = "$projectDir/link/versioning/empty.kt"
 

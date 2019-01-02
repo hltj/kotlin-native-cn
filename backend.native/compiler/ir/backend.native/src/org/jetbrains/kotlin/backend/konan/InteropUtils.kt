@@ -31,8 +31,6 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns, vararg konanPrimitives: 
 
     val packageScope = builtIns.builtInsModule.getPackage(InteropFqNames.packageName).memberScope
 
-    val getPointerSize = packageScope.getContributedFunctions("getPointerSize").single()
-
     val nativePointed = packageScope.getContributedClass(InteropFqNames.nativePointedName)
 
     val cPointer = this.packageScope.getContributedClass(InteropFqNames.cPointerName)
@@ -54,55 +52,11 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns, vararg konanPrimitives: 
                 TypeUtils.getClassDescriptor(extensionReceiverParameter.type) == nativePointed
     }
 
-    val interpretNullablePointed = packageScope.getContributedFunctions("interpretNullablePointed").single()
-
-    val interpretCPointer = packageScope.getContributedFunctions("interpretCPointer").single()
-
     val typeOf = packageScope.getContributedFunctions("typeOf").single()
-
-    val nativeMemUtils = packageScope.getContributedClass("nativeMemUtils")
-
-    private val primitives = arrayOf(
-            arrayOf(builtIns.byte, builtIns.short, builtIns.int, builtIns.long, builtIns.float, builtIns.double),
-            konanPrimitives).flatten()
-
-    val readPrimitive = primitives.map {
-        nativeMemUtils.unsubstitutedMemberScope.getContributedFunctions("get" + it.name).single()
-    }.toSet()
-
-    val writePrimitive = primitives.map {
-        nativeMemUtils.unsubstitutedMemberScope.getContributedFunctions("put" + it.name).single()
-    }.toSet()
-
-    val bitsToFloat = packageScope.getContributedFunctions("bitsToFloat").single()
-
-    val bitsToDouble = packageScope.getContributedFunctions("bitsToDouble").single()
-
-    val staticCFunction = packageScope.getContributedFunctions("staticCFunction").toSet()
 
     val concurrentPackageScope = builtIns.builtInsModule.getPackage(FqName("kotlin.native.concurrent")).memberScope
 
-    val executeFunction = concurrentPackageScope.getContributedClass("Worker")
-            .unsubstitutedMemberScope.getContributedFunctions("execute").single()
-
     val executeImplFunction = concurrentPackageScope.getContributedFunctions("executeImpl").single()
-
-    val signExtend = packageScope.getContributedFunctions("signExtend").single()
-
-    val narrow = packageScope.getContributedFunctions("narrow").single()
-
-    val convert = packageScope.getContributedFunctions("convert").toSet()
-
-    val readBits = packageScope.getContributedFunctions("readBits").single()
-    val writeBits = packageScope.getContributedFunctions("writeBits").single()
-
-    val cFunctionPointerInvokes = packageScope.getContributedFunctions(OperatorNameConventions.INVOKE.asString())
-            .filter {
-                val extensionReceiverParameter = it.extensionReceiverParameter
-                it.isOperator &&
-                        extensionReceiverParameter != null &&
-                        TypeUtils.getClassDescriptor(extensionReceiverParameter.type) == cPointer
-            }.toSet()
 
     private fun KonanBuiltIns.getUnsignedClass(unsignedType: UnsignedType): ClassDescriptor =
             this.builtInsModule.findClassAcrossModuleDependencies(unsignedType.classId)!!
@@ -134,11 +88,6 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns, vararg konanPrimitives: 
     val getObjCClass = packageScope.getContributedFunctions("getObjCClass").single()
 
     val objCObjectRawPtr = packageScope.getContributedFunctions("objcPtr").single()
-
-    val getObjCReceiverOrSuper = packageScope.getContributedFunctions("getReceiverOrSuper").single()
-
-    val getObjCMessenger = packageScope.getContributedFunctions("getMessenger").single()
-    val getObjCMessengerStret = packageScope.getContributedFunctions("getMessengerStret").single()
 
     val interpretObjCPointerOrNull = packageScope.getContributedFunctions("interpretObjCPointerOrNull").single()
     val interpretObjCPointer = packageScope.getContributedFunctions("interpretObjCPointer").single()
