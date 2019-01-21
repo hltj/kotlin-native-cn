@@ -24,14 +24,17 @@ import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.*
+import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrFunctionSymbol
+import org.jetbrains.kotlin.ir.symbols.IrSymbol
 import org.jetbrains.kotlin.ir.symbols.IrTypeParameterSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrFieldSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrValueParameterSymbolImpl
+import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
 import org.jetbrains.kotlin.ir.types.*
 import org.jetbrains.kotlin.ir.types.impl.IrSimpleTypeImpl
 import org.jetbrains.kotlin.ir.types.impl.IrStarProjectionImpl
@@ -43,6 +46,14 @@ import org.jetbrains.kotlin.types.*
 import org.jetbrains.kotlin.types.KotlinType
 import org.jetbrains.kotlin.types.typeUtil.immediateSupertypes
 import java.lang.reflect.Proxy
+
+internal fun irBuilder(irBuiltIns: IrBuiltIns, scopeOwnerSymbol: IrSymbol): IrBuilderWithScope =
+        object : IrBuilderWithScope(
+                IrGeneratorContextBase(irBuiltIns),
+                Scope(scopeOwnerSymbol),
+                UNDEFINED_OFFSET,
+                UNDEFINED_OFFSET
+        ) {}
 
 //TODO: delete file on next kotlin dependency update
 internal fun IrExpression.isNullConst() = this is IrConst<*> && this.kind == IrConstKind.Null
@@ -211,21 +222,18 @@ fun IrClass.createParameterDeclarations() {
 fun IrFunction.createDispatchReceiverParameter(origin: IrDeclarationOrigin? = null) {
     assert(dispatchReceiverParameter == null)
 
-    dispatchReceiverParameter = WrappedReceiverParameterDescriptor().let {
-        IrValueParameterImpl(
-                startOffset, endOffset,
-                origin ?: parentAsClass.origin,
-                IrValueParameterSymbolImpl(it),
-                Name.special("<this>"),
-                0,
-                parentAsClass.defaultType,
-                null,
-                false,
-                false
-        ).apply {
-            it.bind(this)
-            parent = this@createDispatchReceiverParameter
-        }
+    dispatchReceiverParameter = IrValueParameterImpl(
+            startOffset, endOffset,
+            origin ?: parentAsClass.origin,
+            IrValueParameterSymbolImpl(parentAsClass.thisReceiver!!.descriptor),
+            Name.special("<this>"),
+            0,
+            parentAsClass.defaultType,
+            null,
+            false,
+            false
+    ).apply {
+        parent = this@createDispatchReceiverParameter
     }
 }
 
@@ -508,6 +516,26 @@ fun IrBuilderWithScope.irCallOp(
 
 fun IrBuilderWithScope.irSetVar(variable: IrVariable, value: IrExpression) =
         irSetVar(variable.symbol, value)
+
+fun IrBuilderWithScope.irCatch(type: IrType) =
+        IrCatchImpl(
+                startOffset, endOffset,
+                WrappedVariableDescriptor().let { descriptor ->
+                    IrVariableImpl(
+                            startOffset,
+                            endOffset,
+                            IrDeclarationOrigin.IR_TEMPORARY_VARIABLE,
+                            IrVariableSymbolImpl(descriptor),
+                            Name.identifier("e"),
+                            type,
+                            false,
+                            false,
+                            false
+                    ).apply {
+                        descriptor.bind(this)
+                    }
+                }
+        )
 
 /**
  * Binds the arguments explicitly represented in the IR to the parameters of the accessed function.

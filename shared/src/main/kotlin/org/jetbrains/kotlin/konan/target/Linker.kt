@@ -44,9 +44,6 @@ abstract class LinkerFlags(val configurables: Configurables)
         else -> error("Don't know libLTO location for this platform.")
     }
 
-    val targetLibffi = configurables.libffiDir?.let { listOf("${configurables.absoluteLibffiDir}/lib/libffi.a") }
-            ?: emptyList()
-
     open val useCompilerDriverAsLinker: Boolean get() = false // TODO: refactor.
 
     abstract fun linkCommands(objectFiles: List<ObjectFile>, executable: ExecutableFile,
@@ -107,6 +104,7 @@ open class AndroidLinker(targetProperties: AndroidConfigurables)
             if (optimize) +linkerOptimizationFlags
             if (!debug) +linkerNoDebugFlags
             if (dynamic) +linkerDynamicFlags
+            if (dynamic) +"-Wl,-soname,${File(executable).name}"
             +linkerKonanFlags
             +libraries
             +linkerArgs
@@ -119,12 +117,18 @@ open class MacOSBasedLinker(targetProperties: AppleConfigurables)
 
     private val libtool = "$absoluteTargetToolchain/usr/bin/libtool"
     private val linker = "$absoluteTargetToolchain/usr/bin/ld"
-    internal val dsymutil = "$absoluteLlvmHome/bin/llvm-dsymutil"
-
-    open val osVersionMinFlags: List<String> by lazy {
-        listOf(
-                osVersionMinFlagLd,
-                osVersionMin + ".0")
+    private val dsymutil = "$absoluteLlvmHome/bin/llvm-dsymutil"
+    private val compilerRtLibrary: String? by lazy {
+            val suffix = when (configurables.target.family) {
+                Family.OSX -> "osx"
+                Family.IOS -> "ios"
+                else -> TODO()
+            }
+            val dir = File("$absoluteTargetToolchain/usr/lib/clang/").listFiles.firstOrNull()?.absolutePath
+            if (dir != null) "$dir/lib/darwin/libclang_rt.$suffix.a" else null
+        }
+    private val osVersionMinFlags: List<String> by lazy {
+        listOf(osVersionMinFlagLd, osVersionMin + ".0")
     }
 
     override fun filterStaticLibraries(binaries: List<String>) = binaries.filter { it.isUnixStaticLib }
@@ -151,11 +155,21 @@ open class MacOSBasedLinker(targetProperties: AppleConfigurables)
             if (!debug) +linkerNoDebugFlags
             if (dynamic) +linkerDynamicFlags
             +linkerKonanFlags
-            +"-lSystem"
+            if (compilerRtLibrary != null) +compilerRtLibrary!!
             +libraries
             +linkerArgs
+            +rpath(dynamic)
         }) + if (debug) listOf(dsymUtilCommand(executable, outputDsymBundle)) else emptyList()
     }
+
+    private fun rpath(dynamic: Boolean): List<String> = listOfNotNull(
+            when (target.family) {
+                Family.OSX -> "@executable_path/../Frameworks"
+                Family.IOS -> "@executable_path/Frameworks"
+                else -> error(target)
+            },
+            "@loader_path/Frameworks".takeIf { dynamic }
+    ).flatMap { listOf("-rpath", it) }
 
     fun dsymUtilCommand(executable: ExecutableFile, outputDsymBundle: String) =
             object : Command(dsymutilCommand(executable, outputDsymBundle)) {
