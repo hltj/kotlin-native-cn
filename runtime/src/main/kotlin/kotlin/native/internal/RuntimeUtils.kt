@@ -32,7 +32,6 @@ fun ThrowInvalidReceiverTypeException(klass: KClass<*>): Nothing {
     throw RuntimeException("Unexpected receiver type: " + (klass.qualifiedName ?: "noname"))
 }
 
-@ExportForCppRuntime
 internal fun ThrowArithmeticException() : Nothing {
     throw ArithmeticException()
 }
@@ -118,10 +117,10 @@ fun <T: Enum<T>> valuesForEnum(values: Array<T>): Array<T> {
     return result as Array<T>
 }
 
-@Intrinsic
+@TypedIntrinsic(IntrinsicType.CREATE_UNINITIALIZED_INSTANCE)
 internal external fun <T> createUninitializedInstance(): T
 
-@Intrinsic
+@TypedIntrinsic(IntrinsicType.INIT_INSTANCE)
 internal external fun initInstance(thiz: Any, constructorCall: Any): Unit
 
 fun checkProgressionStep(step: Int)  = if (step > 0) step else throw IllegalArgumentException("Step must be positive, was: $step.")
@@ -151,7 +150,7 @@ fun KonanObjectToUtf8Array(value: Any?): ByteArray {
     return string.toUtf8()
 }
 
-@Intrinsic
+@TypedIntrinsic(IntrinsicType.LIST_OF_INTERNAL)
 @PublishedApi
 internal fun <T> listOfInternal(vararg elements: T): List<T> {
     val result = ArrayList<T>(elements.size)

@@ -6,19 +6,23 @@
 package org.jetbrains.kotlin.backend.konan.descriptors
 
 import org.jetbrains.kotlin.backend.common.atMostOne
+import org.jetbrains.kotlin.backend.konan.RuntimeNames
 import org.jetbrains.kotlin.backend.konan.binaryTypeIsReference
 import org.jetbrains.kotlin.backend.konan.isObjCClass
 import org.jetbrains.kotlin.backend.konan.serialization.isExported
 import org.jetbrains.kotlin.builtins.functions.FunctionClassDescriptor
 import org.jetbrains.kotlin.builtins.getFunctionalClassKind
 import org.jetbrains.kotlin.builtins.isFunctionType
+import org.jetbrains.kotlin.builtins.isSuspendFunctionType
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.annotations.AnnotationDescriptor
 import org.jetbrains.kotlin.builtins.konan.KonanBuiltIns
+import org.jetbrains.kotlin.descriptors.annotations.AnnotationDescriptorImpl
 import org.jetbrains.kotlin.descriptors.annotations.Annotations
 import org.jetbrains.kotlin.descriptors.impl.FunctionDescriptorImpl
 import org.jetbrains.kotlin.metadata.konan.KonanProtoBuf
 import org.jetbrains.kotlin.name.FqName
+import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.DescriptorFactory
 import org.jetbrains.kotlin.resolve.OverridingUtil
 import org.jetbrains.kotlin.resolve.constants.StringValue
@@ -78,7 +82,7 @@ internal val FunctionDescriptor.isFunctionInvoke: Boolean
         val dispatchReceiver = dispatchReceiverParameter ?: return false
         assert(!dispatchReceiver.type.isKFunctionType)
 
-        return dispatchReceiver.type.isFunctionType &&
+        return (dispatchReceiver.type.isFunctionType || dispatchReceiver.type.isSuspendFunctionType) &&
                 this.isOperator && this.name == OperatorNameConventions.INVOKE
     }
 
@@ -239,7 +243,7 @@ fun CallableMemberDescriptor.findSourceFile(): SourceFile {
     }
 }
 
-private val intrinsicAnnotation = FqName("kotlin.native.internal.Intrinsic")
+internal val TypedIntrinsic = FqName("kotlin.native.internal.TypedIntrinsic")
 private val symbolNameAnnotation = FqName("kotlin.native.SymbolName")
 private val objCMethodAnnotation = FqName("kotlinx.cinterop.ObjCMethod")
 private val frozenAnnotation = FqName("kotlin.native.internal.Frozen")
@@ -250,8 +254,8 @@ internal val DeclarationDescriptor.isFrozen: Boolean
                     // RTTI is used for non-reference type box or Objective-C object wrapper:
                     && (!this.defaultType.binaryTypeIsReference() || this.isObjCClass()))
 
-internal val FunctionDescriptor.isIntrinsic: Boolean
-    get() = this.annotations.hasAnnotation(intrinsicAnnotation)
+internal val FunctionDescriptor.isTypedIntrinsic: Boolean
+    get() = this.annotations.hasAnnotation(TypedIntrinsic)
 
 // TODO: coalesce all our annotation value getters into fewer functions.
 fun getAnnotationValue(annotation: AnnotationDescriptor): String? {
@@ -265,9 +269,20 @@ fun CallableMemberDescriptor.externalSymbolOrThrow(): String? {
     this.annotations.findAnnotation(symbolNameAnnotation)?.let {
         return getAnnotationValue(it)!!
     }
-    if (this.annotations.hasAnnotation(intrinsicAnnotation)) return null
-
     if (this.annotations.hasAnnotation(objCMethodAnnotation)) return null
 
-    throw Error("external function ${this} must have @SymbolName, @Intrinsic or @ObjCMethod annotation")
+    if (this.annotations.hasAnnotation(TypedIntrinsic)) return null
+
+    if (this.annotations.hasAnnotation(RuntimeNames.cCall)) return null
+
+    throw Error("external function ${this} must have @TypedIntrinsic, @SymbolName or @ObjCMethod annotation")
 }
+
+fun createAnnotation(
+        descriptor: ClassDescriptor,
+        vararg values: Pair<String, String>
+): AnnotationDescriptor = AnnotationDescriptorImpl(
+        descriptor.defaultType,
+        values.map { (name, value) -> Name.identifier(name) to StringValue(value) }.toMap(),
+        SourceElement.NO_SOURCE
+)

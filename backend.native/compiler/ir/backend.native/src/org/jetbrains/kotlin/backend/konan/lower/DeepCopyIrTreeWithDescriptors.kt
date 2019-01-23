@@ -71,7 +71,7 @@ internal class DeepCopyIrTreeWithSymbolsForInliner(val context: Context,
             }
 
             override fun visitField(declaration: IrField) {
-                (declaration.descriptor as WrappedPropertyDescriptor).bind(declaration)
+                (declaration.descriptor as WrappedFieldDescriptor).bind(declaration)
                 declaration.acceptChildrenVoid(this)
             }
 
@@ -130,7 +130,7 @@ internal class DeepCopyIrTreeWithSymbolsForInliner(val context: Context,
                 WrappedClassDescriptor(descriptor.annotations, descriptor.source)
 
         override fun remapDeclaredField(descriptor: PropertyDescriptor) =
-                WrappedPropertyDescriptor(descriptor.annotations, descriptor.source)
+                WrappedFieldDescriptor(descriptor.annotations, descriptor.source)
 
         override fun remapDeclaredSimpleFunction(descriptor: FunctionDescriptor) =
                 WrappedSimpleFunctionDescriptor(descriptor.annotations, descriptor.source)
@@ -789,7 +789,8 @@ internal class DeepCopyIrTreeWithDescriptors(val targetDescriptor: FunctionDescr
                 IrTypeOperator.IMPLICIT_CAST,
                 IrTypeOperator.IMPLICIT_NOTNULL,
                 IrTypeOperator.IMPLICIT_COERCION_TO_UNIT,
-                IrTypeOperator.IMPLICIT_INTEGER_COERCION    -> type
+                IrTypeOperator.IMPLICIT_INTEGER_COERCION,
+                IrTypeOperator.SAM_CONVERSION               -> type
                 IrTypeOperator.SAFE_CAST                    -> type.makeNullable()
                 IrTypeOperator.INSTANCEOF,
                 IrTypeOperator.NOT_INSTANCEOF               -> context.irBuiltIns.booleanType

@@ -7,16 +7,19 @@
 
 package kotlin.native.internal
 
-@Intrinsic external fun getNativeNullPtr(): NativePtr
+@TypedIntrinsic(IntrinsicType.INTEROP_GET_NATIVE_NULL_PTR)
+external fun getNativeNullPtr(): NativePtr
 
 class NativePtr @PublishedApi internal constructor(private val value: NonNullNativePtr?) {
     companion object {
         val NULL = getNativeNullPtr()
     }
 
-    @Intrinsic external operator fun plus(offset: Long): NativePtr
+    @TypedIntrinsic(IntrinsicType.INTEROP_NATIVE_PTR_PLUS_LONG)
+    external operator fun plus(offset: Long): NativePtr
 
-    @Intrinsic external fun toLong(): Long
+    @TypedIntrinsic(IntrinsicType.INTEROP_NATIVE_PTR_TO_LONG)
+    external fun toLong(): Long
 
     override fun equals(other: Any?) = (other is NativePtr) && kotlin.native.internal.areEqualByValue(this, other)
 
@@ -26,15 +29,16 @@ class NativePtr @PublishedApi internal constructor(private val value: NonNullNat
 }
 
 @PublishedApi
-internal inline class NonNullNativePtr(val value: NotNullPointerValue) { // TODO: refactor to use this type widely.
+internal class NonNullNativePtr private constructor() { // TODO: refactor to use this type widely.
     @Suppress("NOTHING_TO_INLINE")
     inline fun toNativePtr() = NativePtr(this)
-    // TODO: fixme.
-    override fun toString() = ""
 
-    override fun hashCode() = 0
+    override fun toString() = toNativePtr().toString()
 
-    override fun equals(other: Any?) = false
+    override fun hashCode() = toNativePtr().hashCode()
+
+    override fun equals(other: Any?) = other is NonNullNativePtr
+            && kotlin.native.internal.areEqualByValue(this.toNativePtr(), other.toNativePtr())
 }
 
 @ExportTypeInfo("theNativePtrArrayTypeInfo")

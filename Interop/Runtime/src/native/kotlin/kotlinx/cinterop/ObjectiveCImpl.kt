@@ -19,6 +19,8 @@
 package kotlinx.cinterop
 import kotlin.native.*
 import kotlin.native.internal.ExportTypeInfo
+import kotlin.native.internal.TypedIntrinsic
+import kotlin.native.internal.IntrinsicType
 
 interface ObjCObject
 interface ObjCClass : ObjCObject
@@ -42,7 +44,7 @@ fun optional(): Nothing = throw RuntimeException("Do not call me!!!")
         "Add @OverrideInit to constructor to make it override Objective-C initializer",
         level = DeprecationLevel.WARNING
 )
-@kotlin.native.internal.Intrinsic
+@TypedIntrinsic(IntrinsicType.OBJC_INIT_BY)
 external fun <T : ObjCObjectBase> T.initBy(constructorCall: T): T
 
 @kotlin.native.internal.ExportForCompiler
@@ -91,7 +93,8 @@ var <T : Any?> ObjCNotImplementedVar<T>.value: T
 typealias ObjCStringVarOf<T> = ObjCNotImplementedVar<T>
 typealias ObjCBlockVar<T> = ObjCNotImplementedVar<T>
 
-@kotlin.native.internal.Intrinsic external fun getReceiverOrSuper(receiver: NativePtr, superClass: NativePtr): COpaquePointer?
+@TypedIntrinsic(IntrinsicType.OBJC_GET_RECEIVER_OR_SUPER)
+external fun getReceiverOrSuper(receiver: NativePtr, superClass: NativePtr): COpaquePointer?
 
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.BINARY)
@@ -146,12 +149,14 @@ private fun allocObjCObject(clazz: NativePtr): NativePtr {
     return rawResult
 }
 
-@kotlin.native.internal.Intrinsic
+@TypedIntrinsic(IntrinsicType.OBJC_GET_OBJC_CLASS)
 @kotlin.native.internal.ExportForCompiler
 private external fun <T : ObjCObject> getObjCClass(): NativePtr
 
-@kotlin.native.internal.Intrinsic external fun getMessenger(superClass: NativePtr): COpaquePointer?
-@kotlin.native.internal.Intrinsic external fun getMessengerStret(superClass: NativePtr): COpaquePointer?
+@TypedIntrinsic(IntrinsicType.OBJC_GET_MESSENGER)
+external fun getMessenger(superClass: NativePtr): COpaquePointer?
+@TypedIntrinsic(IntrinsicType.OBJC_GET_MESSENGER_STRET)
+external fun getMessengerStret(superClass: NativePtr): COpaquePointer?
 
 
 internal class ObjCWeakReferenceImpl : kotlin.native.ref.WeakReferenceImpl() {
