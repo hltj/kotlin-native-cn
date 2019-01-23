@@ -46,20 +46,20 @@ future.consume {
 
 </div>
 
- The call to `execute` uses a function passed as its second parameter to produce an object subgraph
- (i.e. set of mutually referring objects) which is then passed as a whole to that worker, it is then no longer
- available to the thread that initiated the request. This property is checked if the first parameter
- is `TransferMode.SAFE` by graph traversal and is just assumed to be true, if it is `TransferMode.UNSAFE`.
- The last parameter to `execute` is a special Kotlin lambda, which is not allowed to capture any state,
- and is actually invoked in the target worker's context. Once processed, the result is transferred to whatever consumes
- it in the future, and it is attached to the object graph of that worker/thread.
+ 调用 `execute` 会使用作为第二个参数传入的函数来生成一个对象子图
+ （即一组相互引用的对象）然后将其作为一个整体传给该 worker，之后<!--
+ -->发出该请求的线程不可以再使用该对象子图。如果第一个参数<!--
+ -->是 `TransferMode.SAFE`，那么会通过图遍历来检测这一属性；而如果第一个参数是 `TransferMode.UNSAFE` 那么直接假定为 true。
+ `execute` 的最后一个参数是一个特殊 Kotlin lambda 表达式，不可以捕获任何状态，
+ 并且实际上是在目标 worker 的上下文中调用。一旦处理完毕，就将结果转移给将会消费它地方<!--
+ -->，并将其附加到该 worker/线程的对象图中。
 
-  If an object is transferred in `UNSAFE` mode and is still accessible from multiple concurrent executors,
- program will likely crash unexpectedly, so consider that last resort in optimizing, not a general purpose
- mechanism.
+  如果一个对象以 `UNSAFE` 模式转移，并且依然在多个并发执行子中访问，
+ 那么该程序可能会意外崩溃，因此考虑将 `UNSAFE` 作为最后的优化手段而不是通用<!--
+ -->机制来使用。
 
-  For a more complete example please refer to the [workers example](https://github.com/JetBrains/kotlin-native/tree/master/samples/workers)
- in the Kotlin/Native repository.
+  更完整的示例请参考 Kotlin/Native 版本库中的 [worker 示例](https://github.com/JetBrains/kotlin-native/tree/master/samples/workers)<!--
+-->。
 
 <a name="transfer"></a>
 ### Object transfer and freezing
