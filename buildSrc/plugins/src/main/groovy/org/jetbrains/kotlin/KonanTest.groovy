@@ -100,7 +100,7 @@ abstract class KonanTest extends JavaExec {
             classpath = project.fileTree("$dist.canonicalPath/konan/lib/") {
                 include '*.jar'
             }
-            jvmArgs "-Dkonan.home=${dist.canonicalPath}", "-Xmx2G",
+            jvmArgs "-Dkonan.home=${dist.canonicalPath}", "-Xmx4G",
                     "-Djava.library.path=${dist.canonicalPath}/konan/nativelib"
             enableAssertions = true
             def sources = File.createTempFile(name,".lst")
@@ -890,7 +890,8 @@ fun runTest() {
     static def excludeList = [
             "build/external/compiler/codegen/box/functions/functionExpression/functionExpressionWithThisReference.kt", // KT-26973
             "build/external/compiler/codegen/box/inlineClasses/kt27096_innerClass.kt", // KT-27665
-            "build/external/compiler/codegen/boxInline/anonymousObject/kt8133.kt"
+            "build/external/compiler/codegen/boxInline/anonymousObject/kt8133.kt",
+            "build/external/compiler/codegen/box/localClasses/anonymousObjectInExtension.kt" // KT-29282
     ]
 
     boolean isEnabledForNativeBackend(String fileName) {
@@ -898,12 +899,15 @@ fun runTest() {
 
         if (excludeList.contains(fileName)) return false
 
+        if (findLinesWithPrefixesRemoved(text, "// WITH_REFLECT").size() != 0) return false
+
         def languageSettings = findLinesWithPrefixesRemoved(text, '// !LANGUAGE: ')
         if (!languageSettings.empty) {
             def settings = languageSettings.first()
             if (settings.contains('-ProperIeee754Comparisons') ||  // K/N supports only proper IEEE754 comparisons
                     settings.contains('+NewInference') ||          // New inference is not implemented
-                    settings.contains('-ReleaseCoroutines')) {     // only release coroutines
+                    settings.contains('-ReleaseCoroutines') ||     // only release coroutines
+                    settings.contains('-DataClassInheritance')) {  // old behavior is not supported
                 return false
             }
         }
@@ -932,6 +936,7 @@ fun runTest() {
             if (!findLinesWithPrefixesRemoved(text, "// JVM_TARGET:").isEmpty()) { return false }
             return true
         }
+
     }
 
     @Override

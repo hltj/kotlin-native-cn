@@ -6,7 +6,6 @@ import org.jetbrains.kotlin.backend.common.lower.irNot
 import org.jetbrains.kotlin.backend.konan.PrimitiveBinaryType
 import org.jetbrains.kotlin.backend.konan.RuntimeNames
 import org.jetbrains.kotlin.backend.konan.descriptors.createAnnotation
-import org.jetbrains.kotlin.backend.konan.descriptors.getStringValue
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
 import org.jetbrains.kotlin.builtins.UnsignedType
@@ -162,7 +161,7 @@ internal fun KotlinStubs.generateCCall(expression: IrCall, builder: IrBuilderWit
     if (isInvoke) {
         callBuilder.cBridgeBodyLines.add(0, "$targetFunctionVariable = ${targetPtrParameter!!};")
     } else {
-        val cCallSymbolName = callee.descriptor.annotations.findAnnotation(cCall)!!.getStringValue("id")
+        val cCallSymbolName = callee.getAnnotationArgumentValue<String>(cCall, "id")!!
         cLines += "extern const $targetFunctionVariable __asm(\"$cCallSymbolName\");" // Exported from cinterop stubs.
     }
 
@@ -344,16 +343,18 @@ private fun IrType.isCEnumType(): Boolean {
             .any { (it.classifierOrNull?.owner as? IrClass)?.fqNameSafe == FqName("kotlinx.cinterop.CEnum") }
 }
 
+// TODO: get rid of consulting descriptors for annotations.
+// Make sure external stubs always get proper annotaions.
 private fun IrValueParameter.isWCStringParameter() =
+        this.annotations.hasAnnotation(cCall.child(Name.identifier("WCString"))) ||
         this.descriptor.annotations.hasAnnotation(cCall.child(Name.identifier("WCString")))
 
 private fun IrValueParameter.isCStringParameter() =
+        this.annotations.hasAnnotation(cCall.child(Name.identifier("CString"))) ||
         this.descriptor.annotations.hasAnnotation(cCall.child(Name.identifier("CString")))
 
 private fun getStructSpelling(kotlinClass: IrClass): String? =
-        kotlinClass.descriptor.annotations
-                .findAnnotation(FqName("kotlinx.cinterop.internal.CStruct"))
-                ?.getStringValue("spelling")
+        kotlinClass.getAnnotationArgumentValue(FqName("kotlinx.cinterop.internal.CStruct"), "spelling")
 
 private fun getCStructType(kotlinClass: IrClass): CType? =
         getStructSpelling(kotlinClass)?.let { CTypes.simple(it) }
