@@ -7,14 +7,13 @@ package org.jetbrains.kotlin.backend.konan.irasdescriptors
 
 import org.jetbrains.kotlin.backend.common.atMostOne
 import org.jetbrains.kotlin.backend.konan.descriptors.getArgumentValueOrNull
-import org.jetbrains.kotlin.backend.konan.descriptors.getStringValue
 import org.jetbrains.kotlin.backend.konan.descriptors.konanBackingField
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.descriptors.ParameterDescriptor
 import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.ir.SourceManager
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFieldImpl
 import org.jetbrains.kotlin.ir.expressions.*
@@ -29,9 +28,6 @@ import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedPropertyDescriptor
 
 val IrConstructor.constructedClass get() = this.parent as IrClass
-
-val <T : IrDeclaration> T.original get() = this
-val IrDeclaration.containingDeclaration get() = this.parent
 
 val IrDeclarationParent.fqNameSafe: FqName get() = when (this) {
     is IrPackageFragment -> this.fqName
@@ -118,8 +114,6 @@ val IrProperty.konanBackingField: IrField?
         return null
     }
 
-val IrField.containingClass get() = this.parent as? IrClass
-
 val IrFunction.isReal get() = this.origin != IrDeclarationOrigin.FAKE_OVERRIDE
 
 // Note: psi2ir doesn't set `origin = FAKE_OVERRIDE` for fields and properties yet.
@@ -137,7 +131,7 @@ val IrFunction.isOverridableOrOverrides
     get() = this is IrSimpleFunction && (this.isOverridable || this.overriddenSymbols.isNotEmpty())
 
 val IrClass.isFinalClass: Boolean
-    get() = modality == Modality.FINAL && kind != ClassKind.ENUM_CLASS
+    get() = modality == Modality.FINAL
 
 fun IrSimpleFunction.overrides(other: IrSimpleFunction): Boolean {
     if (this == other) return true
@@ -152,8 +146,6 @@ fun IrSimpleFunction.overrides(other: IrSimpleFunction): Boolean {
 }
 
 fun IrClass.isSpecialClassWithNoSupertypes() = this.isAny() || this.isNothing()
-
-internal val IrValueParameter.isValueParameter get() = this.index >= 0
 
 private val IrCall.annotationClass
     get() = (this.symbol.owner as IrConstructor).constructedClass
@@ -200,3 +192,12 @@ val IrDeclaration.isGetter get() = this is IrSimpleFunction && this == this.corr
 val IrDeclaration.isSetter get() = this is IrSimpleFunction && this == this.correspondingProperty?.setter
 
 val IrDeclaration.isAccessor get() = this.isGetter || this.isSetter
+
+val IrDeclaration.file: IrFile get() = parent.let {
+    when (it) {
+        is IrFile -> it
+        is IrPackageFragment -> TODO("Unknown file")
+        is IrDeclaration -> it.file
+        else -> TODO("Unexpected declaration parent")
+    }
+}

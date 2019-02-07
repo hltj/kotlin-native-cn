@@ -123,12 +123,12 @@ internal class SpecialDeclarationsFactory(val context: Context) {
         return ordinals.getOrPut(enumClassDescriptor) { assignOrdinalsToEnumEntries(enumClassDescriptor) }[entryDescriptor]!!
     }
 
-    fun getBridge(overriddenFunctionDescriptor: OverriddenFunctionDescriptor): IrSimpleFunction {
-        val irFunction = overriddenFunctionDescriptor.descriptor
-        assert(overriddenFunctionDescriptor.needBridge) {
-            "Function ${irFunction.descriptor} is not needed in a bridge to call overridden function ${overriddenFunctionDescriptor.overriddenDescriptor.descriptor}"
+    fun getBridge(overriddenFunction: OverriddenFunctionInfo): IrSimpleFunction {
+        val irFunction = overriddenFunction.function
+        assert(overriddenFunction.needBridge) {
+            "Function ${irFunction.descriptor} is not needed in a bridge to call overridden function ${overriddenFunction.overriddenFunction.descriptor}"
         }
-        val bridgeDirections = overriddenFunctionDescriptor.bridgeDirections
+        val bridgeDirections = overriddenFunction.bridgeDirections
         return bridgesDescriptors.getOrPut(irFunction to bridgeDirections) {
             createBridge(irFunction, bridgeDirections)
         }
@@ -263,7 +263,6 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     // But we have to wait until the code generation phase,
     // to dump this information into generated file.
     var serializedLinkData: LinkData? = null
-    var serializedIr: ByteArray? = null
     var dataFlowGraph: ByteArray? = null
 
     @Deprecated("")
@@ -300,7 +299,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
         get() = ir.irModule.irBuiltins
 
     val interopBuiltIns by lazy {
-        InteropBuiltIns(this.builtIns, nativePtr)
+        InteropBuiltIns(this.builtIns)
     }
 
     var llvmModule: LLVMModuleRef? = null
@@ -340,8 +339,8 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     }
 
     fun printDescriptors() {
-        // A workaround to check if the lateinit field is assigned, see KT-9327
-        try { moduleDescriptor } catch (e: UninitializedPropertyAccessException) { return }
+        if (!::moduleDescriptor.isInitialized)
+            return
 
         separator("Descriptors after: ${phase?.description}")
         moduleDescriptor.deepPrint()

@@ -76,7 +76,8 @@ class CommitsList(data: JsonElement): ConvertedFromJson {
  * @property currentBenchmarksReportFile  path to file with becnhmarks result
  * @property analyzer path to analyzer tool
  * @property htmlReport name of result html report
- * @property defaultBranch name of defaukt branch
+ * @property defaultBranch name of default branch
+ * @property summaryFile name of file with short summary
  */
 open class RegressionsReporter : DefaultTask() {
 
@@ -109,6 +110,9 @@ open class RegressionsReporter : DefaultTask() {
 
     @Input
     lateinit var defaultBranch: String
+
+    @Input
+    lateinit var summaryFile: String
 
     private fun tabUrl(buildId: String, buildTypeId: String, tab: String) =
             "$teamCityUrl/viewLog.html?buildId=$buildId&buildTypeId=$buildTypeId&tab=$tab"
@@ -215,8 +219,12 @@ open class RegressionsReporter : DefaultTask() {
                     "bintray:$compareToBuildNumber:$target:$bintrayFileName with $analyzer! " +
                     "Please check files existance and their correctness.")
         }
+        "$analyzer -r statistics $currentBenchmarksReportFile bintray:$compareToBuildNumber:$target:$bintrayFileName -o $summaryFile"
+                .runCommand()
 
-        val reportLink = tabUrl(buildId, buildTypeId, "report_project170_Benchmarks")
+        val reportLink = "http://kotlin-native-performance.labs.jb.gg/?" +
+                "report=bintray:$buildNumber:$target:$bintrayFileName&" +
+                "compareTo=bintray:$compareToBuildNumber:$target:$bintrayFileName"
 
         val title = "\n*Performance report for target $target (build $buildNumber)* - $reportLink\n"
         val header = "$title\n$changesInfo\n\nCompare to build $compareToBuildNumber: $compareToBuildLink\n\n"

@@ -125,13 +125,16 @@ internal class KonanIr(context: Context, irModule: IrModuleFragment): Ir<Context
 }
 
 internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val lazySymbolTable: ReferenceSymbolTable): Symbols<Context>(context, lazySymbolTable) {
-    /**
-     * @note:
-     * [lateinitIsInitializedPropertyGetter] is used in [org.jetbrains.kotlin.backend.common.lower.LateinitLowering] and
-     * it's irrelevant for [org.jetbrains.kotlin.backend.konan.lower.LateinitLowering].
-     */
+
+    private val isInitializedPropertyDescriptor = builtInsPackage("kotlin")
+            .getContributedVariables(Name.identifier("isInitialized"), NoLookupLocation.FROM_BACKEND).single {
+                it.extensionReceiverParameter.let {
+                    it != null && TypeUtils.getClassDescriptor(it.type) == context.reflectionTypes.kProperty0
+                } && !it.isExpect
+            }
+
     override val lateinitIsInitializedPropertyGetter: IrSimpleFunctionSymbol
-       get() = TODO("unimplemented")
+       = symbolTable.referenceSimpleFunction(isInitializedPropertyDescriptor.getter!!)
 
     val entryPoint = findMainEntryPoint(context)?.let { symbolTable.referenceSimpleFunction(it) }
 
@@ -450,15 +453,6 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
 
     val refClass = symbolTable.referenceClass(context.getInternalClass("Ref"))
 
-    val isInitializedPropertyDescriptor = builtInsPackage("kotlin")
-            .getContributedVariables(Name.identifier("isInitialized"), NoLookupLocation.FROM_BACKEND).single {
-                it.extensionReceiverParameter.let {
-                    it != null && TypeUtils.getClassDescriptor(it.type) == context.reflectionTypes.kProperty0
-                } && !it.isExpect
-            }
-
-    val isInitializedGetter = symbolTable.referenceSimpleFunction(isInitializedPropertyDescriptor.getter!!)
-
     val kFunctionImpl =  symbolTable.referenceClass(context.reflectionTypes.kFunctionImpl)
 
     val kMutableProperty0 = symbolTable.referenceClass(context.reflectionTypes.kMutableProperty0)
@@ -509,11 +503,6 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
                     Name.identifier(className), NoLookupLocation.FROM_BACKEND
             ) as ClassDescriptor)
 
-    private fun getFunction(name: Name, receiverType: KotlinType, predicate: (FunctionDescriptor) -> Boolean) =
-            symbolTable.referenceFunction(receiverType.memberScope
-                    .getContributedFunctions(name, NoLookupLocation.FROM_BACKEND).single(predicate)
-            )
-
     val functions = (0 .. KONAN_FUNCTION_INTERFACES_MAX_PARAMETERS)
             .map { symbolTable.referenceClass(builtIns.getFunction(it)) }
 
@@ -532,12 +521,17 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
     val topLevelSuite    = getKonanTestClass("TopLevelSuite")
     val testFunctionKind = getKonanTestClass("TestFunctionKind")
 
-    private val testFunctionKindCache = mutableMapOf<TestProcessor.FunctionKind, IrEnumEntrySymbol>()
-    fun getTestFunctionKind(kind: TestProcessor.FunctionKind): IrEnumEntrySymbol = testFunctionKindCache.getOrPut(kind) {
-        symbolTable.referenceEnumEntry(testFunctionKind.descriptor.unsubstitutedMemberScope.getContributedClassifier(
-                kind.runtimeKindName, NoLookupLocation.FROM_BACKEND
-        ) as ClassDescriptor)
+    private val testFunctionKindCache = TestProcessor.FunctionKind.values().associate {
+        val symbol = if (it.runtimeKindString.isEmpty())
+            null
+        else
+            symbolTable.referenceEnumEntry(testFunctionKind.descriptor.unsubstitutedMemberScope.getContributedClassifier(
+                    Name.identifier(it.runtimeKindString), NoLookupLocation.FROM_BACKEND
+            ) as ClassDescriptor)
+        it to symbol
     }
+
+    fun getTestFunctionKind(kind: TestProcessor.FunctionKind) = testFunctionKindCache[kind]!!
 }
 
 private fun getArrayListClassDescriptor(context: Context): ClassDescriptor {

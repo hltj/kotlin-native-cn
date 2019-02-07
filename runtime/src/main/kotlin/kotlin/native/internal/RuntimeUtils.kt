@@ -50,8 +50,8 @@ fun ThrowNoWhenBranchMatchedException(): Nothing {
     throw NoWhenBranchMatchedException()
 }
 
-fun ThrowUninitializedPropertyAccessException(): Nothing {
-    throw UninitializedPropertyAccessException()
+fun ThrowUninitializedPropertyAccessException(propertyName: String): Nothing {
+    throw UninitializedPropertyAccessException("lateinit property $propertyName has not been initialized")
 }
 
 @ExportForCppRuntime
@@ -86,9 +86,18 @@ internal fun PrintThrowable(throwable: Throwable) {
 }
 
 @ExportForCppRuntime
-internal fun ReportUnhandledException(e: Throwable) {
+internal fun ReportUnhandledException(throwable: Throwable) {
     print("Uncaught Kotlin exception: ")
-    e.printStackTrace()
+    throwable.printStackTrace()
+}
+
+@ExportForCppRuntime
+internal fun ExceptionReporterLaunchpad(reporter: (Throwable) -> Unit, throwable: Throwable) {
+    try {
+        reporter(throwable)
+    } catch (t: Throwable) {
+        ReportUnhandledException(t)
+    }
 }
 
 @ExportForCppRuntime

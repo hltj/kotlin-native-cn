@@ -21,6 +21,7 @@ import org.jetbrains.kotlin.backend.common.ir.ir2string
 import org.jetbrains.kotlin.backend.konan.descriptors.findTopLevelDeclaration
 import org.jetbrains.kotlin.backend.konan.descriptors.isExpectMember
 import org.jetbrains.kotlin.backend.konan.descriptors.isSerializableExpectClass
+import org.jetbrains.kotlin.backend.konan.ir.lineStartOffsets
 import org.jetbrains.kotlin.backend.konan.library.SerializedIr
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.ClassKind.*
@@ -38,6 +39,8 @@ import org.jetbrains.kotlin.ir.expressions.impl.IrUnaryPrimitiveImpl
 import org.jetbrains.kotlin.ir.symbols.*
 import org.jetbrains.kotlin.ir.types.*
 import org.jetbrains.kotlin.ir.types.impl.IrStarProjectionImpl
+import org.jetbrains.kotlin.konan.library.impl.CombinedIrFileWriter
+import org.jetbrains.kotlin.konan.library.impl.DeclarationId
 import org.jetbrains.kotlin.metadata.KonanIr
 import org.jetbrains.kotlin.types.SimpleType
 import org.jetbrains.kotlin.types.StarProjectionImpl
@@ -1039,12 +1042,6 @@ internal class IrModuleSerializer(
 
         proto.setDeclarator(declarator)
 
-        // TODO disabled for now.
-        //val fileName = context.ir.originalModuleIndex.declarationToFile[declaration.descriptor]
-        //proto.fileName = fileName
-
-        proto.fileName = serializeString("some file name")
-
         return proto.build()
     }
 
@@ -1052,32 +1049,38 @@ internal class IrModuleSerializer(
 
     fun serializeFileEntry(entry: SourceManager.FileEntry) = KonanIr.FileEntry.newBuilder()
         .setName(serializeString(entry.name))
+        .addAllLineStartOffsets(entry.lineStartOffsets.asIterable())
         .build()
-
-    val topLevelDeclarations = mutableMapOf<UniqId, ByteArray>()
 
     fun serializeIrFile(file: IrFile): KonanIr.IrFile {
         val proto = KonanIr.IrFile.newBuilder()
             .setFileEntry(serializeFileEntry(file.fileEntry))
-            .setFqName(file.fqName.toString())
+            .setFqName(serializeString(file.fqName.toString()))
 
         file.declarations.forEach {
-            if (it is IrTypeAlias) return@forEach
-            if (it.descriptor.isExpectMember && !it.descriptor.isSerializableExpectClass) {
+            if (it is IrTypeAlias || (it.descriptor.isExpectMember && !it.descriptor.isSerializableExpectClass)) {
+                writer.skipDeclaration()
                 return@forEach
             }
 
             val byteArray = serializeDeclaration(it).toByteArray()
             val uniqId = declarationTable.uniqIdByDeclaration(it)
-            topLevelDeclarations.put(uniqId, byteArray)
+            writer.addDeclaration(DeclarationId(uniqId.index, uniqId.isLocal), byteArray)
             proto.addDeclarationId(protoUniqId(uniqId))
         }
         return proto.build()
     }
 
+    lateinit var writer: CombinedIrFileWriter
+
     fun serializeModule(module: IrModuleFragment): KonanIr.IrModule {
         val proto = KonanIr.IrModule.newBuilder()
             .setName(serializeString(module.name.toString()))
+
+        val topLevelDeclarationsCount = module.files.sumBy { it.declarations.size }
+
+        writer = CombinedIrFileWriter(topLevelDeclarationsCount)
+
         module.files.forEach {
             proto.addFile(serializeIrFile(it))
         }
@@ -1099,6 +1102,6 @@ internal class IrModuleSerializer(
 
     fun serializedIrModule(module: IrModuleFragment): SerializedIr {
         val moduleHeader = serializeModule(module).toByteArray()
-        return SerializedIr(moduleHeader, topLevelDeclarations, declarationTable.debugIndex)
+        return SerializedIr(moduleHeader, writer.finishWriting().absolutePath, declarationTable.debugIndex)
     }
 }

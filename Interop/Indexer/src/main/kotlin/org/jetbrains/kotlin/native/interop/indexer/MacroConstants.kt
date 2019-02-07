@@ -23,8 +23,8 @@ import java.io.File
 /**
  * Finds all "macro constants" and registers them as [NativeIndex.constants] in given index.
  */
-internal fun findMacros(nativeIndex: NativeIndexImpl) {
-    val names = collectMacroNames(nativeIndex)
+internal fun findMacros(nativeIndex: NativeIndexImpl, translationUnit: CXTranslationUnit, headers: Set<CXFile?>) {
+    val names = collectMacroNames(nativeIndex, translationUnit, headers)
     // TODO: apply user-defined filters.
     val macros = expandMacros(nativeIndex.library, names, typeConverter = { nativeIndex.convertType(it) })
 
@@ -50,8 +50,7 @@ private fun expandMacros(
     // so precompile library headers to significantly speed up the parsing:
     val library = originalLibrary.precompileHeaders()
 
-    val index = clang_createIndex(excludeDeclarationsFromPCH = 1, displayDiagnostics = 0)!!
-    try {
+    withIndex(excludeDeclarationsFromPCH = true) { index ->
         val sourceFile = library.createTempSource()
         // We disable implicit function declaration to filter out cases when a macro is expanded as a function
         // or function-like construction (e.g. #define FOO throw()) but such a function is undeclared.
@@ -65,9 +64,6 @@ private fun expandMacros(
         } finally {
             clang_disposeTranslationUnit(translationUnit)
         }
-
-    } finally {
-        clang_disposeIndex(index)
     }
 }
 
@@ -226,42 +222,26 @@ enum class VisitorState {
     EXPECT_END, INVALID
 }
 
-private fun collectMacroNames(nativeIndex: NativeIndexImpl): List<String> {
+private fun collectMacroNames(nativeIndex: NativeIndexImpl, translationUnit: CXTranslationUnit, headers: Set<CXFile?>): List<String> {
     val result = mutableSetOf<String>()
-    val index = clang_createIndex(excludeDeclarationsFromPCH = 0, displayDiagnostics = 0)!!
-    try {
-        // Include macros into AST:
-        val options = CXTranslationUnit_DetailedPreprocessingRecord
 
-        val translationUnit = nativeIndex.library.parse(index, options)
-        try {
-            translationUnit.ensureNoCompileErrors()
-            val headers = getFilteredHeaders(nativeIndex, index, translationUnit)
-
-            visitChildren(translationUnit) { cursor, _ ->
-                val file = memScoped {
-                    val fileVar = alloc<CXFileVar>()
-                    clang_getFileLocation(clang_getCursorLocation(cursor), fileVar.ptr, null, null, null)
-                    fileVar.value
-                }
-
-                if (cursor.kind == CXCursorKind.CXCursor_MacroDefinition &&
-                        nativeIndex.library.includesDeclaration(cursor) &&
-                        file != null && // Builtin macros mostly seem to be useless.
-                        file in headers &&
-                        canMacroBeConstant(cursor))
-                {
-                    val spelling = getCursorSpelling(cursor)
-                    result.add(spelling)
-                }
-                CXChildVisitResult.CXChildVisit_Continue
-            }
-
-        } finally {
-            clang_disposeTranslationUnit(translationUnit)
+    visitChildren(translationUnit) { cursor, _ ->
+        val file = memScoped {
+            val fileVar = alloc<CXFileVar>()
+            clang_getFileLocation(clang_getCursorLocation(cursor), fileVar.ptr, null, null, null)
+            fileVar.value
         }
-    } finally {
-        clang_disposeIndex(index)
+
+        if (cursor.kind == CXCursorKind.CXCursor_MacroDefinition &&
+                nativeIndex.library.includesDeclaration(cursor) &&
+                file != null && // Builtin macros mostly seem to be useless.
+                file in headers &&
+                canMacroBeConstant(cursor))
+        {
+            val spelling = getCursorSpelling(cursor)
+            result.add(spelling)
+        }
+        CXChildVisitResult.CXChildVisit_Continue
     }
 
     return result.toList()
