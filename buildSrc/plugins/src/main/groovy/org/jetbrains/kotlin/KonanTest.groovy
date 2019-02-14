@@ -23,6 +23,7 @@ import org.gradle.process.ExecResult
 
 import javax.inject.Inject
 import java.nio.file.Paths
+import java.util.function.Function
 import java.util.regex.Pattern
 
 abstract class KonanTest extends JavaExec {
@@ -31,7 +32,7 @@ abstract class KonanTest extends JavaExec {
     public String source
     def platformManager = project.rootProject.platformManager
     def target = platformManager.targetManager(project.testTarget).target
-    def dist = project.rootProject.file(project.findProperty("konan.home") ?: "dist")
+    def dist = project.rootProject.file(project.findProperty("org.jetbrains.kotlin.native.home") ?: "dist")
     def dependenciesDir = project.rootProject.dependenciesDir
     def konancDriver = project.isWindows() ? "konanc.bat" : "konanc"
     def konanc = new File("${dist.canonicalPath}/bin/$konancDriver").absolutePath
@@ -39,6 +40,8 @@ abstract class KonanTest extends JavaExec {
     def enableKonanAssertions = true
     String outputDirectory = null
     String goldValue = null
+    // Checks test's output against gold value and returns true if the output matches the expectation
+    Function<String, Boolean> outputChecker = { str -> (goldValue == null || goldValue == str) }
     String testData = null
     int expectedExitStatus = 0
     List<String> arguments = null
@@ -100,7 +103,7 @@ abstract class KonanTest extends JavaExec {
             classpath = project.fileTree("$dist.canonicalPath/konan/lib/") {
                 include '*.jar'
             }
-            jvmArgs "-Dkonan.home=${dist.canonicalPath}", "-Xmx4G",
+            jvmArgs "-Dorg.jetbrains.kotlin.native.home=${dist.canonicalPath}", "-Xmx4G",
                     "-Djava.library.path=${dist.canonicalPath}/konan/nativelib"
             enableAssertions = true
             def sources = File.createTempFile(name,".lst")
@@ -306,9 +309,15 @@ abstract class KonanTest extends JavaExec {
             }
         }
 
-        def goldValueMismatch = goldValue != null && goldValue != result.replace(System.lineSeparator(), "\n")
+        result = result.replace(System.lineSeparator(), "\n")
+        def goldValueMismatch = !outputChecker.apply(result)
         if (goldValueMismatch) {
-            def message = "Expected output: $goldValue, actual output: $result"
+            def message
+            if (goldValue != null) {
+                message = "Expected output: $goldValue, actual output: $result"
+            } else {
+                message = "Actual output doesn't match output checker: $result"
+            }
             if (this.expectedFail) {
                 println("Expected failure. $message")
             } else {
@@ -521,8 +530,8 @@ class RunDriverKonanTest extends KonanTest {
 
     RunDriverKonanTest() {
         super()
-        // We don't build the compiler if a custom konan.home path is specified.
-        if (!project.hasProperty("konan.home")) {
+        // We don't build the compiler if a custom org.jetbrains.kotlin.native.home path is specified.
+        if (!project.hasProperty("org.jetbrains.kotlin.native.home")) {
             dependsOn(project.rootProject.tasks['cross_dist'])
         }
     }
@@ -897,7 +906,7 @@ fun runTest() {
     boolean isEnabledForNativeBackend(String fileName) {
         def text = project.file(fileName).text
 
-        if (excludeList.contains(fileName)) return false
+        if (excludeList.contains(fileName.replace(File.separator, "/"))) return false
 
         if (findLinesWithPrefixesRemoved(text, "// WITH_REFLECT").size() != 0) return false
 
