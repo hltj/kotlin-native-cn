@@ -19,10 +19,10 @@ buildscript {
 
 task konanRun {
     subprojects.each {
-       dependsOn it.getTasksByName('konanRun', true)[0]
+        dependsOn it.getTasksByName('konanRun', true)[0]
     }
 }
-
+    
 task jvmRun {
     subprojects.each {
         dependsOn it.getTasksByName('jvmRun', true)[0]
@@ -33,7 +33,9 @@ task clean {
     subprojects.each {
         dependsOn it.getTasksByName('clean', true)[0]
     }
-    delete "${buildDir.absolutePath}"
+    doLast {
+        delete "${buildDir.absolutePath}"
+    }
 }
 
 defaultTasks 'konanRun'
@@ -82,7 +84,6 @@ def mergeReports(String fileName) {
         if (reportFile.exists()) {
             reports.add(reportFile)
         }
-    depends("build")
     }
     def output = MPPTools.mergeReports(reports)
     mkdir buildDir.absolutePath

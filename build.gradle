@@ -41,7 +41,9 @@ convention.plugins.platformInfo = new PlatformInfo()
 ext {
     distDir = file('dist')
     dependenciesDir = DependencyProcessor.defaultDependenciesRoot
-    platformManager = new PlatformManager(DistributionKt.buildDistribution(projectDir.absolutePath))
+    experimentalEnabled = project.hasProperty("org.jetbrains.kotlin.native.experimentalTargets")
+    platformManager = new PlatformManager(DistributionKt.buildDistribution(projectDir.absolutePath),
+            ext.experimentalEnabled)
 
     kotlinCommonStdlibModule="org.jetbrains.kotlin:kotlin-stdlib-common:${kotlinVersion}:sources"
     kotlinCompilerModule="org.jetbrains.kotlin:kotlin-compiler:${kotlinVersion}"
@@ -163,10 +165,22 @@ class PlatformInfo {
     }
 
     boolean isAppleTarget(Project project) {
+        def target = getTarget(project)
+        return target.family == Family.IOS || target.family == Family.OSX
+    }
+
+    boolean isWindowsTarget(Project project) {
+        return getTarget(project).family == Family.MINGW
+    }
+
+    boolean isWasmTarget(Project project) {
+        return getTarget(project).family == Family.WASM
+    }
+
+    KonanTarget getTarget(Project project) {
         def platformManager = project.rootProject.platformManager
         def targetName = project.project.testTarget ?: 'host'
-        def target = platformManager.targetManager(targetName).target
-        return target.family == Family.IOS || target.family == Family.OSX
+        return platformManager.targetManager(targetName).target
     }
 
     Throwable unsupportedPlatformException() {
@@ -283,6 +297,11 @@ task distCompiler(type: Copy) {
     }
     from(project.file('konan')) {
         into('konan')
+    }
+    if (experimentalEnabled) {
+        file('konan/experimentalTargetsEnabled').text = ""
+    } else {
+        delete('konan/experimentalTargetsEnabled')
     }
 }
 

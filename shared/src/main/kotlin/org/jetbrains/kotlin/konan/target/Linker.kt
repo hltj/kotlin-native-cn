@@ -303,7 +303,10 @@ open class MingwLinker(targetProperties: MingwConfigurables)
             return staticGnuArCommands(ar, executable, objectFiles, libraries)
 
         val dynamic = kind == LinkerOutputKind.DYNAMIC_LIBRARY
-        return listOf(Command(linker).apply {
+        return listOf(when {
+                HostManager.hostIsMingw -> Command(linker)
+                else -> Command("wine64", "$linker.exe")
+        }.apply {
             +listOf("-o", executable)
             +objectFiles
             if (optimize) +linkerOptimizationFlags
@@ -395,7 +398,7 @@ fun linker(configurables: Configurables): LinkerFlags =
                 MacOSBasedLinker(configurables as AppleConfigurables)
             KonanTarget.ANDROID_ARM32, KonanTarget.ANDROID_ARM64 ->
                 AndroidLinker(configurables as AndroidConfigurables)
-            KonanTarget.MINGW_X64 ->
+            KonanTarget.MINGW_X64, KonanTarget.MINGW_X86 ->
                 MingwLinker(configurables as MingwConfigurables)
             KonanTarget.WASM32 ->
                 WasmLinker(configurables as WasmConfigurables)

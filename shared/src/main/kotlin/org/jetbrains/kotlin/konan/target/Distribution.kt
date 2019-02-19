@@ -31,7 +31,7 @@ class Distribution(
     private fun findKonanHome(): String {
         if (konanHomeOverride != null) return konanHomeOverride
 
-        val value = System.getProperty("org.jetbrains.kotlin.native.home", "dist")
+        val value = System.getProperty("konan.home", "dist")
         val path = File(value).absolutePath
         return path
     }
@@ -39,6 +39,9 @@ class Distribution(
     val konanHome = findKonanHome()
     val konanSubdir = "$konanHome/konan"
     val mainPropertyFileName = "$konanSubdir/konan.properties"
+    val experimentalEnabled by lazy {
+        File("$konanSubdir/experimentalTargetsEnabled").exists
+    }
 
     private fun propertyFilesFromConfigDir(configDir: String, genericName: String): List<File> {
         val directory = File(configDir, "platforms/$genericName")

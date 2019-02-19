@@ -242,7 +242,11 @@ interface PrimitiveType : Type
 
 object CharType : PrimitiveType
 
-object BoolType : PrimitiveType
+open class BoolType: PrimitiveType
+
+object CBoolType : BoolType()
+
+object ObjCBoolType : BoolType()
 
 data class IntegerType(val size: Int, val isSigned: Boolean, val spelling: String) : PrimitiveType
 
@@ -266,6 +270,7 @@ interface ArrayType : Type {
 
 data class ConstArrayType(override val elemType: Type, val length: Long) : ArrayType
 data class IncompleteArrayType(override val elemType: Type) : ArrayType
+data class VariableArrayType(override val elemType: Type) : ArrayType
 
 data class Typedef(val def: TypedefDef) : Type
 

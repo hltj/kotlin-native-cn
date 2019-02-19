@@ -25,9 +25,9 @@ buildscript {
     dependencies {
         classpath "org.jetbrains.kotlin:kotlin-native-gradle-plugin:$gradlePluginVersion"
     }
-    ext.useCustomDist = project.hasProperty("org.jetbrains.kotlin.native.home") || project.hasProperty("konan.home")
+    ext.useCustomDist = project.hasProperty("konan.home")
     if (!useCustomDist) {
-        ext.setProperty("org.jetbrains.kotlin.native.home", distDir.absolutePath)
+        ext.setProperty("konan.home", distDir.absolutePath)
     }
 }
 
@@ -56,10 +56,6 @@ dependencies {
     }
 }
 
-if (project.hasProperty("konan.home")) {
-    ext.setProperty("org.jetbrains.kotlin.native.home", project.property("konan.home"))
-}
-
 ext.testOutputRoot = rootProject.file("test.output").absolutePath
 ext.externalTestsDir = project.file("build/external")
 ext.externalStdlibTestsDir = project.file("build/stdlib_external")
@@ -69,7 +65,7 @@ externalStdlibTestsDir.mkdirs()
 ext.platformManager = project.rootProject.platformManager
 ext.target = platformManager.targetManager(project.testTarget).target
 
-ext.testLibraryDir = "${project.property("org.jetbrains.kotlin.native.home")}/klib/platform/${project.target.name}"
+ext.testLibraryDir = "${project.property("konan.home")}/klib/platform/${project.target.name}"
 
 // Add executor to run tests depending on a target
 project.convention.plugins.executor = ExecutorServiceKt.create(project)
@@ -184,8 +180,8 @@ task sanity {
 // Collect results in one json.
 task resultsTask() {
     doLast {
-        Map<String, Map<String, RunExternalTestGroup.TestResult>> results = [:]
-        def statistics = new RunExternalTestGroup.Statistics()
+        Map<String, Map<String, TestResult>> results = [:]
+        def statistics = new Statistics()
         tasks.withType(RunExternalTestGroup).matching { it.state.executed }.each {
             results.put(it.name, it.results)
             statistics.add(it.statistics)
@@ -3011,7 +3007,7 @@ task interop_callbacksAndVarargs(type: RunInteropKonanTest) {
 }
 
 task interop_echo_server(type: RunInteropKonanTest) {
-    disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
+    disabled = isWasmTarget(project) || isWindowsTarget(project)
     run = false
     source = "interop/basics/echo_server.kt"
     interop = 'sockets'

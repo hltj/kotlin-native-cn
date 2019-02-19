@@ -129,7 +129,7 @@ internal class IrModuleSerializer(
         is IrReturnableBlockSymbol ->
             KonanIr.IrSymbolKind.RETURNABLE_BLOCK_SYMBOL
         is IrFieldSymbol ->
-            if (symbol.owner.correspondingProperty == null)
+            if (symbol.owner.correspondingProperty.let { it == null || it.isDelegated })
                 KonanIr.IrSymbolKind.STANDALONE_FIELD_SYMBOL
             else
                 KonanIr.IrSymbolKind.FIELD_SYMBOL
@@ -430,6 +430,8 @@ internal class IrModuleSerializer(
         callable.getter?.let { proto.getter = serializeIrSymbol(it) }
         callable.setter?.let { proto.setter = serializeIrSymbol(it) }
         callable.origin?.let { proto.origin = serializeIrStatementOrigin(it) }
+        val property = callable.getter!!.owner.correspondingProperty!!
+        descriptorReferenceSerializer.serializeDescriptorReference(property)?.let { proto.setDescriptor(it) }
         return proto.build()
     }
 
@@ -825,7 +827,7 @@ internal class IrModuleSerializer(
         return proto.build()
     }
 
-    private fun serializeIrFunctionBase(function: IrFunctionBase): KonanIr.IrFunctionBase {
+    private fun serializeIrFunctionBase(function: IrFunction): KonanIr.IrFunctionBase {
         val proto = KonanIr.IrFunctionBase.newBuilder()
             .setName(serializeString(function.name.toString()))
             .setVisibility(serializeVisibility(function.visibility))
@@ -856,7 +858,7 @@ internal class IrModuleSerializer(
     private fun serializeIrConstructor(declaration: IrConstructor): KonanIr.IrConstructor =
         KonanIr.IrConstructor.newBuilder()
             .setSymbol(serializeIrSymbol(declaration.symbol))
-            .setBase(serializeIrFunctionBase(declaration as IrFunctionBase))
+            .setBase(serializeIrFunctionBase(declaration))
             .setIsPrimary(declaration.isPrimary)
             .build()
 
@@ -877,7 +879,7 @@ internal class IrModuleSerializer(
         //    proto.setCorrespondingProperty(protoUniqId(uniqId))
         //}
 
-        val base = serializeIrFunctionBase(function as IrFunctionBase)
+        val base = serializeIrFunctionBase(function)
         proto.setBase(base)
 
         return proto.build()
