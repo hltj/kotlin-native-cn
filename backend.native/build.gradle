@@ -9,7 +9,7 @@ buildscript {
     apply plugin: 'project-report'
 
     dependencies {
-        classpath "com.google.protobuf:protobuf-gradle-plugin:0.8.0"
+        classpath "com.google.protobuf:protobuf-gradle-plugin:0.8.8"
     }
 }
 
@@ -57,18 +57,24 @@ compileCompilerKotlin {
 }
 
 compileCompilerJava {
-    doFirst {
-        delete 'build/generated'
-    }
     dependsOn('renamePackage')
 }
 
-task renamePackage(type: Copy) {
+task copyGenerated(type: Copy) {
     dependsOn('generateCompilerProto')
     from 'build/generated/source/proto/compiler/java'
     into 'build/renamed/source/proto/compiler/java'
     filter { line -> line.replaceAll("com.google.protobuf", "org.jetbrains.kotlin.protobuf") }
     outputs.dir('build/renamed')
+}
+
+task deleteGenerated(type: Delete) {
+    dependsOn('copyGenerated')
+    delete 'build/generated'
+}
+
+task renamePackage {
+    dependsOn('copyGenerated', 'deleteGenerated')
 }
 
 kotlinNativeInterop {
@@ -153,14 +159,13 @@ classes.dependsOn 'compilerClasses', 'cli_bcClasses', 'bc_frontendClasses'
 
 // These are just a couple of aliases
 task stdlib(dependsOn: "${hostName}Stdlib")
-task start(dependsOn: "${hostName}Start")
 
 def commonSrc = file('build/stdlib')
 
 task unzipStdlibSources(type: Copy) {
-    if (project.hasProperty("kotlinProjectPath")) {
-        dependsOn gradle.includedBuild('kotlin').task(":kotlin-stdlib-common:sourcesJar")
-    }
+    dependsOn configurations.kotlin_common_stdlib_src
+    dependsOn configurations.kotlin_test_common_src
+    dependsOn configurations.kotlin_test_annotations_common_src
 
     def jarFiles = configurations.kotlin_common_stdlib_src.files +
             configurations.kotlin_test_common_src.files +
@@ -180,7 +185,8 @@ final List<File> stdLibSrc = [
         project(':Interop:Runtime').file('src/main/kotlin'),
         project(':Interop:Runtime').file('src/native/kotlin'),
         project(':Interop:JsRuntime').file('src/main/kotlin'),
-        project(':runtime').file('src/main/kotlin')
+        project(':runtime').file('src/main/kotlin'),
+        project(':runtime').file('src/launcher/kotlin')
 ]
 
 task zipStdLibSources(type: Zip, dependsOn: unzipStdlibSources) {
@@ -243,21 +249,6 @@ targetList.each { target ->
         dependsOn 'unzipStdlibSources'
         dependsOn ":runtime:${target}Runtime"
         dependsOn ":distCompiler"
-    }
-
-    task("${target}Start", type: JavaExec) {
-        main = 'org.jetbrains.kotlin.cli.bc.K2NativeKt'
-        classpath = project.configurations.cli_bc
-        jvmArgs = konanJvmArgs
-        args = [*konanArgs, '-produce', 'bitcode',
-                '-output', project(':runtime').file("build/${target}Start"),
-                '-library', project(':runtime').file("build/${target}Stdlib"),
-                project(':runtime').file('src/launcher/kotlin')]
-
-        inputs.dir(project(':runtime').file('src/launcher/kotlin'))
-        outputs.file(project(':runtime').file("build/${target}Start.bc"))
-
-        dependsOn ":runtime:${target}Runtime", "${target}Stdlib"
     }
 }
 

@@ -29,6 +29,7 @@ import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.*
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
+import org.jetbrains.kotlin.ir.expressions.impl.IrLoopBase
 import org.jetbrains.kotlin.ir.symbols.*
 import org.jetbrains.kotlin.ir.symbols.impl.*
 import org.jetbrains.kotlin.ir.types.IrType
@@ -58,6 +59,7 @@ class KonanIrModuleDeserializer(
     var deserializedModuleProtoSymbolTables = mutableMapOf<ModuleDescriptor, KonanIr.IrSymbolTable>()
     var deserializedModuleProtoStringTables = mutableMapOf<ModuleDescriptor, KonanIr.StringTable>()
     var deserializedModuleProtoTypeTables = mutableMapOf<ModuleDescriptor, KonanIr.IrTypeTable>()
+    var deserializedModuleLoops = mutableMapOf<Pair<ModuleDescriptor, Int>, IrLoopBase>()
 
     val resolvedForwardDeclarations = mutableMapOf<UniqIdKey, UniqIdKey>()
     val descriptorReferenceDeserializer = DescriptorReferenceDeserializer(currentModule, resolvedForwardDeclarations)
@@ -142,6 +144,9 @@ class KonanIrModuleDeserializer(
 
     override fun deserializeString(proto: KonanIr.String) =
         deserializedModuleProtoStringTables[deserializedModuleDescriptor]!!.getStrings(proto.index)
+
+    override fun deserializeLoopHeader(loopIndex: Int, loopBuilder: () -> IrLoopBase) =
+            deserializedModuleLoops.getOrPut(deserializedModuleDescriptor!! to loopIndex, loopBuilder)
 
     fun deserializeIrSymbolData(proto: KonanIr.IrSymbolData): IrSymbol {
         val key = proto.uniqId.uniqIdKey(deserializedModuleDescriptor!!)
@@ -309,7 +314,7 @@ class KonanIrModuleDeserializer(
         }
     }
 
-    fun deserializeIrFile(fileProto: KonanIr.IrFile, moduleDescriptor: ModuleDescriptor, deserializeAllDeclarations: Boolean): IrFile {
+    fun deserializeIrFile(fileProto: KonanIr.IrFile, moduleDescriptor: ModuleDescriptor, deseralizationStrategy: DeserializationStrategy): IrFile {
         val fileEntry = NaiveSourceBasedFileEntryImpl(
             deserializeString(fileProto.fileEntry.name),
             fileProto.fileEntry.lineStartOffsetsList.toIntArray()
@@ -327,15 +332,22 @@ class KonanIrModuleDeserializer(
             val uniqIdKey = it.uniqIdKey(moduleDescriptor)
             reversedFileIndex.put(uniqIdKey, file)
 
-            if (deserializeAllDeclarations) {
+            if (deseralizationStrategy == DeserializationStrategy.ALL) {
                 file.declarations.add(deserializeTopLevelDeclaration(uniqIdKey))
             }
         }
 
+        val annotations = deserializeAnnotations(fileProto.annotations)
+        file.annotations.addAll(annotations)
+
+
+        if (deseralizationStrategy == DeserializationStrategy.EXPLICITLY_EXPORTED)
+            fileProto.explicitlyExportedToCompilerList.forEach { deserializeIrSymbol(it) }
+
         return file
     }
 
-    fun deserializeIrModule(proto: KonanIr.IrModule, moduleDescriptor: ModuleDescriptor, deserializeAllDeclarations: Boolean): IrModuleFragment {
+    fun deserializeIrModuleHeader(proto: KonanIr.IrModule, moduleDescriptor: ModuleDescriptor, deserializationStrategy: DeserializationStrategy): IrModuleFragment {
 
         deserializedModuleDescriptor = moduleDescriptor
         deserializedModuleProtoSymbolTables.put(moduleDescriptor, proto.symbolTable)
@@ -343,7 +355,7 @@ class KonanIrModuleDeserializer(
         deserializedModuleProtoTypeTables.put(moduleDescriptor, proto.typeTable)
 
         val files = proto.fileList.map {
-            deserializeIrFile(it, moduleDescriptor, deserializeAllDeclarations)
+            deserializeIrFile(it, moduleDescriptor, deserializationStrategy)
 
         }
         val module = IrModuleFragmentImpl(moduleDescriptor, builtIns, files)
@@ -351,8 +363,14 @@ class KonanIrModuleDeserializer(
         return module
     }
 
-    fun deserializeIrModule(moduleDescriptor: ModuleDescriptor, byteArray: ByteArray, deserializeAllDeclarations: Boolean = false): IrModuleFragment {
+    fun deserializeIrModuleHeader(moduleDescriptor: ModuleDescriptor, byteArray: ByteArray, deserializationStrategy: DeserializationStrategy = DeserializationStrategy.ONLY_REFERENCED): IrModuleFragment {
         val proto = KonanIr.IrModule.parseFrom(byteArray.codedInputStream, KonanSerializerProtocol.extensionRegistry)
-        return deserializeIrModule(proto, moduleDescriptor, deserializeAllDeclarations)
+        return deserializeIrModuleHeader(proto, moduleDescriptor, deserializationStrategy)
     }
+}
+
+enum class DeserializationStrategy {
+    ONLY_REFERENCED,
+    ALL,
+    EXPLICITLY_EXPORTED
 }

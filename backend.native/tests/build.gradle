@@ -1084,6 +1084,18 @@ task initializers_correctOrder2(type: RunKonanTest) {
     source = "codegen/initializers/correctOrder2.kt"
 }
 
+task initializers_linkTest1(type: LinkKonanTest) {
+    goldValue = "1200\n"
+    source = "codegen/initializers/linkTest1_main.kt"
+    lib = "codegen/initializers/linkTest1_lib.kt"
+}
+
+task initializers_linkTest2(type: LinkKonanTest) {
+    goldValue = "2\n"
+    source = "codegen/initializers/linkTest2_main.kt"
+    lib = "codegen/initializers/linkTest2_lib.kt"
+}
+
 task arithmetic_basic(type: RunKonanTest) {
     source = "codegen/arithmetic/basic.kt"
 }
@@ -2034,6 +2046,12 @@ task catch7(type: RunKonanTest) {
 task extend_exception(type: RunKonanTest) {
     goldValue = "OK\n"
     source = "runtime/exceptions/extend0.kt"
+}
+
+task check_stacktrace_format(type: RunStandaloneKonanTest) {
+    disabled = !isAppleTarget(project)
+    flags = ['-g']
+    source = "runtime/exceptions/check_stacktrace_format.kt"
 }
 
 task custom_hook(type: RunStandaloneKonanTest) {
@@ -3028,7 +3046,7 @@ task interop_objc_smoke(type: RunInteropKonanTest) {
             "5\n" +
             "String macro\n" +
             "CFString macro\n" +
-            "Deallocated\nDeallocated\n"
+            "Deallocated\nDeallocated\nDeallocated\n"
 
     if (isAppleTarget(project)) {
         source = "interop/objc/smoke.kt"

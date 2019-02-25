@@ -19,6 +19,8 @@
  * built plugin to bintray repository.
  */
 
+import org.jetbrains.kotlin.konan.KonanVersion
+
 buildscript {
     ext.rootBuildDirectory = file('../../')
 
@@ -37,8 +39,9 @@ buildscript {
 
     dependencies {
         classpath 'com.jfrog.bintray.gradle:gradle-bintray-plugin:1.8.4'
-        classpath 'com.github.jengelman.gradle.plugins:shadow:4.0.0'
+        classpath 'com.github.jengelman.gradle.plugins:shadow:4.0.4'
         classpath "com.gradle.publish:plugin-publish-plugin:0.9.10"
+        classpath "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
     }
 }
 
@@ -51,26 +54,11 @@ apply plugin: 'com.github.johnrengelman.shadow'
 apply plugin: "com.gradle.plugin-publish"
 
 String determineVersion() {
-    // With Gradle 4.10 we are no longer able to depend on
-    // a 'shared' build included into the root one and use the KonanVersion API provided
-    // by it. So we have to manually construct the version.
-    // TODO: Remove this code when 'shared' is built separately (from a separate repo).
-    def meta = findProperty('konanMetaVersion') ?: 'dev'
     def overriddenVersion = findProperty('pluginVersionOverride') as String
-
     if (overriddenVersion != null && !overriddenVersion.empty) {
         return overriddenVersion
-    }
-
-    if (meta == 'release') {
-        return kotlinVersion
     } else {
-        def buildNumber = findProperty("build.number")?.tokenize('-')?.get(2)
-        def result = "$kotlinVersion-native-$konanVersion-$meta"
-        if (buildNumber != null) {
-            result += "-$buildNumber"
-        }
-        return result
+        return "$kotlinVersion-native-${KonanVersion.Companion.CURRENT.toString()}"
     }
 }
 
@@ -119,7 +107,7 @@ dependencies {
 shadowJar {
     from sourceSets.main.output
     configurations = [project.configurations.bundleDependencies]
-    classifier = null
+    archiveClassifier.set(null)
     relocate('org.jetbrains.kotlinx', 'shadow.org.jetbrains.kotlinx')
     relocate('org.jetbrains.kotlin.compilerRunner', 'shadow.org.jetbrains.kotlin.compilerRunner')
     relocate('org.jetbrains.kotlin.konan', 'shadow.org.jetbrains.kotlin.konan')
@@ -190,6 +178,9 @@ test {
     }
     if (project.hasProperty("filter")) {
         filter.includeTestsMatching project.property("filter")
+    }
+    if (project.hasProperty("gradleVersion")) {
+        systemProperty("gradleVersion", project.property("gradleVersion"))
     }
 }
 
