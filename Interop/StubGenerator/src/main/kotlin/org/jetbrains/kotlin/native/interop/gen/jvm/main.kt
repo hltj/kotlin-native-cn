@@ -177,8 +177,11 @@ private fun processCLib(args: Array<String>, additionalArgs: Map<String, Any> = 
 
     val def = DefFile(defFile, tool.substitutions)
 
+    if (flavorName == "native" && argParser.getOrigin("linkerOpts") == ArgParser.ValueOrigin.SET_BY_USER) {
+        warn("-linkerOpts/-lopt option is not supported by cinterop. Please add linker options to .def file or binary compilation instead.")
+    }
+
     val additionalLinkerOpts = argParser.getValuesAsArray("linkerOpts")
-    val generateShims = argParser.get<Boolean>("shims")!!
     val verbose = argParser.get<Boolean>("verbose")!!
 
     val language = selectNativeLanguage(def.config)
@@ -228,7 +231,7 @@ private fun processCLib(args: Array<String>, additionalArgs: Map<String, Any> = 
 
     val nativeIndex = buildNativeIndex(library, verbose)
 
-    val gen = StubGenerator(nativeIndex, configuration, libName, generateShims, verbose, flavor, imports)
+    val gen = StubGenerator(nativeIndex, configuration, libName, verbose, flavor, imports)
 
     outKtFile.parentFile.mkdirs()
 
@@ -298,7 +301,7 @@ internal fun buildNativeLibrary(
         arguments: ArgParser,
         imports: ImportsImpl
 ): NativeLibrary {
-    val additionalHeaders = arguments.getValuesAsArray("header")
+    val additionalHeaders = arguments.getValuesAsArray("header") + arguments.getValuesAsArray("h")
     val additionalCompilerOpts = arguments.getValuesAsArray("compilerOpts")
 
     val headerFiles = def.config.headers + additionalHeaders

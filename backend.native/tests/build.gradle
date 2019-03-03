@@ -177,31 +177,29 @@ task sanity {
     dependsOn(tasksOf { it instanceof RunStdlibTest })
 }
 
-// Collect results in one json.
+// Collect reports in one json.
 task resultsTask() {
     doLast {
-        Map<String, Map<String, TestResult>> results = [:]
+        List<KonanTestGroupReport> reports = []
         def statistics = new Statistics()
         tasks.withType(RunExternalTestGroup).matching { it.state.executed }.each {
-            results.put(it.name, it.results)
-            statistics.add(it.statistics)
+            reports += new KonanTestGroupReport(it.name, it.testGroupReporter.suiteReports)
+            statistics.add(it.testGroupReporter.statistics)
         }
         
         tasks.withType(RunStdlibTest).matching {it.state.executed }.each {
             statistics.add(it.statistics)
         }
 
-        def output = ["statistics": statistics, "tests": results]
-        def json = JsonOutput.toJson(output)
-        def reportFile = new File(testOutputExternal, "results.json")
-        testOutputExternal.mkdirs()
-        reportFile.write(JsonOutput.prettyPrint(json))
-        println("DONE.\n\n" +
-                "TOTAL: $statistics.total\n" +
-                "PASSED: $statistics.passed\n" +
-                "FAILED: $statistics.failed\n" +
-                "ERROR: $statistics.error\n" +
-                "SKIPPED: $statistics.skipped")
+        ExternalReportUtilsKt.saveReport("$testOutputExternal/reports.json", statistics, reports)
+        use(KonanTestSuiteReportKt) {
+            project.logger.quiet("DONE.\n\n" +
+                    "TOTAL: $statistics.total\n" +
+                    "PASSED: $statistics.passed\n" +
+                    "FAILED: $statistics.failed\n" +
+                    "ERROR: $statistics.error\n" +
+                    "SKIPPED: $statistics.skipped")
+        }
     }
 }
 
@@ -270,6 +268,12 @@ task daily() {
 
 task slackReport(type:Reporter) {
     reportHome = rootProject.file("test.output").absoluteFile
+}
+
+task slackReportNightly(type:NightlyReporter) {
+    externalMacosReport = "external_macos_results/reports.json"
+    externalLinuxReport = "external_linux_results/reports.json"
+    externalWindowsReport = "external_windows_results/reports.json"
 }
 
 task sum (type:RunKonanTest) {
@@ -1587,6 +1591,12 @@ task array2(type: RunKonanTest) {
 task array3(type: RunKonanTest) {
     goldValue = "1 2 3 7 8 9 -128 -1 \n1 2 3 7 8 9 -128 -1 \n"
     source = "runtime/collections/array3.kt"
+}
+
+task array4(type: RunKonanTest) {
+    disabled = (project.testTarget == 'wasm32') // Uses exceptions.
+    goldValue = "OK\n"
+    source = "runtime/collections/array4.kt"
 }
 
 task typed_array0(type: RunKonanTest) {

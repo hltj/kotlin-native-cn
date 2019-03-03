@@ -1,5 +1,5 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
+ * Copyright 2010-2019 JetBrains s.r.o.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,6 @@
  * limitations under the License.
  */
 
-buildscript {
-    ext.rootBuildDirectory = "$rootDir/.."
-    apply from: "$rootBuildDirectory/gradle/loadRootProperties.gradle"
-    apply from: "$rootBuildDirectory/gradle/kotlinGradlePlugin.gradle"
-}
-
-allprojects {
-    repositories {
-        maven {
-            url buildKotlinCompilerRepo
-        }
-        maven {
-            url 'https://cache-redirector.jetbrains.com/maven-central'
-        }
-
-        maven { url "https://kotlin.bintray.com/kotlinx" }
-    }
+fun main() {
+    println("Hello, World!")
 }

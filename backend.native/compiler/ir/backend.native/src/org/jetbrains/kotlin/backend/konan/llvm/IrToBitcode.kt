@@ -1425,11 +1425,15 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                     fieldPtrOfClass(thisPtr, value.symbol.owner), value.descriptor.isVar())
         } else {
             assert(value.receiver == null)
-            if (context.config.threadsAreAllowed && value.symbol.owner.isMainOnlyNonPrimitive) {
-                functionGenerationContext.checkMainThread(currentCodeContext.exceptionHandler)
+            return if (value.symbol.owner.correspondingProperty?.isConst == true) {
+                 evaluateConst(value.symbol.owner.initializer?.expression as IrConst<*>)
+            } else {
+                if (context.config.threadsAreAllowed && value.symbol.owner.isMainOnlyNonPrimitive) {
+                    functionGenerationContext.checkMainThread(currentCodeContext.exceptionHandler)
+                }
+                val ptr = context.llvmDeclarations.forStaticField(value.symbol.owner).storage
+                functionGenerationContext.loadSlot(ptr, value.descriptor.isVar())
             }
-            val ptr = context.llvmDeclarations.forStaticField(value.symbol.owner).storage
-            return functionGenerationContext.loadSlot(ptr, value.descriptor.isVar())
         }
     }
 
@@ -1575,7 +1579,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     val dummyFile = IrFileImpl(NaiveSourceBasedFileEntryImpl("no source file"))
 
     private inner class ReturnableBlockScope(val returnableBlock: IrReturnableBlock) :
-            FileScope((returnableBlock as? KonanIrReturnableBlockImpl)?.sourceFile ?: dummyFile) {
+            FileScope(returnableBlock.sourceFileSymbol?.owner ?: dummyFile) {
 
         var bbExit : LLVMBasicBlockRef? = null
         var resultPhi : LLVMValueRef? = null
@@ -2062,12 +2066,12 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             val thisValue = if (constructedClass.isArray) {
                 assert(args.isNotEmpty() && args[0].type == int32Type)
                 functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), args[0],
-                        resultLifetime(callee))
+                        resultLifetime(callee), currentCodeContext.exceptionHandler)
             } else if (constructedClass == context.ir.symbols.string.owner) {
                 // TODO: consider returning the empty string literal instead.
                 assert(args.isEmpty())
                 functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), count = kImmZero,
-                        lifetime = resultLifetime(callee))
+                        lifetime = resultLifetime(callee), exceptionHandler = currentCodeContext.exceptionHandler)
             } else if (constructedClass.isObjCClass()) {
                 assert(constructedClass.isKotlinObjCClass()) // Calls to other ObjC class constructors must be lowered.
                 val symbols = context.ir.symbols
