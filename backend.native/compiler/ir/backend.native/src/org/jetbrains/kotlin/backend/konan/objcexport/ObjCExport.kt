@@ -5,7 +5,9 @@
 
 package org.jetbrains.kotlin.backend.konan.objcexport
 
+import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.getPackageFragments
+import org.jetbrains.kotlin.backend.konan.getExportedDependencies
 import org.jetbrains.kotlin.backend.konan.isNativeBinary
 import org.jetbrains.kotlin.backend.konan.llvm.CodeGenerator
 import org.jetbrains.kotlin.backend.konan.llvm.objcexport.ObjCExportCodeGenerator
@@ -22,51 +24,75 @@ import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.name.isSubpackageOf
 
-internal class ObjCExport(val codegen: CodeGenerator) {
-    val context get() = codegen.context
+internal class ObjCExportedInterface(
+        val generatedClasses: Set<ClassDescriptor>,
+        val categoryMembers: Map<ClassDescriptor, List<CallableMemberDescriptor>>,
+        val topLevel: Map<SourceFile, List<CallableMemberDescriptor>>,
+        val headerLines: List<String>,
+        val namer: ObjCExportNamer,
+        val mapper: ObjCExportMapper
+)
 
+internal class ObjCExport(val context: Context) {
     private val target get() = context.config.target
 
-    internal fun produce() {
+    private val exportedInterface = produceInterface()
+
+    private fun produceInterface(): ObjCExportedInterface? {
+        if (target.family != Family.IOS && target.family != Family.OSX) return null
+
+        if (!context.config.produce.isNativeBinary) return null // TODO: emit RTTI to the same modules as classes belong to.
+
+        val produceFramework = context.config.produce == CompilerOutputKind.FRAMEWORK
+
+        return if (produceFramework) {
+            val mapper = ObjCExportMapper()
+            val moduleDescriptors = listOf(context.moduleDescriptor) + context.getExportedDependencies()
+            val namer = ObjCExportNamerImpl(
+                    moduleDescriptors.toSet(),
+                    context.moduleDescriptor.builtIns,
+                    mapper,
+                    context.moduleDescriptor.namePrefix,
+                    local = false
+            )
+            val headerGenerator = ObjCExportHeaderGeneratorImpl(context, moduleDescriptors, mapper, namer)
+            headerGenerator.translateModule()
+            headerGenerator.buildInterface()
+        } else {
+            null
+        }
+    }
+
+    internal fun generate(codegen: CodeGenerator) {
         if (target.family != Family.IOS && target.family != Family.OSX) return
 
         if (!context.config.produce.isNativeBinary) return // TODO: emit RTTI to the same modules as classes belong to.
 
-        val objCCodeGenerator: ObjCExportCodeGenerator
-        val generatedClasses: Set<ClassDescriptor>
-        val topLevelDeclarations: Map<SourceFile, List<CallableMemberDescriptor>>
+        val mapper = exportedInterface?.mapper ?: ObjCExportMapper()
+        val namer = exportedInterface?.namer ?: ObjCExportNamerImpl(
+                setOf(codegen.context.moduleDescriptor),
+                context.moduleDescriptor.builtIns,
+                mapper,
+                context.moduleDescriptor.namePrefix,
+                local = false
+        )
 
-        if (context.config.produce == CompilerOutputKind.FRAMEWORK) {
-            val headerGenerator = ObjCExportHeaderGeneratorImpl(context)
-            produceFrameworkSpecific(headerGenerator)
+        val objCCodeGenerator = ObjCExportCodeGenerator(codegen, namer, mapper)
 
-            generatedClasses = headerGenerator.generatedClasses
-            topLevelDeclarations = headerGenerator.topLevel
-            objCCodeGenerator = ObjCExportCodeGenerator(codegen, headerGenerator.namer, headerGenerator.mapper)
-        } else {
-            // TODO: refactor ObjCExport* to handle this case on a general basis.
-            val mapper = object : ObjCExportMapper() {
-                override fun getCategoryMembersFor(descriptor: ClassDescriptor): List<CallableMemberDescriptor> =
-                        emptyList()
+        if (exportedInterface != null) {
+            produceFrameworkSpecific(exportedInterface.headerLines)
 
-                override fun isSpecialMapped(descriptor: ClassDescriptor): Boolean =
-                        error("shouldn't reach here")
-
-            }
-
-            val namer = ObjCExportNamerImpl(emptySet(), context.builtIns, mapper, context.moduleDescriptor.namePrefix)
-            objCCodeGenerator = ObjCExportCodeGenerator(codegen, namer, mapper)
-
-            generatedClasses = emptySet()
-            topLevelDeclarations = emptyMap()
+            objCCodeGenerator.generate(
+                    generatedClasses = exportedInterface.generatedClasses,
+                    categoryMembers = exportedInterface.categoryMembers,
+                    topLevel = exportedInterface.topLevel
+            )
         }
 
-        objCCodeGenerator.emitRtti(generatedClasses = generatedClasses, topLevel = topLevelDeclarations)
+        objCCodeGenerator.emitRtti()
     }
 
-    private fun produceFrameworkSpecific(headerGenerator: ObjCExportHeaderGenerator) {
-        headerGenerator.translateModule()
-
+    private fun produceFrameworkSpecific(headerLines: List<String>) {
         val framework = File(context.config.outputFile)
         val frameworkContents = when(target.family) {
             Family.IOS -> framework
@@ -80,7 +106,7 @@ internal class ObjCExport(val codegen: CodeGenerator) {
         val headerName = frameworkName + ".h"
         val header = headers.child(headerName)
         headers.mkdirs()
-        header.writeLines(headerGenerator.build())
+        header.writeLines(headerLines)
 
         val modules = frameworkContents.child("Modules")
         modules.mkdirs()

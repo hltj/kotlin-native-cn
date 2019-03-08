@@ -3,7 +3,7 @@
  * that can be found in the LICENSE file.
  */
 
-package org.jetbrains.kotlin.backend.konan.irasdescriptors
+package org.jetbrains.kotlin.backend.konan.ir
 
 import org.jetbrains.kotlin.backend.common.atMostOne
 import org.jetbrains.kotlin.backend.konan.descriptors.getArgumentValueOrNull
@@ -173,12 +173,3 @@ val IrDeclaration.isGetter get() = this is IrSimpleFunction && this == this.corr
 val IrDeclaration.isSetter get() = this is IrSimpleFunction && this == this.correspondingProperty?.setter
 
 val IrDeclaration.isAccessor get() = this.isGetter || this.isSetter
-
-val IrDeclaration.file: IrFile get() = parent.let {
-    when (it) {
-        is IrFile -> it
-        is IrPackageFragment -> TODO("Unknown file")
-        is IrDeclaration -> it.file
-        else -> TODO("Unexpected declaration parent")
-    }
-}

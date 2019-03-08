@@ -8,6 +8,7 @@ import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
+import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
 import org.jetbrains.kotlin.backend.konan.serialization.*
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
@@ -45,6 +46,14 @@ internal val frontendPhase = konanUnitPhase(
         },
         name = "Frontend",
         description = "Frontend builds AST"
+)
+
+internal val objCExportPhase = konanUnitPhase(
+        op = {
+            objCExport = ObjCExport(this)
+        },
+        name = "ObjCExport",
+        description = "Objective-C header generation"
 )
 
 internal val psiToIrPhase = konanUnitPhase(
@@ -223,11 +232,10 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
         prerequisite = emptySet(),
         dumperVerifier = EmptyDumperVerifier(),
         lower = object : CompilerPhase<Context, IrModuleFragment, IrModuleFragment> {
-            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState, context: Context, irModule: IrModuleFragment): IrModuleFragment {
-
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<IrModuleFragment>, context: Context, input: IrModuleFragment): IrModuleFragment {
                 val files = mutableListOf<IrFile>()
-                files += irModule.files
-                irModule.files.clear()
+                files += input.files
+                input.files.clear()
 
                 // TODO: KonanLibraryResolver.TopologicalLibraryOrder actually returns libraries in the reverse topological order.
                 context.librariesWithDependencies
@@ -236,10 +244,10 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
                             val libModule = context.irModules[it.libraryName]
                                     ?: return@forEach
 
-                            irModule.files += libModule.files
-                            allLoweringsPhase.invoke(phaseConfig, phaserState, context, irModule)
+                            input.files += libModule.files
+                            allLoweringsPhase.invoke(phaseConfig, phaserState, context, input)
 
-                            irModule.files.clear()
+                            input.files.clear()
                         }
 
                 // Save all files for codegen in reverse topological order.
@@ -248,13 +256,12 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
                         .forEach {
                             val libModule = context.irModules[it.libraryName]
                                     ?: return@forEach
-                            irModule.files += libModule.files
+                            input.files += libModule.files
                         }
-                irModule.files += files
+                input.files += files
 
-                return irModule
+                return input
             }
-
         })
 
 internal val bitcodePhase = namedIrModulePhase(
@@ -275,6 +282,7 @@ internal val toplevelPhase = namedUnitPhase(
         name = "Compiler",
         description = "The whole compilation process",
         lower = frontendPhase then
+                objCExportPhase then
                 psiToIrPhase then
                 irGeneratorPluginsPhase then
                 copyDefaultValuesToActualPhase then

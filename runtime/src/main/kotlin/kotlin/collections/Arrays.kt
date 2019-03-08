@@ -6,31 +6,16 @@
 package kotlin.collections
 
 import kotlin.native.internal.InlineConstructor
-import kotlin.collections.*
 import kotlin.internal.PureReifiable
-import kotlin.util.sortArrayComparable
-import kotlin.util.sortArrayWith
-import kotlin.util.sortArray
 
 /** Returns the array if it's not `null`, or an empty array otherwise. */
 public actual inline fun <reified T> Array<out T>?.orEmpty(): Array<out T> = this ?: emptyArray<T>()
 
-@Suppress("NOTHING_TO_INLINE")
-@PublishedApi internal inline fun checkCopyOfRangeArguments(fromIndex: Int, toIndex: Int, size: Int) {
+internal fun checkCopyOfRangeArguments(fromIndex: Int, toIndex: Int, size: Int) {
     if (toIndex > size)
         throw IndexOutOfBoundsException("toIndex ($toIndex) is greater than size ($size).")
     if (fromIndex > toIndex)
         throw IllegalArgumentException("fromIndex ($fromIndex) is greater than toIndex ($toIndex).")
-}
-
-// TODO: Move to generated code
-/**
- * Sorts a range in the array in-place with the given [comparator].
- *
- * The sort is _stable_. It means that equal elements preserve their order relative to each other after sorting.
- */
-public fun <T> Array<out T>.sortWith(comparator: Comparator<in T>, fromIndex: Int = 0, toIndex: Int = size): Unit {
-    sortArrayWith(this, fromIndex, toIndex, comparator)
 }
 
 
