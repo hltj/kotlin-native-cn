@@ -29,6 +29,9 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = "-generate-worker-test-runner",
             shortName = "-trw", description = "Produce a worker runner for unit tests")
     var generateWorkerTestRunner = false
+    @Argument(value = "-generate-no-exit-test-runner",
+            shortName = "-trn", description = "Produce a runner for unit tests not forcing exit")
+    var generateNoExitTestRunner = false
 
     @Argument(value="-include-binary", deprecatedName = "-includeBinary", shortName = "-ib", valueDescription = "<path>", description = "Pack external binary within the klib")
     var includeBinaries: Array<String>? = null
@@ -161,6 +164,19 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
 
     @Argument(value = "-Xdebug-info-version", description = "generate debug info of given version (1, 2)")
     var debugInfoFormatVersion: String = "1" /* command line parser doesn't accept kotlin.Int type */
+
+    @Argument(value = "-Xcoverage", description = "emit coverage")
+    var coverage: Boolean = false
+
+    @Argument(
+            value = "-Xlibrary-to-cover",
+            valueDescription = "<path>",
+            description = "Path to library that should be covered."
+    )
+    var coveredLibraries: Array<String>? = null
+
+    @Argument(value = "-Xcoverage-file", valueDescription = "<path>", description = "Save coverage information to the given file")
+    var coverageFile: String? = null
 
     override fun configureAnalysisFlags(collector: MessageCollector): MutableMap<AnalysisFlag<*>, Any> =
             super.configureAnalysisFlags(collector).also {

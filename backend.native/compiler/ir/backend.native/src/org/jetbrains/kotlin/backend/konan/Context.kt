@@ -18,7 +18,6 @@ import org.jetbrains.kotlin.backend.konan.library.KonanLibraryWriter
 import org.jetbrains.kotlin.backend.konan.library.LinkData
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.DECLARATION_ORIGIN_BRIDGE_METHOD
-import org.jetbrains.kotlin.backend.konan.optimizations.DataFlowIR
 import org.jetbrains.kotlin.backend.konan.optimizations.Devirtualization
 import org.jetbrains.kotlin.backend.konan.optimizations.ExternalModulesDFG
 import org.jetbrains.kotlin.backend.konan.optimizations.ModuleDFG
@@ -42,7 +41,6 @@ import org.jetbrains.kotlin.builtins.konan.KonanBuiltIns
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
-import org.jetbrains.kotlin.metadata.konan.KonanProtoBuf
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi2ir.generators.GeneratorContext
@@ -50,13 +48,13 @@ import org.jetbrains.kotlin.resolve.BindingContext
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
 import org.jetbrains.kotlin.resolve.scopes.MemberScope
 import org.jetbrains.kotlin.resolve.scopes.receivers.ImplicitClassReceiver
-import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedClassDescriptor
-import org.jetbrains.kotlin.serialization.deserialization.getName
 import java.lang.System.out
 import kotlin.LazyThreadSafetyMode.PUBLICATION
 import kotlin.reflect.KProperty
 import org.jetbrains.kotlin.backend.common.ir.copyTo
+import org.jetbrains.kotlin.backend.common.serialization.KotlinMangler
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
+import org.jetbrains.kotlin.backend.konan.llvm.coverage.CoverageManager
 import org.jetbrains.kotlin.ir.symbols.impl.IrTypeParameterSymbolImpl
 
 /**
@@ -64,7 +62,7 @@ import org.jetbrains.kotlin.ir.symbols.impl.IrTypeParameterSymbolImpl
  */
 internal const val SYNTHETIC_OFFSET = -2
 
-internal class SpecialDeclarationsFactory(val context: Context) {
+internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler by KonanMangler {
     private val enumSpecialDeclarationsFactory by lazy { EnumSpecialDeclarationsFactory(context) }
     private val outerThisFields = mutableMapOf<ClassDescriptor, IrField>()
     private val bridgesDescriptors = mutableMapOf<Pair<IrSimpleFunction, BridgeDirections>, IrSimpleFunction>()
@@ -202,10 +200,6 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     override val declarationFactory
         get() = TODO("not implemented")
 
-    override fun getClass(fqName: FqName): ClassDescriptor {
-        TODO("not implemented")
-    }
-
     lateinit var moduleDescriptor: ModuleDescriptor
 
     lateinit var objCExport: ObjCExport
@@ -216,7 +210,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
 
     override val configuration get() = config.configuration
 
-    val phaseConfig = PhaseConfig(toplevelPhase, config.configuration)
+    val phaseConfig = PhaseConfig(toplevelPhase)
 
     private val packageScope by lazy { builtIns.builtInsModule.getPackage(KonanFqNames.internalPackageName).memberScope }
 
@@ -324,8 +318,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
 
     val cStubsManager = CStubsManager()
 
-    lateinit var privateFunctions: List<Pair<IrFunction, DataFlowIR.FunctionSymbol.Declared>>
-    lateinit var privateClasses: List<Pair<IrClass, DataFlowIR.Type.Declared>>
+    val coverage = CoverageManager(this)
 
     // Cache used for source offset->(line,column) mapping.
     val fileEntryCache = mutableMapOf<String, SourceManager.FileEntry>()

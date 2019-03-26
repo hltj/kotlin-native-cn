@@ -4,11 +4,10 @@
  */
 package org.jetbrains.kotlin.backend.konan
 
-import llvm.LLVMLinkModules2
-import llvm.LLVMModuleRef
-import llvm.LLVMWriteBitcodeToFile
+import llvm.*
 import org.jetbrains.kotlin.backend.konan.library.impl.buildLibrary
 import org.jetbrains.kotlin.backend.konan.llvm.parseBitcodeFile
+import org.jetbrains.kotlin.konan.CURRENT
 import org.jetbrains.kotlin.konan.KonanAbiVersion
 import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.library.KonanLibraryVersioning
@@ -25,6 +24,22 @@ internal fun produceCStubs(context: Context) {
     context.cStubsManager.compile(context.config.clang, context.messageCollector, context.inVerbosePhase)?.let {
         parseAndLinkBitcodeFile(llvmModule, it.absolutePath)
     }
+}
+
+private fun shouldRunBitcodePasses(context: Context): Boolean =
+        context.coverage.enabled
+
+internal fun runBitcodePasses(context: Context) {
+    if (!shouldRunBitcodePasses(context)) {
+        return
+    }
+    val llvmModule = context.llvmModule!!
+    val passManager = LLVMCreatePassManager()!!
+    val targetLibraryInfo = LLVMGetTargetLibraryInfo(llvmModule)
+    LLVMAddTargetLibraryInfo(targetLibraryInfo, passManager)
+    context.coverage.addLlvmPasses(passManager)
+    LLVMRunPassManager(passManager, llvmModule)
+    LLVMDisposePassManager(passManager)
 }
 
 internal fun produceOutput(context: Context) {
@@ -44,15 +59,15 @@ internal fun produceOutput(context: Context) {
             val generatedBitcodeFiles =
                 if (produce == CompilerOutputKind.DYNAMIC || produce == CompilerOutputKind.STATIC) {
                     produceCAdapterBitcode(
-                        context.config.clang, 
-                        tempFiles.cAdapterCppName, 
+                        context.config.clang,
+                        tempFiles.cAdapterCppName,
                         tempFiles.cAdapterBitcodeName)
                     listOf(tempFiles.cAdapterBitcodeName)
                 } else emptyList()
 
-            val nativeLibraries = 
+            val nativeLibraries =
                 context.config.nativeLibraries +
-                context.config.defaultNativeLibraries + 
+                context.config.defaultNativeLibraries +
                 generatedBitcodeFiles
 
             for (library in nativeLibraries) {
@@ -75,14 +90,14 @@ internal fun produceOutput(context: Context) {
 
 
             val library = buildLibrary(
-                context.config.nativeLibraries, 
+                context.config.nativeLibraries,
                 context.config.includeBinaries,
                 neededLibraries,
                 context.serializedLinkData!!,
                 versions,
                 target,
                 output,
-                libraryName, 
+                libraryName,
                 null,
                 nopack,
                 manifestProperties,

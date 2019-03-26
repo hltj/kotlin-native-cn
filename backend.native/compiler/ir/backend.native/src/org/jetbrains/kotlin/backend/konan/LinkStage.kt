@@ -40,10 +40,22 @@ internal class LinkStage(val context: Context) {
 
     private val nomain = config.get(KonanConfigKeys.NOMAIN) ?: false
     private val emitted = context.bitcodeFileName
-    private val libraries = context.llvm.librariesToLink
+
+    private val bitcodeLibraries = context.llvm.bitcodeToLink
+    private val nativeDependencies = context.llvm.nativeDependenciesToLink
+
     private fun MutableList<String>.addNonEmpty(elements: List<String>) {
         addAll(elements.filter { !it.isEmpty() })
     }
+
+    private val exportedSymbols = context.coverage.addExportedSymbols()
+
+    private fun mangleSymbol(symbol: String) =
+            if (target.family == Family.IOS || target.family == Family.OSX) {
+                "_$symbol"
+            } else {
+                symbol
+            }
 
     private fun runTool(command: List<String>) = runTool(*command.toTypedArray())
     private fun runTool(vararg command: String) =
@@ -65,6 +77,8 @@ internal class LinkStage(val context: Context) {
         }
         command.addNonEmpty(platform.llvmLtoDynamicFlags)
         command.addNonEmpty(files)
+        // Prevent symbols from being deleted by DCE.
+        command.addNonEmpty(exportedSymbols.map { "-exported-symbol=${mangleSymbol(it)}"} )
         runTool(command)
 
         return combined
@@ -208,8 +222,9 @@ internal class LinkStage(val context: Context) {
     val objectFiles = mutableListOf<String>()
 
     fun makeObjectFiles() {
+
         val bitcodeFiles = listOf(emitted) +
-                libraries.map { it.bitcodePaths }.flatten().filter { it.isBitcode }
+                bitcodeLibraries.map { it.bitcodePaths }.flatten().filter { it.isBitcode }
 
         objectFiles.add(when (platform.configurables) {
             is WasmConfigurables
@@ -223,10 +238,10 @@ internal class LinkStage(val context: Context) {
 
     fun linkStage() {
         val includedBinaries =
-                libraries.map { it.includedPaths }.flatten()
+                nativeDependencies.map { it.includedPaths }.flatten()
 
         val libraryProvidedLinkerFlags =
-                libraries.map { it.linkerOpts }.flatten()
+                nativeDependencies.map { it.linkerOpts }.flatten()
 
         link(objectFiles, includedBinaries, libraryProvidedLinkerFlags)
     }

@@ -22,6 +22,7 @@ import org.jetbrains.kotlin.cli.jvm.plugins.PluginCliParser
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.Services
+import org.jetbrains.kotlin.konan.CURRENT
 import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
@@ -180,6 +181,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 when {
                     arguments.generateWorkerTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.WORKER)
                     arguments.generateTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.MAIN_THREAD)
+                    arguments.generateNoExitTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.MAIN_THREAD_NO_EXIT)
                     else -> put(GENERATE_TEST_RUNNER, TestRunnerKind.NONE)
                 }
                 // We need to download dependencies only if we use them ( = there are files to compile).
@@ -195,6 +197,9 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
 
                 put(BITCODE_EMBEDDING_MODE, selectBitcodeEmbeddingMode(this, arguments, outputKind))
                 put(DEBUG_INFO_VERSION, arguments.debugInfoFormatVersion.toInt())
+                put(COVERAGE, arguments.coverage)
+                put(LIBRARIES_TO_COVER, arguments.coveredLibraries.toNonNullList())
+                arguments.coverageFile?.let { put(PROFRAW_PATH, it) }
             }
         }
     }

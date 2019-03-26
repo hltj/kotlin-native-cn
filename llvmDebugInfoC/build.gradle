@@ -1,5 +1,5 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
+ * Copyright 2010-2019 JetBrains s.r.o.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,10 @@ buildscript {
   ext.rootBuildDirectory = file('..')
 
   apply from: "$rootBuildDirectory/gradle/kotlinGradlePlugin.gradle"
+  apply from: "$rootBuildDirectory/gradle/kotlinNativeShared.gradle"
 
   dependencies {
     classpath "org.jetbrains.kotlin:kotlin-stdlib:$buildKotlinVersion"
-    classpath "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
   }
 }
 import org.jetbrains.kotlin.konan.target.ClangArgs

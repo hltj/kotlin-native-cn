@@ -18,14 +18,12 @@ import org.jetbrains.kotlin.konan.target.*
 import org.jetbrains.kotlin.konan.properties.*
 import org.jetbrains.kotlin.konan.util.*
 import org.jetbrains.kotlin.CopySamples
+import org.jetbrains.kotlin.konan.*
 
 buildscript {
     apply from: "gradle/kotlinGradlePlugin.gradle"
-    dependencies {
-        classpath "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
-    }
+    apply from: "gradle/kotlinNativeShared.gradle"
 }
-import org.jetbrains.kotlin.konan.*
 
 // Allows generating wrappers for the root build and all the samples during execution of the default 'wrapper' task.
 // Run './gradlew wrapper --gradle-version <version>' to update all the wrappers.
@@ -52,13 +50,14 @@ ext {
     kotlinTestAnnotationsCommonModule="org.jetbrains.kotlin:kotlin-test-annotations-common:${kotlinVersion}:sources"
     kotlinReflectModule="org.jetbrains.kotlin:kotlin-reflect:${kotlinVersion}"
     kotlinScriptRuntimeModule="org.jetbrains.kotlin:kotlin-script-runtime:${kotlinVersion}"
+    kotlinNativeSharedModule="org.jetbrains.kotlin:kotlin-native-shared:$sharedVersion"
 
-    konanVersionFull = KonanVersion.Companion.CURRENT
+    konanVersionFull = KonanVersionGeneratedKt.getCurrentKonanVersion()
 
     if (konanVersionFull.meta == MetaVersion.RELEASE) {
         gradlePluginVersion = kotlinVersion
     } else {
-        gradlePluginVersion = "$kotlinVersion-native-${KonanVersion.Companion.CURRENT.toString()}"
+        gradlePluginVersion = "$kotlinVersion-native-${konanVersionFull.toString()}"
     }
 }
 
@@ -73,6 +72,9 @@ allprojects {
         }
         maven {
             url kotlinCompilerRepo
+        }
+        maven {
+            url sharedRepo
         }
     }
 
@@ -92,6 +94,7 @@ void setupClang(Project project) {
 
     project.convention.plugins.platformManager = project.rootProject.ext.platformManager
     project.convention.plugins.execClang = new org.jetbrains.kotlin.ExecClang(project)
+    project.convention.plugins.execLlvm = new org.jetbrains.kotlin.ExecLlvm(project)
 
     project.plugins.withType(NativeComponentPlugin) {
         project.model {
@@ -188,8 +191,8 @@ class PlatformInfo {
     }
 }
 
-task sharedJar {
-    dependsOn gradle.includedBuild('kotlin-native-shared').task(':jar')
+task versionJar {
+    dependsOn gradle.includedBuild('kotlin-native-version').task(':jar')
 }
 
 task gradlePluginJar {
@@ -220,7 +223,7 @@ task distCompiler(type: Copy) {
     dependsOn ':backend.native:jar'
     dependsOn ':utilities:jar'
     dependsOn ':klib:jar'
-    dependsOn ':sharedJar'
+    dependsOn ':versionJar'
 
     destinationDir distDir
 
@@ -256,6 +259,10 @@ task distCompiler(type: Copy) {
         into('konan/nativelib')
     }
 
+    from(project(':llvmCoverageMappingC').file('build/libs/coverageMapping/shared')) {
+        into('konan/nativelib')
+    }
+
     from(project(':llvmDebugInfoC').file('build/libs/debugInfo/shared')) {
         into('konan/nativelib')
     }
@@ -276,7 +283,7 @@ task distCompiler(type: Copy) {
         into('konan/lib')
     }
 
-    from(file("${gradle.includedBuild('kotlin-native-shared').projectDir}/build/libs")) {
+    from(file("${gradle.includedBuild('kotlin-native-version').projectDir}/build/libs")) {
         into('konan/lib')
     }
 
@@ -416,6 +423,10 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
         include 'RELEASE_NOTES.md'
         into baseName
     }
+    from(project.rootDir) {
+        include 'licenses/**'
+        into baseName
+    }
 
     destinationDir = file('.')
 
@@ -466,6 +477,10 @@ configure([samplesZip, samplesTar]) {
     from(file('samples')) {
         // Process properties files separately.
         exclude '**/gradle.properties'
+    }
+
+    from(project.rootDir) {
+        include 'licenses/**'
     }
 
     from(file('samples')) {

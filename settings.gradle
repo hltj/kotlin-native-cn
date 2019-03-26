@@ -19,6 +19,7 @@ include ':Interop:Indexer'
 include ':Interop:JsRuntime'
 include ':Interop:StubGenerator'
 include ':Interop:Runtime'
+include ':llvmCoverageMappingC'
 include ':llvmDebugInfoC'
 include ':libclangext'
 include ':klib'
@@ -32,7 +33,7 @@ include ':utilities'
 //include ':tools:benchmarksAnalyzer'
 include ':platformLibs'
 
-includeBuild 'shared'
+includeBuild 'version'
 includeBuild 'extracted/konan.metadata'
 includeBuild 'extracted/konan.serializer'
 includeBuild 'tools/kotlin-native-gradle-plugin'
@@ -47,4 +48,8 @@ if (hasProperty("kotlinProjectPath")) {
             substitute module("org.jetbrains.kotlin:kotlin-stdlib-gen:$kotlinVersion") with project(':tools:kotlin-stdlib-gen')
         }
     }
+}
+
+if (hasProperty("sharedProjectPath")) {
+    includeBuild(sharedProjectPath)
 }
