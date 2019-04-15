@@ -1,64 +1,65 @@
-## Concurrency in Kotlin/Native
+## Kotlin/Native 中的并发
 
-  Kotlin/Native runtime doesn't encourage a classical thread-oriented concurrency
- model with mutually exclusive code blocks and conditional variables, as this model is
- known to be error-prone and unreliable. Instead, we suggest a collection of
- alternative approaches, allowing you to use hardware concurrency and implement blocking IO.
- Those approaches are as follows, and they will be elaborated on in further sections:
-   * Workers with message passing
-   * Object subgraph ownership transfer
-   * Object subgraph freezing
-   * Object subgraph detachment
-   * Raw shared memory using C globals
-   * Coroutines for blocking operations (not covered in this document)
+  Kotlin/Native 运行时并不鼓励<!--
+ -->带有互斥代码块与条件变量的经典线程式并发模型，因为已知该模型<!--
+ -->易出错且不可靠。相反，我们建议使用一系列<!--
+ -->替代方法，让你可以使用硬件并发并实现阻塞 IO。
+ 这些方法如下，并且分别会在后续各部分详细阐述：
+   * 带有消息传递的 worker
+   * 对象子图所有权转移
+   * 对象子图冻结
+   * 对象子图分离
+   * 使用 C 语言全局变量的原始共享内存
+   * 用于阻塞操作的协程（本文档未涉及）
 
-### Workers
 
-  Instead of threads Kotlin/Native runtime offers the concept of workers: concurrently executed
- control flow streams with an associated request queue. Workers are very similar to the actors
- in the Actor Model. A worker can exchange Kotlin objects with another worker, so that at any moment
- each mutable object is owned by a single worker, but ownership can be transferred.
- See section [Object transfer and freezing](#transfer).
+### Worker
 
-  Once a worker is started with the `Worker.start` function call, it can be addressed with its own unique integer
- worker id. Other workers, or non-worker concurrency primitives, such as OS threads, can send a message
- to the worker with the `execute` call.
+  Kotlin/Native 运行时提供了 worker 的概念来取代线程：并发执行的<!--
+ -->控制流以及与其关联的请求队列。Worker 非常像参与者模型<!--
+ -->中的参与者。一个 worker 可以与另一个 worker 交换 Kotlin 对象，从而在任何时刻<!--
+ -->每个可变对象都隶属于单个 worker，不过所有权可以转移。
+ 请参见[对象转移与冻结](#transfer)部分。
+
+  一旦以 `Worker.start` 函数调用启动了一个 worker，就可以使用其自身唯一的整数
+ worker id 来寻址。其他 worker 或者非 worker 的并发原语（如 OS 线程）可以<!--
+ -->使用 `execute` 调用向 worker 发消息。
  
 <div class="sample" markdown="1" theme="idea" data-highlight-only>
   
  ```kotlin
 val future = execute(TransferMode.SAFE, { SomeDataForWorker() }) {
-   // data returned by the second function argument comes to the
-   // worker routine as 'input' parameter.
+   // 第二个函数参数所返回的数据
+   // 作为“input”参数进入 worker 例程
    input ->
-   // Here we create an instance to be returned when someone consumes result future.
+   // 这里我们创建了一个当有人消费结果 future 时返回的实例
    WorkerResult(input.stringParam + " result")
 }
 
 future.consume {
-  // Here we see result returned from routine above. Note that future object or
-  // id could be transferred to another worker, so we don't have to consume future
-  // in same execution context it was obtained.
+  // 这里我们查看从上文例程中返回的结果。请注意 future 对象或
+  // id 都可以转移给另一个 worker，所以并不是必须要在
+  // 获得 future 的同一上下文中消费之。
   result -> println("result is $result")
 }
 ```
 
 </div>
 
- The call to `execute` uses a function passed as its second parameter to produce an object subgraph
- (i.e. set of mutually referring objects) which is then passed as a whole to that worker, it is then no longer
- available to the thread that initiated the request. This property is checked if the first parameter
- is `TransferMode.SAFE` by graph traversal and is just assumed to be true, if it is `TransferMode.UNSAFE`.
- The last parameter to `execute` is a special Kotlin lambda, which is not allowed to capture any state,
- and is actually invoked in the target worker's context. Once processed, the result is transferred to whatever consumes
- it in the future, and it is attached to the object graph of that worker/thread.
+ 调用 `execute` 会使用作为第二个参数传入的函数来生成一个对象子图
+ （即一组相互引用的对象）然后将其作为一个整体传给该 worker，之后<!--
+ -->发出该请求的线程不可以再使用该对象子图。如果第一个参数<!--
+ -->是 `TransferMode.SAFE`，那么会通过图遍历来检测这一属性；而如果第一个参数是 `TransferMode.UNSAFE` 那么直接假定为 true。
+ `execute` 的最后一个参数是一个特殊 Kotlin lambda 表达式，不可以捕获任何状态，
+ 并且实际上是在目标 worker 的上下文中调用。一旦处理完毕，就将结果转移给将会消费它地方<!--
+ -->，并将其附加到该 worker/线程的对象图中。
 
-  If an object is transferred in `UNSAFE` mode and is still accessible from multiple concurrent executors,
- program will likely crash unexpectedly, so consider that last resort in optimizing, not a general purpose
- mechanism.
+  如果一个对象以 `UNSAFE` 模式转移，并且依然在多个并发执行子中访问，
+ 那么该程序可能会意外崩溃，因此考虑将 `UNSAFE` 作为最后的优化手段而不是通用<!--
+ -->机制来使用。
 
-  For a more complete example please refer to the [workers example](https://github.com/JetBrains/kotlin-native/tree/master/samples/workers)
- in the Kotlin/Native repository.
+  更完整的示例请参考 Kotlin/Native 版本库中的 [worker 示例](https://github.com/JetBrains/kotlin-native/tree/master/samples/workers)<!--
+-->。
 
 <a name="transfer"></a>
 ### Object transfer and freezing
