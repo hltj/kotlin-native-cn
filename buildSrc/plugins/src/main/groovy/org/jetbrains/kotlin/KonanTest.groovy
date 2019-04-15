@@ -23,6 +23,7 @@ import org.gradle.process.ExecResult
 
 import javax.inject.Inject
 import java.nio.file.Paths
+import java.util.function.Function
 import java.util.regex.Pattern
 
 abstract class KonanTest extends JavaExec {
@@ -31,7 +32,8 @@ abstract class KonanTest extends JavaExec {
     public String source
     def platformManager = project.rootProject.platformManager
     def target = platformManager.targetManager(project.testTarget).target
-    def dist = project.rootProject.file(project.findProperty("konan.home") ?: "dist")
+    def dist = project.rootProject.file(project.findProperty("org.jetbrains.kotlin.native.home") ?:
+            project.findProperty("konan.home") ?: "dist")
     def dependenciesDir = project.rootProject.dependenciesDir
     def konancDriver = project.isWindows() ? "konanc.bat" : "konanc"
     def konanc = new File("${dist.canonicalPath}/bin/$konancDriver").absolutePath
@@ -39,6 +41,8 @@ abstract class KonanTest extends JavaExec {
     def enableKonanAssertions = true
     String outputDirectory = null
     String goldValue = null
+    // Checks test's output against gold value and returns true if the output matches the expectation
+    Function<String, Boolean> outputChecker = { str -> (goldValue == null || goldValue == str) }
     String testData = null
     int expectedExitStatus = 0
     List<String> arguments = null
@@ -100,7 +104,7 @@ abstract class KonanTest extends JavaExec {
             classpath = project.fileTree("$dist.canonicalPath/konan/lib/") {
                 include '*.jar'
             }
-            jvmArgs "-Dkonan.home=${dist.canonicalPath}", "-Xmx2G",
+            jvmArgs "-Dkonan.home=${dist.canonicalPath}", "-Xmx4G",
                     "-Djava.library.path=${dist.canonicalPath}/konan/nativelib"
             enableAssertions = true
             def sources = File.createTempFile(name,".lst")
@@ -306,9 +310,15 @@ abstract class KonanTest extends JavaExec {
             }
         }
 
-        def goldValueMismatch = goldValue != null && goldValue != result.replace(System.lineSeparator(), "\n")
+        result = result.replace(System.lineSeparator(), "\n")
+        def goldValueMismatch = !outputChecker.apply(result)
         if (goldValueMismatch) {
-            def message = "Expected output: $goldValue, actual output: $result"
+            def message
+            if (goldValue != null) {
+                message = "Expected output: $goldValue, actual output: $result"
+            } else {
+                message = "Actual output doesn't match output checker: $result"
+            }
             if (this.expectedFail) {
                 println("Expected failure. $message")
             } else {
@@ -464,7 +474,7 @@ class RunKonanTest extends ExtKonanTest {
 
 class RunStdlibTest extends RunKonanTest {
     public def inDevelopersRun = false
-    public def statistics = new RunExternalTestGroup.Statistics()
+    public def statistics = new Statistics()
 
     RunStdlibTest() {
         super('buildKonanStdlibTests')
@@ -521,8 +531,8 @@ class RunDriverKonanTest extends KonanTest {
 
     RunDriverKonanTest() {
         super()
-        // We don't build the compiler if a custom konan.home path is specified.
-        if (!project.hasProperty("konan.home")) {
+        // We don't build the compiler if a custom org.jetbrains.kotlin.native.home path is specified.
+        if (!project.hasProperty("org.jetbrains.kotlin.native.home")) {
             dependsOn(project.rootProject.tasks['cross_dist'])
         }
     }
@@ -639,57 +649,6 @@ class RunExternalTestGroup extends RunStandaloneKonanTest {
     Statistics statistics = new Statistics()
 
     RunExternalTestGroup() {
-    }
-
-    static enum TestStatus {
-        PASSED,
-        FAILED,
-        ERROR,
-        SKIPPED
-    }
-    static class TestResult {
-        TestStatus status = null
-        String comment = null
-
-        TestResult(TestStatus status, String comment = ""){
-            this.status = status;
-            this.comment = comment;
-        }
-    }
-    static class Statistics {
-        int total = 0
-        int passed = 0
-        int failed = 0
-        int error = 0
-        int skipped = 0
-
-        void pass(int count = 1) {
-            passed += count
-            total += count
-        }
-
-        void skip(int count = 1) {
-            skipped += count
-            total += count
-        }
-
-        void fail(int count = 1) {
-            failed += count
-            total += count
-        }
-
-        void error(int count = 1) {
-            error += count
-            total += count
-        }
-
-        void add(Statistics other) {
-            total   += other.total
-            passed  += other.passed
-            failed  += other.failed
-            error   += other.error
-            skipped += other.skipped
-        }
     }
 
     @Override
@@ -890,20 +849,24 @@ fun runTest() {
     static def excludeList = [
             "build/external/compiler/codegen/box/functions/functionExpression/functionExpressionWithThisReference.kt", // KT-26973
             "build/external/compiler/codegen/box/inlineClasses/kt27096_innerClass.kt", // KT-27665
-            "build/external/compiler/codegen/boxInline/anonymousObject/kt8133.kt"
+            "build/external/compiler/codegen/boxInline/anonymousObject/kt8133.kt",
+            "build/external/compiler/codegen/box/localClasses/anonymousObjectInExtension.kt" // KT-29282
     ]
 
     boolean isEnabledForNativeBackend(String fileName) {
         def text = project.file(fileName).text
 
-        if (excludeList.contains(fileName)) return false
+        if (excludeList.contains(fileName.replace(File.separator, "/"))) return false
+
+        if (findLinesWithPrefixesRemoved(text, "// WITH_REFLECT").size() != 0) return false
 
         def languageSettings = findLinesWithPrefixesRemoved(text, '// !LANGUAGE: ')
         if (!languageSettings.empty) {
             def settings = languageSettings.first()
             if (settings.contains('-ProperIeee754Comparisons') ||  // K/N supports only proper IEEE754 comparisons
                     settings.contains('+NewInference') ||          // New inference is not implemented
-                    settings.contains('-ReleaseCoroutines')) {     // only release coroutines
+                    settings.contains('-ReleaseCoroutines') ||     // only release coroutines
+                    settings.contains('-DataClassInheritance')) {  // old behavior is not supported
                 return false
             }
         }
@@ -932,6 +895,7 @@ fun runTest() {
             if (!findLinesWithPrefixesRemoved(text, "// JVM_TARGET:").isEmpty()) { return false }
             return true
         }
+
     }
 
     @Override
@@ -1043,130 +1007,5 @@ fun runTest() {
         if (System.getenv("TEAMCITY_BUILD_PROPERTIES_FILE") != null)
             return new TeamcityKonanTestSuite(name, statistics)
         return new KonanTestSuite(name, statistics)
-    }
-
-    class KonanTestSuite {
-        protected name;
-        protected statistics;
-
-        KonanTestSuite(String name, Statistics statistics) {
-            this.name       = name
-            this.statistics = statistics
-        }
-
-        protected class KonanTestCase {
-            protected name
-
-            KonanTestCase(String name) {
-                this.name = name
-            }
-
-            void start(){}
-
-            TestResult pass() {
-                statistics.pass()
-                return new TestResult(TestStatus.PASSED)
-            }
-
-            TestResult fail(TestFailedException e) {
-                statistics.fail()
-                println(e.getMessage())
-                return new TestResult(TestStatus.FAILED, "Exception: ${e.getMessage()}. Cause: ${e.getCause()?.getMessage()}")
-            }
-
-            TestResult error(Exception e) {
-                statistics.error()
-                return new TestResult(TestStatus.ERROR, "Exception: ${e.getMessage()}. Cause: ${e.getCause()?.getMessage()}")
-            }
-
-            TestResult skip() {
-                statistics.skip()
-                return new TestResult(TestStatus.SKIPPED)
-            }
-        }
-
-        KonanTestCase createTestCase(String name) {
-            return new KonanTestCase(name)
-        }
-
-        void start() {}
-        void finish() {}
-    }
-
-    class TeamcityKonanTestSuite extends KonanTestSuite {
-        TeamcityKonanTestSuite(String suiteName, Statistics statistics) {
-            super(suiteName, statistics)
-        }
-
-        class TeamcityKonanTestCase extends KonanTestSuite.KonanTestCase {
-
-            TeamcityKonanTestCase(String name) {
-                super(name)
-            }
-
-            private teamcityFinish() {
-                teamcityReport("testFinished name='$name'")
-            }
-
-            void start() {
-                teamcityReport("testStarted name='$name'")
-            }
-
-            TestResult pass() {
-                teamcityFinish()
-                return super.pass()
-            }
-
-            TestResult fail(TestFailedException e) {
-                teamcityReport("testFailed type='comparisonFailure' name='$name' message='${toTeamCityFormat(e.getMessage())}'")
-                teamcityFinish()
-                return super.fail(e)
-            }
-
-            TestResult error(Exception e) {
-                def writer = new StringWriter()
-                e.printStackTrace(new PrintWriter(writer))
-                def rawString  = writer.toString()
-
-                teamcityReport("testFailed name='$name' message='${toTeamCityFormat(e.getMessage())}' details='${toTeamCityFormat(rawString)}'")
-                teamcityFinish()
-                return super.error(e)
-            }
-
-            TestResult skip() {
-                teamcityReport("testIgnored name='$name'")
-                teamcityFinish()
-                return super.skip()
-            }
-        }
-
-        TeamcityKonanTestCase createTestCase(String name) {
-            return new TeamcityKonanTestCase(name)
-        }
-
-        private teamcityReport(String msg) {
-            println("##teamcity[$msg]")
-        }
-
-        /**
-         * Teamcity require escaping some symbols in pipe manner.
-         * https://github.com/GitTools/GitVersion/issues/94
-         */
-        String toTeamCityFormat(String inStr) {
-            return inStr.replaceAll("\\|", "||")
-                        .replaceAll("\r",  "|r")
-                        .replaceAll("\n",  "|n")
-                        .replaceAll("'",   "|'")
-                        .replaceAll("\\[", "|[")
-                        .replaceAll("]",   "|]")
-        }
-
-        void start() {
-            teamcityReport("testSuiteStarted name='$name'")
-        }
-
-        void finish() {
-            teamcityReport("testSuiteFinished name='$name'")
-        }
     }
 }

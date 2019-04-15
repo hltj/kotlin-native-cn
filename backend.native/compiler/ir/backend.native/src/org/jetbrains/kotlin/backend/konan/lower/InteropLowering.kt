@@ -13,9 +13,10 @@ import org.jetbrains.kotlin.backend.common.push
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.cgen.KotlinStubs
 import org.jetbrains.kotlin.backend.konan.cgen.generateCCall
+import org.jetbrains.kotlin.backend.konan.cgen.generateCFunctionAndFakeKotlinExternalFunction
 import org.jetbrains.kotlin.backend.konan.cgen.generateCFunctionPointer
 import org.jetbrains.kotlin.backend.konan.getInlinedClass
-import org.jetbrains.kotlin.backend.konan.descriptors.allOverriddenDescriptors
+import org.jetbrains.kotlin.backend.konan.descriptors.allOverriddenFunctions
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
@@ -86,7 +87,7 @@ internal class InteropLoweringPart1(val context: Context) : IrBuildingTransforme
     private val outerClasses = mutableListOf<IrClass>()
 
     override fun visitClass(declaration: IrClass): IrStatement {
-        if (declaration.descriptor.isKotlinObjCClass()) {
+        if (declaration.isKotlinObjCClass()) {
             lowerKotlinObjCClass(declaration)
         }
 
@@ -478,7 +479,7 @@ internal class InteropLoweringPart1(val context: Context) : IrBuildingTransforme
                 context.ir.symbols.any.owner.declarations.filterIsInstance<IrSimpleFunction>().toSet()
 
         irClass.declarations.filterIsInstance<IrSimpleFunction>().filter { it.isReal }.forEach { method ->
-            val overriddenMethodOfAny = method.allOverriddenDescriptors.firstOrNull {
+            val overriddenMethodOfAny = method.allOverriddenFunctions.firstOrNull {
                 it in methodsOfAny
             }
 
@@ -507,13 +508,13 @@ internal class InteropLoweringPart1(val context: Context) : IrBuildingTransforme
         val constructedClass = outerClasses.peek()!!
         val constructedClassDescriptor = constructedClass.descriptor
 
-        if (!constructedClassDescriptor.isObjCClass()) {
+        if (!constructedClass.isObjCClass()) {
             return expression
         }
 
-        constructedClassDescriptor.containingDeclaration.let { classContainer ->
-            if (classContainer is ClassDescriptor && classContainer.isObjCClass() &&
-                    constructedClassDescriptor == classContainer.companionObjectDescriptor) {
+        constructedClass.parent.let { parent ->
+            if (parent is IrClass && parent.isObjCClass() &&
+                    constructedClass.isCompanion) {
 
                 // Note: it is actually not used; getting values of such objects is handled by code generator
                 // in [FunctionGenerationContext.getObjectValue].
@@ -522,8 +523,8 @@ internal class InteropLoweringPart1(val context: Context) : IrBuildingTransforme
             }
         }
 
-        if (!constructedClassDescriptor.isExternalObjCClass() &&
-                expression.descriptor.constructedClass.isExternalObjCClass()) {
+        if (!constructedClass.isExternalObjCClass() &&
+            (expression.symbol.owner.constructedClass).isExternalObjCClass()) {
 
             // Calling super constructor from Kotlin Objective-C class.
 
@@ -531,7 +532,7 @@ internal class InteropLoweringPart1(val context: Context) : IrBuildingTransforme
 
             val initMethod = expression.descriptor.getObjCInitMethod()!!
 
-            if (!expression.descriptor.objCConstructorIsDesignated()) {
+            if (!expression.symbol.owner.objCConstructorIsDesignated()) {
                 context.reportCompilationError(
                         "Unable to call non-designated initializer as super constructor",
                         currentFile,
@@ -582,14 +583,17 @@ internal class InteropLoweringPart1(val context: Context) : IrBuildingTransforme
         val superClass = superQualifier?.let { getObjCClass(it) } ?:
                 irCall(symbols.getNativeNullPtr, symbols.nativePtrType)
 
-        val bridge = symbolTable.referenceSimpleFunction(info.bridge)
+        val bridge = symbols.lazySymbolTable.referenceSimpleFunction(info.bridge)
         return irCall(bridge, symbolTable.translateErased(info.bridge.returnType!!)).apply {
             putValueArgument(0, superClass)
             putValueArgument(1, receiver)
+            putValueArgument(2, irCall(symbols.interopObjCGetSelector.owner).apply {
+                putValueArgument(0, irString(info.selector))
+            })
 
-            assert(arguments.size + 2 == info.bridge.valueParameters.size)
+            assert(arguments.size + 3 == info.bridge.valueParameters.size)
             arguments.forEachIndexed { index, argument ->
-                putValueArgument(index + 2, argument)
+                putValueArgument(index + 3, argument)
             }
         }
     }
@@ -628,7 +632,7 @@ internal class InteropLoweringPart1(val context: Context) : IrBuildingTransforme
 
         descriptor.getExternalObjCMethodInfo()?.let { methodInfo ->
             val isInteropStubsFile =
-                    currentFile.fileAnnotations.any { it.fqName ==  FqName("kotlinx.cinterop.InteropStubs") }
+                    currentFile.annotations.hasAnnotation(FqName("kotlinx.cinterop.InteropStubs"))
 
             // Special case: bridge from Objective-C method implementation template to Kotlin method;
             // handled in CodeGeneratorVisitor.callVirtual.
@@ -675,7 +679,7 @@ internal class InteropLoweringPart1(val context: Context) : IrBuildingTransforme
                     val companionObject = classDescriptor.companionObjectDescriptor ?:
                             error("native variable class $classDescriptor must have the companion object")
 
-                    builder.at(expression).irGetObject(symbolTable.referenceClass(companionObject))
+                    builder.at(expression).irGetObject(symbolTable.lazyWrapper.referenceClass(companionObject))
                 }
             }
             else -> expression
@@ -794,8 +798,33 @@ private class InteropTransformer(val context: Context, val irFile: IrFile) : IrB
         }
     }
 
+    override fun visitClass(declaration: IrClass): IrStatement {
+        super.visitClass(declaration)
+        if (declaration.isKotlinObjCClass()) {
+            val imps = declaration.simpleFunctions().filter { it.isReal }.flatMap { function ->
+                function.overriddenSymbols.mapNotNull {
+                    val info = it.owner.getExternalObjCMethodInfo()
+                    if (info == null || info.imp != null) {
+                        null
+                    } else {
+                        generateWithStubs(it.owner) {
+                            generateCFunctionAndFakeKotlinExternalFunction(
+                                    function,
+                                    it.owner,
+                                    isObjCMethod = true,
+                                    location = function
+                            )
+                        }
+                    }
+                }
+            }
+            declaration.addChildren(imps)
+        }
+        return declaration
+    }
+
     private fun generateCFunctionPointer(function: IrSimpleFunction, expression: IrExpression): IrExpression =
-            generateWithStubs { generateCFunctionPointer(function, function, false, expression) }
+            generateWithStubs { generateCFunctionPointer(function, function, expression) }
 
     override fun visitCall(expression: IrCall): IrExpression {
 
@@ -960,6 +989,9 @@ private class InteropTransformer(val context: Context, val irFile: IrFile) : IrB
                                 expression
                         )
                     }
+                }
+                IntrinsicType.INTEROP_MEMORY_COPY -> {
+                    TODO("So far unsupported")
                 }
                 IntrinsicType.OBJC_INIT_BY -> {
                     val intrinsic = interop.objCObjectInitBy.name

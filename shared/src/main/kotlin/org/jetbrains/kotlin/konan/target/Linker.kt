@@ -30,6 +30,35 @@ enum class LinkerOutputKind {
     EXECUTABLE
 }
 
+// Here we take somewhat unexpected approach - we create the thin
+// library, and then repack it during post-link phase.
+// This way we ensure .a inputs are properly processed.
+private fun staticGnuArCommands(ar: String, executable: ExecutableFile,
+                                objectFiles: List<ObjectFile>, libraries: List<String>) = when {
+        HostManager.hostIsMingw -> {
+            val temp = executable.replace('/', '\\') + "__"
+            val arWindows = ar.replace('/', '\\')
+            listOf(
+                    Command(arWindows, "-rucT", temp).apply {
+                        +objectFiles
+                        +libraries
+                    },
+                    Command("cmd", "/c").apply {
+                        +"(echo create $executable & echo addlib ${temp} & echo save & echo end) | $arWindows -M"
+                    },
+                    Command("cmd", "/c", "del", "/q", temp))
+        }
+        HostManager.hostIsLinux || HostManager.hostIsMac -> listOf(
+                     Command(ar, "cqT", executable).apply {
+                        +objectFiles
+                        +libraries
+                     },
+                     Command("/bin/sh", "-c").apply {
+                        +"printf 'create $executable\\naddlib $executable\\nsave\\nend' | $ar -M"
+                     })
+        else -> TODO("Unsupported host ${HostManager.host}")
+    }
+
 // Use "clang -v -save-temps" to write linkCommand() method 
 // for another implementation of this class.
 abstract class LinkerFlags(val configurables: Configurables)
@@ -58,19 +87,13 @@ abstract class LinkerFlags(val configurables: Configurables)
         // Let's just pass them as absolute paths.
         return libraries
     }
-
-    protected fun postLinkGnuArCommand(ar: String, executable: ExecutableFile) =
-            Command("/bin/sh", "-c").apply {
-                +"printf 'create $executable\\naddlib $executable\\nsave\\nend' | $ar -M"
-            }
-
 }
 
 open class AndroidLinker(targetProperties: AndroidConfigurables)
     : LinkerFlags(targetProperties), AndroidConfigurables by targetProperties {
 
     private val prefix = "$absoluteTargetToolchain/bin/"
-    private val clang = "$prefix/clang"
+    private val clang = if (HostManager.hostIsMingw) "$prefix/clang.cmd" else "$prefix/clang"
     private val ar = "$absoluteTargetToolchain/${targetProperties.targetArg}/bin/ar"
 
     override val useCompilerDriverAsLinker: Boolean get() = true
@@ -81,17 +104,9 @@ open class AndroidLinker(targetProperties: AndroidConfigurables)
                               libraries: List<String>, linkerArgs: List<String>,
                               optimize: Boolean, debug: Boolean,
                               kind: LinkerOutputKind, outputDsymBundle: String): List<Command> {
-        if (kind == LinkerOutputKind.STATIC_LIBRARY) {
-            // Here we take somewhat unexpected approach - we create the thin
-            // library, and then repack it during post-link phase.
-            // This way we ensure .a inputs are properly processed.
-            return listOf(
-                    Command(ar, "cqT", executable).apply {
-                        +objectFiles
-                        +libraries
-                    },
-                    postLinkGnuArCommand(ar, executable))
-        }
+        if (kind == LinkerOutputKind.STATIC_LIBRARY)
+            return staticGnuArCommands(ar, executable, objectFiles, libraries)
+
         val dynamic = kind == LinkerOutputKind.DYNAMIC_LIBRARY
         // liblog.so must be linked in, as we use its functionality in runtime.
         return listOf(Command(clang).apply {
@@ -218,7 +233,8 @@ open class MacOSBasedLinker(targetProperties: AppleConfigurables)
 open class LinuxBasedLinker(targetProperties: LinuxBasedConfigurables)
     : LinkerFlags(targetProperties), LinuxBasedConfigurables by targetProperties {
 
-    private val ar = "$absoluteTargetToolchain/bin/ar"
+    private val ar = if (HostManager.hostIsMac) "$absoluteTargetToolchain/bin/llvm-ar"
+        else "$absoluteTargetToolchain/bin/ar"
     override val libGcc: String = "$absoluteTargetSysRoot/${super.libGcc}"
     private val linker = "$absoluteLlvmHome/bin/ld.lld"
     private val specificLibs = abiSpecificLibraries.map { "-L${absoluteTargetSysRoot}/$it" }
@@ -229,16 +245,9 @@ open class LinuxBasedLinker(targetProperties: LinuxBasedConfigurables)
                               libraries: List<String>, linkerArgs: List<String>,
                               optimize: Boolean, debug: Boolean,
                               kind: LinkerOutputKind, outputDsymBundle: String): List<Command> {
-        if (kind == LinkerOutputKind.STATIC_LIBRARY) {
-            // Here we take somewhat unexpected approach - we create the thin
-            // library, and then repack it during post-link phase.
-            // This way we ensure .a inputs are properly processed.
-            return listOf(Command(ar, "cqT", executable).apply {
-                           +objectFiles
-                           +libraries
-                          },
-                          postLinkGnuArCommand(ar, executable))
-        }
+        if (kind == LinkerOutputKind.STATIC_LIBRARY)
+            return staticGnuArCommands(ar, executable, objectFiles, libraries)
+
         val isMips = (configurables is LinuxMIPSConfigurables)
         val dynamic = kind == LinkerOutputKind.DYNAMIC_LIBRARY
         // TODO: Can we extract more to the konan.configurables?
@@ -279,7 +288,7 @@ open class LinuxBasedLinker(targetProperties: LinuxBasedConfigurables)
 open class MingwLinker(targetProperties: MingwConfigurables)
     : LinkerFlags(targetProperties), MingwConfigurables by targetProperties {
 
-    private val ar = "$absoluteTargetToolchain\\bin\\ar"
+    private val ar = "$absoluteTargetToolchain/bin/ar"
     private val linker = "$absoluteTargetToolchain/bin/clang++"
 
     override val useCompilerDriverAsLinker: Boolean get() = true
@@ -290,23 +299,14 @@ open class MingwLinker(targetProperties: MingwConfigurables)
                               libraries: List<String>, linkerArgs: List<String>,
                               optimize: Boolean, debug: Boolean,
                               kind: LinkerOutputKind, outputDsymBundle: String): List<Command> {
-        if (kind == LinkerOutputKind.STATIC_LIBRARY) {
-            // Here we take somewhat unexpected approach - we create the thin
-            // library, and then repack it during post-link phase.
-            // This way we ensure .a inputs are properly processed.
-            val temp = executable.replace('/', '\\') + "__"
-            return listOf(
-                    Command(ar, "-rucT", temp).apply {
-                        +objectFiles
-                        +libraries
-                    },
-                    Command("cmd", "/c").apply {
-                        +"(echo create $executable & echo addlib ${temp} & echo save & echo end) | $ar -M"
-                    },
-                    Command("cmd", "/c", "del", "/q", temp))
-        }
+        if (kind == LinkerOutputKind.STATIC_LIBRARY)
+            return staticGnuArCommands(ar, executable, objectFiles, libraries)
+
         val dynamic = kind == LinkerOutputKind.DYNAMIC_LIBRARY
-        return listOf(Command(linker).apply {
+        return listOf(when {
+                HostManager.hostIsMingw -> Command(linker)
+                else -> Command("wine64", "$linker.exe")
+        }.apply {
             +listOf("-o", executable)
             +objectFiles
             if (optimize) +linkerOptimizationFlags
@@ -398,7 +398,7 @@ fun linker(configurables: Configurables): LinkerFlags =
                 MacOSBasedLinker(configurables as AppleConfigurables)
             KonanTarget.ANDROID_ARM32, KonanTarget.ANDROID_ARM64 ->
                 AndroidLinker(configurables as AndroidConfigurables)
-            KonanTarget.MINGW_X64 ->
+            KonanTarget.MINGW_X64, KonanTarget.MINGW_X86 ->
                 MingwLinker(configurables as MingwConfigurables)
             KonanTarget.WASM32 ->
                 WasmLinker(configurables as WasmConfigurables)

@@ -131,7 +131,7 @@ are included into the bindings.
 
 The globs are applied to the header paths relative to the appropriate include
 path elements, e.g. `time.h` or `curl/curl.h`. So if the library is usually
-included with `#include <SomeLbrary/Header.h>`, then it would probably be
+included with `#include <SomeLibrary/Header.h>`, then it would probably be
 correct to filter headers with
 
 
@@ -257,7 +257,7 @@ All the supported C types have corresponding representations in Kotlin:
 *   Pointers and arrays are mapped to `CPointer<T>?`.
 *   Enums can be mapped to either Kotlin enum or integral values, depending on
     heuristics and the [definition file hints](#definition-file-hints).
-*   Structs are mapped to types having fields available via the dot notation,
+*   Structs / unions are mapped to types having fields available via the dot notation,
     i.e. `someStructInstance.field1`.
 *   `typedef` are represented as `typealias`.
 
@@ -527,7 +527,7 @@ it belongs to. Once the control flow leaves the `memScoped` scope the C pointers
 
 ### Passing and receiving structs by value ###
 
-When a C function takes or returns a struct `T` by value, the corresponding
+When a C function takes or returns a struct / union `T` by value, the corresponding
 argument type or return type is represented as `CValue<T>`.
 
 `CValue<T>` is an opaque type, so the structure fields cannot be accessed with
@@ -559,10 +559,6 @@ To convert a Kotlin function to a pointer to a C function,
 `staticCFunction(::kotlinFunction)` can be used. It is also able to provide
 the lambda instead of a function reference. The function or lambda must not
 capture any values.
-
-Note that some function types are not supported currently. For example,
-it is not possible to get a pointer to a function that receives or returns structs
-by value.
 
 If the callback doesn't run in the main thread, it is mandatory to init the _Kotlin/Native_
 runtime by calling `kotlin.native.initRuntimeIfNeeded()`.

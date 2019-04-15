@@ -18,6 +18,7 @@ import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.backend.konan.ir.IrPrivateClassReferenceImpl
 import org.jetbrains.kotlin.backend.konan.ir.IrPrivateFunctionCall
 import org.jetbrains.kotlin.backend.konan.ir.IrPrivateFunctionCallImpl
+import org.jetbrains.kotlin.backend.konan.ir.KonanIrReturnableBlockImpl
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.getErasedTypeClass
 import org.jetbrains.kotlin.descriptors.ClassDescriptor
 import org.jetbrains.kotlin.ir.IrElement
@@ -1015,7 +1016,7 @@ internal object Devirtualization {
                         .asSequence()
                         .filter { it.key.irCallSite != null }
                         .associate { it.key.irCallSite!! to it.value }
-        devirtualize(irModule, context, moduleDFG, externalModulesDFG, devirtualizedCallSites)
+        devirtualize(irModule, context, externalModulesDFG, devirtualizedCallSites)
         removeRedundantCoercions(irModule, context, moduleDFG, externalModulesDFG)
         return AnalysisResult(devirtualizationAnalysisResult)
     }
@@ -1039,7 +1040,7 @@ internal object Devirtualization {
                     || (this is IrPrivateFunctionCall && specialNames.any { dfgSymbol.name?.contains(it) == true })
 
     private fun devirtualize(irModule: IrModuleFragment, context: Context,
-                             moduleDFG: ModuleDFG, externalModulesDFG: ExternalModulesDFG,
+                             externalModulesDFG: ExternalModulesDFG,
                              devirtualizedCallSites: Map<IrCall, DevirtualizedCallSite>) {
         val symbols = context.ir.symbols
         val nativePtrEqualityOperatorSymbol = symbols.areEqualByValue[PrimitiveBinaryType.POINTER]!!
@@ -1374,6 +1375,7 @@ internal object Devirtualization {
                 }
                 return when (expression) {
                     is IrReturnableBlock -> {
+                        check(expression is KonanIrReturnableBlockImpl) // TODO: need to obtain IrFile rather than just sourceFileName
                         val foldedReturnableBlockValues = returnableBlockValues[expression]!!.associate {
                             it to fold(it, coercion, cast, false)
                         }
@@ -1385,14 +1387,14 @@ internal object Devirtualization {
                                     val oldSymbol = expression.symbol
                                     val newSymbol = IrReturnableBlockSymbolImpl(expression.descriptor)
                                     val transformedReturnableBlock = with(expression) {
-                                        IrReturnableBlockImpl(
+                                        KonanIrReturnableBlockImpl(
                                                 startOffset    = startOffset,
                                                 endOffset      = endOffset,
                                                 type           = coercion.type,
                                                 symbol         = newSymbol,
                                                 origin         = origin,
                                                 statements     = statements,
-                                                sourceFileName = sourceFileName)
+                                                sourceFile     = sourceFile)
                                     }
                                     transformedReturnableBlock.transformChildrenVoid(object: IrElementTransformerVoid() {
                                         override fun visitExpression(expression: IrExpression): IrExpression {

@@ -6,27 +6,25 @@
 package org.jetbrains.kotlin.backend.konan.irasdescriptors
 
 import org.jetbrains.kotlin.backend.common.atMostOne
-import org.jetbrains.kotlin.backend.konan.descriptors.konanBackingField
+import org.jetbrains.kotlin.backend.konan.descriptors.getArgumentValueOrNull
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
-import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
 import org.jetbrains.kotlin.ir.declarations.*
-import org.jetbrains.kotlin.ir.declarations.impl.IrFieldImpl
-import org.jetbrains.kotlin.ir.expressions.*
+import org.jetbrains.kotlin.ir.expressions.IrCall
+import org.jetbrains.kotlin.ir.expressions.IrConst
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
-import org.jetbrains.kotlin.ir.types.*
+import org.jetbrains.kotlin.ir.types.classifierOrFail
+import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.explicitParameters
+import org.jetbrains.kotlin.ir.util.isFunction
+import org.jetbrains.kotlin.ir.util.isSuspendFunction
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedPropertyDescriptor
 
 val IrConstructor.constructedClass get() = this.parent as IrClass
-
-val <T : IrDeclaration> T.original get() = this
-val IrDeclaration.containingDeclaration get() = this.parent
 
 val IrDeclarationParent.fqNameSafe: FqName get() = when (this) {
     is IrPackageFragment -> this.fqName
@@ -94,26 +92,8 @@ fun IrClass.getSuperInterfaces() = this.superClasses.map { it.owner }.filter { i
 val IrProperty.konanBackingField: IrField?
     get() {
         assert(this.isReal)
-        this.backingField?.let { return it }
-
-        (this.descriptor as? DeserializedPropertyDescriptor)?.konanBackingField?.let { backingFieldDescriptor ->
-            val result = IrFieldImpl(
-                    this.startOffset,
-                    this.endOffset,
-                    IrDeclarationOrigin.PROPERTY_BACKING_FIELD,
-                    backingFieldDescriptor,
-                    this.getter!!.returnType
-            ).also {
-                it.parent = this.parent
-            }
-            this.backingField = result
-            return result
-        }
-
-        return null
+        return this.backingField
     }
-
-val IrField.containingClass get() = this.parent as? IrClass
 
 val IrFunction.isReal get() = this.origin != IrDeclarationOrigin.FAKE_OVERRIDE
 
@@ -132,7 +112,7 @@ val IrFunction.isOverridableOrOverrides
     get() = this is IrSimpleFunction && (this.isOverridable || this.overriddenSymbols.isNotEmpty())
 
 val IrClass.isFinalClass: Boolean
-    get() = modality == Modality.FINAL && kind != ClassKind.ENUM_CLASS
+    get() = modality == Modality.FINAL
 
 fun IrSimpleFunction.overrides(other: IrSimpleFunction): Boolean {
     if (this == other) return true
@@ -148,8 +128,6 @@ fun IrSimpleFunction.overrides(other: IrSimpleFunction): Boolean {
 
 fun IrClass.isSpecialClassWithNoSupertypes() = this.isAny() || this.isNothing()
 
-internal val IrValueParameter.isValueParameter get() = this.index >= 0
-
 private val IrCall.annotationClass
     get() = (this.symbol.owner as IrConstructor).constructedClass
 
@@ -161,4 +139,46 @@ fun IrAnnotationContainer.hasAnnotation(fqName: FqName) =
 
 fun List<IrCall>.findAnnotation(fqName: FqName): IrCall? = this.firstOrNull {
     it.annotationClass.fqNameSafe == fqName
+}
+
+fun <T> IrDeclaration.getAnnotationArgumentValue(fqName: FqName, argumentName: String): T? {
+    val annotation = this.annotations.findAnnotation(fqName)
+    if (annotation == null) {
+        // As a last resort try searching the descriptor.
+        // This is needed for a period while we don't have IR for platform libraries.
+        return this.descriptor.annotations
+            .findAnnotation(fqName)
+            ?.getArgumentValueOrNull<T>(argumentName)
+    }
+    for (index in 0 until annotation.valueArgumentsCount) {
+        val parameter = annotation.symbol.owner.valueParameters[index]
+        if (parameter.name == Name.identifier(argumentName)) {
+            val actual = annotation.getValueArgument(index) as? IrConst<T>
+            return actual?.value
+        }
+    }
+    return null
+}
+
+fun IrValueParameter.isInlineParameter(): Boolean =
+    !this.isNoinline && (this.type.isFunction() || this.type.isSuspendFunction()) && !this.type.isMarkedNullable()
+
+val IrDeclaration.parentDeclarationsWithSelf: Sequence<IrDeclaration>
+    get() = generateSequence(this, { it.parent as? IrDeclaration })
+
+fun IrClass.companionObject() = this.declarations.singleOrNull {it is IrClass && it.isCompanion }
+
+val IrDeclaration.isGetter get() = this is IrSimpleFunction && this == this.correspondingProperty?.getter
+
+val IrDeclaration.isSetter get() = this is IrSimpleFunction && this == this.correspondingProperty?.setter
+
+val IrDeclaration.isAccessor get() = this.isGetter || this.isSetter
+
+val IrDeclaration.file: IrFile get() = parent.let {
+    when (it) {
+        is IrFile -> it
+        is IrPackageFragment -> TODO("Unknown file")
+        is IrDeclaration -> it.file
+        else -> TODO("Unexpected declaration parent")
+    }
 }

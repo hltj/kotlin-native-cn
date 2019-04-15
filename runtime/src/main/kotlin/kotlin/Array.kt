@@ -13,7 +13,7 @@ import kotlin.native.internal.PointsTo
 /**
  * Represents an array. Array instances can be created using the constructor, [arrayOf], [arrayOfNulls] and [emptyArray]
  * standard library functions.
- * See [Kotlin language documentation](http://kotlinlang.org/docs/reference/basic-types.html#arrays)
+ * See [Kotlin language documentation](https://kotlinlang.org/docs/reference/basic-types.html#arrays)
  * for more information on arrays.
  */
 @ExportTypeInfo("theArrayTypeInfo")
@@ -33,6 +33,7 @@ public final class Array<T> {
         }
     }
 
+    @PublishedApi
     @ExportForCompiler
     internal constructor(@Suppress("UNUSED_PARAMETER") size: Int) {}
 
@@ -44,10 +45,12 @@ public final class Array<T> {
 
     /**
      * Returns the array element at the specified [index]. This method can be called using the
-     * index operator:
+     * index operator.
      * ```
      * value = arr[index]
      * ```
+     *
+     * If the [index] is out of bounds of this array, throws an [IndexOutOfBoundsException].
      */
     @SymbolName("Kotlin_Array_get")
     @PointsTo(0b0100, 0, 0b0001) // <this> points to <return>, <return> points to <this>.
@@ -55,10 +58,12 @@ public final class Array<T> {
 
     /**
      * Sets the array element at the specified [index] to the specified [value]. This method can
-     * be called using the index operator:
+     * be called using the index operator.
      * ```
      * arr[index] = value
      * ```
+     *
+     * If the [index] is out of bounds of this array, throws an [IndexOutOfBoundsException].
      */
     @SymbolName("Kotlin_Array_set")
     @PointsTo(0b0100, 0, 0b0001) // <this> points to <value>, <value> points to <this>.
@@ -86,14 +91,4 @@ private class IteratorImpl<T>(val collection: Array<T>) : Iterator<T> {
     public override operator fun hasNext(): Boolean {
         return index < collection.size
     }
-}
-
-/**
- * Returns an array containing all elements of the original array and then all elements of the given [elements] array.
- */
-@kotlin.internal.InlineOnly
-public inline operator fun <T> Array<T>.plus(elements: Array<T>): Array<T> {
-    val result = copyOfUninitializedElements(this.size + elements.size)
-    elements.copyRangeTo(result, 0, elements.size, this.size)
-    return result
 }

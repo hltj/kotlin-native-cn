@@ -36,7 +36,7 @@ For example, using the simple `libgit2.def` native library definition file provi
 
 
 ```bash
-$ cinterop -def  samples/gitchurn/src/main/c_interop/libgit2.def -compilerOpts -I/usr/local/include -o libgit2
+$ cinterop -def  samples/gitchurn/src/nativeInterop/cinterop/libgit2.def -compilerOpts -I/usr/local/include -o libgit2
 ```
 
 

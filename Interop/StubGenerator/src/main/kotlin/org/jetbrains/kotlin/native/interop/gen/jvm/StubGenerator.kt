@@ -54,6 +54,8 @@ class StubGenerator(
         pkgName.substringAfterLast('.')
     }
 
+    val generatedObjCCategoriesMembers = mutableMapOf<ObjCClass, GeneratedObjCCategoriesMembers>()
+
     val excludedFunctions: Set<String>
         get() = configuration.excludedFunctions
 
@@ -168,7 +170,7 @@ class StubGenerator(
 
     val functionsToBind = nativeIndex.functions.filter { it.name !in excludedFunctions }
 
-    private val macroConstantsByName = nativeIndex.macroConstants.associateBy { it.name }
+    private val macroConstantsByName = (nativeIndex.macroConstants + nativeIndex.wrappedMacros).associateBy { it.name }
 
     val kotlinFile = object : KotlinFile(pkgName, namesToBeDeclared = computeNamesToBeDeclared()) {
         override val mappingBridgeGenerator: MappingBridgeGenerator
@@ -611,7 +613,6 @@ class StubGenerator(
         private val cCallSymbolName: String?
 
         init {
-            // TODO: support dumpShims
             val kotlinParameters = mutableListOf<Pair<String, KotlinType>>()
             val bodyGenerator = KotlinCodeBuilder(scope = kotlinFile)
             val bridgeArguments = mutableListOf<TypedKotlinValue>()
@@ -646,13 +647,12 @@ class StubGenerator(
                 } else if (representAsValuesRef != null) {
                     kotlinParameters.add(parameterName to representAsValuesRef)
                     bodyGenerator.pushMemScoped()
-                    "$parameterName?.getPointer(memScope)"
+                    bodyGenerator.getNativePointer(parameterName)
                 } else {
                     val mirror = mirror(parameter.type)
                     kotlinParameters.add(parameterName to mirror.argType)
                     parameterName
                 }
-
                 bridgeArguments.add(TypedKotlinValue(parameter.type, bridgeArgument))
             }
 
@@ -661,11 +661,12 @@ class StubGenerator(
                         bodyGenerator,
                         this,
                         func.returnType,
-                        bridgeArguments
+                        bridgeArguments,
+                        independent = false
                 ) { nativeValues ->
                     "${func.name}(${nativeValues.joinToString()})"
                 }
-                bodyGenerator.out("return $result")
+                bodyGenerator.returnResult(result)
                 isCCall = false
                 cCallSymbolName = null
             } else {

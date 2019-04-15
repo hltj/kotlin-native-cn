@@ -18,7 +18,6 @@ package org.jetbrains.kotlin.gradle.plugin.experimental.internal
 
 import org.gradle.api.artifacts.ConfigurationContainer
 import org.gradle.api.attributes.Usage
-import org.gradle.api.file.ProjectLayout
 import org.gradle.api.internal.file.FileOperations
 import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.Provider
@@ -29,7 +28,7 @@ import org.jetbrains.kotlin.gradle.plugin.experimental.KotlinNativeBinary
 import org.jetbrains.kotlin.gradle.plugin.experimental.KotlinNativeFramework
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinUsages
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
-import org.jetbrains.kotlin.konan.target.Family
+import org.jetbrains.kotlin.konan.target.KonanTarget
 import javax.inject.Inject
 
 open class KotlinNativeFrameworkImpl @Inject constructor(
@@ -37,8 +36,7 @@ open class KotlinNativeFrameworkImpl @Inject constructor(
     baseName: Provider<String>,
     componentDependencies: KotlinNativeDependenciesImpl,
     component: KotlinNativeMainComponent,
-    identity: KotlinNativeVariantIdentity,
-    projectLayout: ProjectLayout,
+    variant: KotlinNativeVariant,
     objects: ObjectFactory,
     configurations: ConfigurationContainer,
     fileOperations: FileOperations
@@ -46,8 +44,7 @@ open class KotlinNativeFrameworkImpl @Inject constructor(
     name,
     baseName,
     component,
-    identity,
-    projectLayout,
+    variant,
     CompilerOutputKind.FRAMEWORK,
     objects,
     componentDependencies,
@@ -72,9 +69,10 @@ open class KotlinNativeFrameworkImpl @Inject constructor(
         getImplementationDependencies().extendsFrom(this)
     }
 
-    override var embedBitcode: BitcodeEmbeddingMode = if (konanTarget.family == Family.IOS) {
-        buildType.iosEmbedBitcode
-    } else {
-        BitcodeEmbeddingMode.DISABLE
-    }
+    override var embedBitcode: BitcodeEmbeddingMode =
+        if (konanTarget == KonanTarget.IOS_ARM64 || konanTarget == KonanTarget.IOS_ARM32) {
+            buildType.iosEmbedBitcode
+        } else {
+            BitcodeEmbeddingMode.DISABLE
+        }
 }

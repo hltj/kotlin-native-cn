@@ -42,6 +42,7 @@ class IntrinsicType {
         const val OBJC_GET_OBJC_CLASS           = "OBJC_GET_OBJC_CLASS"
         const val OBJC_GET_RECEIVER_OR_SUPER    = "OBJC_GET_RECEIVER_OR_SUPER"
         const val OBJC_INIT_BY                  = "OBJC_INIT_BY"
+        const val OBJC_GET_SELECTOR             = "OBJC_GET_SELECTOR"
 
         // Other
         const val GET_CLASS_TYPE_INFO           = "GET_CLASS_TYPE_INFO"
@@ -52,6 +53,7 @@ class IntrinsicType {
         const val IDENTITY                      = "IDENTITY"
         const val IMMUTABLE_BLOB                = "IMMUTABLE_BLOB"
         const val INIT_INSTANCE                 = "INIT_INSTANCE"
+        const val SELECT_ENTRY_POINT            = "SELECT_ENTRY_POINT"
 
         const val GET_CONTINUATION              = "GET_CONTINUATION"
         const val RETURN_IF_SUSPEND             = "RETURN_IF_SUSPEND"

@@ -307,7 +307,8 @@ sealed class TypeInfo {
                         type.returnType,
                         type.parameterTypes.mapIndexed { index, it ->
                             TypedKotlinValue(it, "p$index")
-                        } + TypedKotlinValue(PointerType(VoidType), "interpretCPointer<COpaque>($kniBlockPtr)")
+                        } + TypedKotlinValue(PointerType(VoidType), "interpretCPointer<COpaque>($kniBlockPtr)"),
+                        independent = true
 
                 ) { nativeValues ->
                     val type = type
@@ -315,7 +316,7 @@ sealed class TypeInfo {
                     val objCBlock = "((__bridge $blockType)${nativeValues.last()})"
                     "$objCBlock(${nativeValues.dropLast(1).joinToString()})"
                 }.let {
-                    codeBuilder.out("return $it")
+                    codeBuilder.returnResult(it)
                 }
 
                 codeBuilder.build().joinTo(this, separator = "\n")
@@ -341,7 +342,7 @@ sealed class TypeInfo {
                 error(pointed)
         override fun cToBridged(expr: String) = error(pointed)
 
-        // TODO: this method must not exist
+        // TODO: this method must not exist.
         override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = error(pointed)
     }
 }
@@ -378,7 +379,7 @@ fun mirrorPrimitiveType(type: PrimitiveType, declarationMapper: DeclarationMappe
     val varClass = Classifier.topLevel("kotlinx.cinterop", varClassName)
     val varClassOf = Classifier.topLevel("kotlinx.cinterop", "${varClassName}Of")
 
-    val info = if (type == BoolType) {
+    val info = if (type is BoolType) {
         TypeInfo.Boolean()
     } else {
         TypeInfo.Primitive(type.getBridgedType(declarationMapper), varClassOf)

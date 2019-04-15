@@ -41,7 +41,9 @@ convention.plugins.platformInfo = new PlatformInfo()
 ext {
     distDir = file('dist')
     dependenciesDir = DependencyProcessor.defaultDependenciesRoot
-    platformManager = new PlatformManager(DistributionKt.buildDistribution(projectDir.absolutePath))
+    experimentalEnabled = project.hasProperty("org.jetbrains.kotlin.native.experimentalTargets")
+    platformManager = new PlatformManager(DistributionKt.buildDistribution(projectDir.absolutePath),
+            ext.experimentalEnabled)
 
     kotlinCommonStdlibModule="org.jetbrains.kotlin:kotlin-stdlib-common:${kotlinVersion}:sources"
     kotlinCompilerModule="org.jetbrains.kotlin:kotlin-compiler:${kotlinVersion}"
@@ -162,6 +164,25 @@ class PlatformInfo {
         return HostManager.hostIsLinux
     }
 
+    boolean isAppleTarget(Project project) {
+        def target = getTarget(project)
+        return target.family == Family.IOS || target.family == Family.OSX
+    }
+
+    boolean isWindowsTarget(Project project) {
+        return getTarget(project).family == Family.MINGW
+    }
+
+    boolean isWasmTarget(Project project) {
+        return getTarget(project).family == Family.WASM
+    }
+
+    KonanTarget getTarget(Project project) {
+        def platformManager = project.rootProject.platformManager
+        def targetName = project.project.testTarget ?: 'host'
+        return platformManager.targetManager(targetName).target
+    }
+
     Throwable unsupportedPlatformException() {
         return new TargetSupportException()
     }
@@ -277,6 +298,11 @@ task distCompiler(type: Copy) {
     from(project.file('konan')) {
         into('konan')
     }
+    if (experimentalEnabled) {
+        file('konan/experimentalTargetsEnabled').text = ""
+    } else {
+        delete('konan/experimentalTargetsEnabled')
+    }
 }
 
 task listDist(type: Exec) {
@@ -314,7 +340,6 @@ targetList.each { target ->
     task("${target}CrossDistRuntime", type: Copy) {
         dependsOn ":runtime:${target}Runtime"
         dependsOn ":backend.native:${target}Stdlib"
-        dependsOn ":backend.native:${target}Start"
 
         destinationDir distDir
 
@@ -330,10 +355,6 @@ targetList.each { target ->
         from(project(':runtime').file("build/${target}Stdlib")) {
             include('**')
             into(stdlib)
-        }
-        from(project(':runtime').file("build/${target}Start.bc")) {
-            rename("${target}Start.bc", 'start.bc')
-            into("konan/targets/$target/native")
         }
         if (target == 'wasm32') {
             into("$stdlib/targets/wasm32/included") {
@@ -395,9 +416,37 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
         include 'RELEASE_NOTES.md'
         into baseName
     }
+    from(project.rootDir) {
+        include 'licenses/**'
+        into baseName
+    }
 
     destinationDir = file('.')
-    if (!isWindows()) {
+
+    if (isWindows()) {
+        zip64 true
+    } else {
+        extension = 'tar.gz'
+        compression = Compression.GZIP
+    }
+}
+
+task 'tc-dist'(type: (isWindows()) ? Zip : Tar) {
+    dependsOn('distPlatformLibs')
+    dependsOn('dist')
+    def simpleOsName = HostManager.simpleOsName()
+    baseName = "kotlin-native-dist-$simpleOsName-$konanVersionFull"
+    from("$project.rootDir/dist") {
+        include '**'
+        exclude 'dependencies'
+        into baseName
+    }
+
+    destinationDir = file('.')
+
+    if (isWindows()) {
+        zip64 true
+    } else {
         extension = 'tar.gz'
         compression = Compression.GZIP
     }
@@ -421,6 +470,10 @@ configure([samplesZip, samplesTar]) {
     from(file('samples')) {
         // Process properties files separately.
         exclude '**/gradle.properties'
+    }
+
+    from(project.rootDir) {
+        include 'licenses/**'
     }
 
     from(file('samples')) {

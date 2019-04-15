@@ -48,7 +48,7 @@ repositories {
 
 dependencies {
     cli_bc project(path: ':backend.native', configuration: 'cli_bc')
-    update_tests (group: 'org',  name: 'Kotlin_dev_CompilerAllPlugins', version: testKotlinVersion) {
+    update_tests (group: 'org',  name: 'Kotlin_1330_CompilerAllPlugins', version: testKotlinVersion) {
         artifact {
             name = 'internal/kotlin-test-data'
             type = 'zip'
@@ -64,6 +64,8 @@ externalStdlibTestsDir.mkdirs()
 
 ext.platformManager = project.rootProject.platformManager
 ext.target = platformManager.targetManager(project.testTarget).target
+
+ext.testLibraryDir = "${project.property("konan.home")}/klib/platform/${project.target.name}"
 
 // Add executor to run tests depending on a target
 project.convention.plugins.executor = ExecutorServiceKt.create(project)
@@ -102,7 +104,7 @@ konanArtifacts {
 task installTestLibrary(type: KlibInstall) {
     dependsOn compileKonanTestLibraryHost
     klib = konanArtifacts.testLibrary.getArtifactByTarget('host')
-    repo = rootProject.file("${project.property("konan.home")}/klib/common")
+    repo = rootProject.file(testLibraryDir)
 }
 
 // Gets tests from the same Kotlin compiler build
@@ -167,6 +169,9 @@ run {
 }
 
 task sanity {
+    if (!project.hasProperty("test.disable_update")) {
+        update_external_tests()
+    }
     dependsOn(tasksOf { it instanceof KonanTest && it.inDevelopersRun &&
             !it.getDependsOn().contains(':distPlatformLibs') })
     dependsOn(tasksOf { it instanceof RunStdlibTest })
@@ -175,8 +180,8 @@ task sanity {
 // Collect results in one json.
 task resultsTask() {
     doLast {
-        Map<String, Map<String, RunExternalTestGroup.TestResult>> results = [:]
-        def statistics = new RunExternalTestGroup.Statistics()
+        Map<String, Map<String, TestResult>> results = [:]
+        def statistics = new Statistics()
         tasks.withType(RunExternalTestGroup).matching { it.state.executed }.each {
             results.put(it.name, it.results)
             statistics.add(it.statistics)
@@ -206,7 +211,7 @@ static boolean isExcluded(String dir) {
 
     boolean result = false
     excluded.forEach {
-        if (dir.endsWith(it)) {
+        if (dir.endsWith(it.replace("/", File.separator))) {
             result = true
         }
     }
@@ -1079,6 +1084,18 @@ task initializers_correctOrder2(type: RunKonanTest) {
     source = "codegen/initializers/correctOrder2.kt"
 }
 
+task initializers_linkTest1(type: LinkKonanTest) {
+    goldValue = "1200\n"
+    source = "codegen/initializers/linkTest1_main.kt"
+    lib = "codegen/initializers/linkTest1_lib.kt"
+}
+
+task initializers_linkTest2(type: LinkKonanTest) {
+    goldValue = "2\n"
+    source = "codegen/initializers/linkTest2_main.kt"
+    lib = "codegen/initializers/linkTest2_lib.kt"
+}
+
 task arithmetic_basic(type: RunKonanTest) {
     source = "codegen/arithmetic/basic.kt"
 }
@@ -1284,6 +1301,12 @@ task delegatedProperty_observable(type: RunKonanTest) {
 task delegatedProperty_map(type: RunKonanTest) {
     goldValue = "John Doe\n25\n"
     source = "codegen/delegatedProperty/map.kt"
+}
+
+task delegatedProperty_localLinkTest(type: LinkKonanTest) {
+    goldValue = goldValue = "x\n42\n"
+    source = "codegen/delegatedProperty/localUse.kt"
+    lib = "codegen/delegatedProperty/localLib.kt"
 }
 
 task propertyCallableReference_valClass(type: RunKonanTest) {
@@ -1521,6 +1544,11 @@ task coroutines_controlFlow_while2(type: RunKonanTest) {
     source = "codegen/coroutines/controlFlow_while2.kt"
 }
 
+task coroutines_returnsNothing1(type: RunKonanTest) {
+    goldValue = "OK\n"
+    source = "codegen/coroutines/returnsNothing1.kt"
+}
+
 task coroutines_returnsUnit1(type: RunKonanTest) {
     goldValue = "117\ns1\n0\n"
     source = "codegen/coroutines/returnsUnit1.kt"
@@ -1756,7 +1784,10 @@ task link_testLib_explicitly(type: RunStandaloneKonanTest) {
     source = "link/omit/hello.kt"
     // We force library inclusion, so need to see the warning banner.
     flags = ['-l', 'testLibrary'] 
-
+    doLast {
+        def file = new File("$testLibraryDir/testLibrary")
+        file.deleteDir()
+    }
 }
 
 task no_purge_for_dependencies(type: LinkKonanTest) {
@@ -2028,6 +2059,19 @@ task extend_exception(type: RunKonanTest) {
     source = "runtime/exceptions/extend0.kt"
 }
 
+task check_stacktrace_format(type: RunStandaloneKonanTest) {
+    disabled = !isAppleTarget(project)
+    flags = ['-g']
+    source = "runtime/exceptions/check_stacktrace_format.kt"
+}
+
+task custom_hook(type: RunStandaloneKonanTest) {
+    disabled = (project.testTarget == 'wasm32') // Uses exceptions.
+    goldValue = "value 42: Error\n"
+    expectedExitStatus = 1
+    source = "runtime/exceptions/custom_hook.kt"
+}
+
 task runtime_math_exceptions(type: RunKonanTest) {
     disabled = (project.testTarget == 'wasm32')
     source = "stdlib_external/numbers/MathExceptionTest.kt"
@@ -2190,8 +2234,7 @@ task spread_operator_0(type: RunKonanTest) {
 }
 
 task main_exception(type: RunKonanTest) {
-    // TODO: cannot currently check the output because the exact stacktrace strings are unpredictable.
-    // goldValue = "Uncaught exception from Kotlin's main: Throwable\n"
+    outputChecker = { s -> s.contains("kotlin.Error: Hello!") }
     expectedExitStatus = 1
     source = "runtime/basic/main_exception.kt"
 }
@@ -2886,7 +2929,7 @@ kotlinNativeInterop {
         defFile 'interop/basics/ccallbacksAndVarargs.def'
     }
 
-    if (isMac()) {
+    if (isAppleTarget(project)) {
         objcSmoke {
             defFile 'interop/objc/objcSmoke.def'
             headers "$projectDir/interop/objc/smoke.h"
@@ -2993,35 +3036,30 @@ task interop_callbacksAndVarargs(type: RunInteropKonanTest) {
 }
 
 task interop_echo_server(type: RunInteropKonanTest) {
-    disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
-    if (!isMac()) {
-        // Not supported or not tested.
-        disabled = true
-    }
+    disabled = isWasmTarget(project) || isWindowsTarget(project)
     run = false
     source = "interop/basics/echo_server.kt"
     interop = 'sockets'
 }
 
-if (isMac()) {
-    task interop_opengl_teapot(type: RunStandaloneKonanTest) {
-        dependsOnPlatformLibs(it as Task)
-        disabled = (project.testTarget == 'wasm32') ||    // No interop for wasm yet.
-                (project.testTarget == 'ios_x64')         // No GLUT in iOS
-        run = false
-        source = "interop/basics/opengl_teapot.kt"
-    }
+task interop_opengl_teapot(type: RunStandaloneKonanTest) {
+    disabled = !isAppleTarget(project) || (project.testTarget == 'ios_x64')  // No GLUT in iOS
+    dependsOnPlatformLibs(it as Task)
+    run = false
+    source = "interop/basics/opengl_teapot.kt"
+}
 
-    task interop_objc_smoke(type: RunInteropKonanTest) {
-        disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
-        goldValue = "84\nFoo\nHello, World!\nKotlin says: Hello, everybody!\nHello from Kotlin\n2, 1\n" +
-                "true\ntrue\n" +
-                "Global string\nAnother global string\nnull\nglobal object\n" +
-                "5\n" +
-                "String macro\n" +
-                "CFString macro\n" +
-                "Deallocated\nDeallocated\n"
+task interop_objc_smoke(type: RunInteropKonanTest) {
+    disabled = !isAppleTarget(project)
+    goldValue = "84\nFoo\nHello, World!\nKotlin says: Hello, everybody!\nHello from Kotlin\n2, 1\n" +
+            "true\ntrue\n" +
+            "Global string\nAnother global string\nnull\nglobal object\n" +
+            "5\n" +
+            "String macro\n" +
+            "CFString macro\n" +
+            "Deallocated\nDeallocated\nDeallocated\n"
 
+    if (isAppleTarget(project)) {
         source = "interop/objc/smoke.kt"
         interop = 'objcSmoke'
 
@@ -3104,7 +3142,6 @@ task library_mismatch(type: RunStandaloneKonanTest) {
     doFirst {
         def konancScript = isWindows() ? "konanc.bat" : "konanc"
         def konanc = "$dist/bin/$konancScript"
-
         "$konanc $lib -p library -o $dir/1.2/empty -target $currentTarget -lv 1.2".execute().waitFor()
         "$konanc $lib -p library -o $dir/3.4/empty -target $someOtherTarget".execute().waitFor()
         "$konanc $lib -p library -o $dir/5.6/empty -target $currentTarget -lv 5.6".execute().waitFor()
@@ -3121,7 +3158,7 @@ task library_mismatch(type: RunStandaloneKonanTest) {
     goldValue = isWindows() ? messages.replaceAll('\\/', '\\\\') : messages
 }
 
-if (isMac() && project.testTarget != 'wasm32') {
+if (isAppleTarget(project)) {
     def target = ext.platformManager.targetByName(project.testTarget ?: 'host').name
 
     task testValuesFramework(type: FrameworkTest) {
@@ -3177,7 +3214,7 @@ task runKonanRegexTests(type: RunKonanTest) {
 
 task buildKonanStdlibTests(type: BuildKonanTest) {
     outputSourceSetName = "testOutputStdlib"
-    flags = [ "-Xmulti-platform", "-friend-modules", project.rootProject.file("dist/klib/common/stdlib") ]
+    flags = [ "-Xmulti-platform", "-friend-modules",  project.rootProject.file("${project.properties['konan.home']}/klib/common/stdlib") ]
     def testSources = externalStdlibTestsDir.absolutePath
     compileList = [ "$testSources/stdlib/test", "$testSources/stdlib/common",
                     "stdlib_external/utils.kt", "stdlib_external/jsCollectionFactoriesActuals.kt" ]

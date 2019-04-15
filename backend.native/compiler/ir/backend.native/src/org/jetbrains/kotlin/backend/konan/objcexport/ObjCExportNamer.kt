@@ -5,6 +5,8 @@
 
 package org.jetbrains.kotlin.backend.konan.objcexport
 
+import org.jetbrains.kotlin.analyzer.ModuleInfo
+import org.jetbrains.kotlin.backend.konan.cKeywords
 import org.jetbrains.kotlin.backend.konan.descriptors.isArray
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
@@ -99,11 +101,13 @@ internal class ObjCExportNamerImpl(
     }
 
     private val propertyNames = object : Mapping<PropertyDescriptor, String>() {
+        override fun reserved(name: String) = name in cKeywords
+
         override fun conflict(first: PropertyDescriptor, second: PropertyDescriptor): Boolean =
                 !mapper.canHaveSameName(first, second)
     }
 
-    private inner open class GlobalNameMapping<in T : Any, N> : Mapping<T, N>() {
+    private open inner class GlobalNameMapping<in T : Any, N> : Mapping<T, N>() {
         final override fun conflict(first: T, second: T): Boolean = true
     }
 
@@ -125,7 +129,7 @@ internal class ObjCExportNamerImpl(
                 "useStoredAccessor"
         )
 
-        override fun reserved(name: String) = name in reserved
+        override fun reserved(name: String) = (name in reserved) || (name in cKeywords)
     }
 
     private val objectInstanceSelectors = object : ClassPropertyNameMapping<ClassDescriptor>() {
@@ -184,7 +188,22 @@ internal class ObjCExportNamerImpl(
             if (containingDeclaration is ClassDescriptor) {
                 append(getClassOrProtocolSwiftName(containingDeclaration))
 
-                if (!descriptor.isInterface && !containingDeclaration.isInterface) {
+                val importAsMember = when {
+                    descriptor.isInterface || containingDeclaration.isInterface -> {
+                        // Swift doesn't support neither nested nor outer protocols.
+                        false
+                    }
+
+                    this.contains('.') -> {
+                        // Swift doesn't support swift_name with deeply nested names.
+                        // It seems to support "OriginalObjCName.SwiftName" though,
+                        // but this doesn't seem neither documented nor reliable.
+                        false
+                    }
+
+                    else -> true
+                }
+                if (importAsMember) {
                     append(".").append(descriptor.name.asString())
                 } else {
                     append(descriptor.name.asString().capitalize())

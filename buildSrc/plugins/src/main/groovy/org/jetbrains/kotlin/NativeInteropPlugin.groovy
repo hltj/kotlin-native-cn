@@ -127,7 +127,7 @@ class NamedNativeInteropConfig implements Named {
         dependsOn(task)
 
         final Project prj;
-        final String taskName;
+        String taskName;
         int index = task.lastIndexOf(':')
         if (index != -1) {
             prj = project.project(task.substring(0, index))
@@ -222,7 +222,7 @@ class NamedNativeInteropConfig implements Named {
 
                 args '-generated', generatedSrcDir
                 args '-natives', nativeLibsDir
-                args '-temporaryFilesDir', temporaryFilesDir
+                args '-Xtemporary-files-dir', temporaryFilesDir
                 args '-flavor', this.flavor
                 // Uncomment to debug.
                 // args '-verbose', 'true'
@@ -251,7 +251,7 @@ class NamedNativeInteropConfig implements Named {
                 args linkerOpts.collectMany { ['-lopt', it] }
 
                 headers.each {
-                    args '-h', it
+                    args '-header', it
                 }
 
                 if (project.hasProperty('shims')) {

@@ -6,12 +6,14 @@
 package org.jetbrains.kotlin.backend.konan.library.impl
 
 import org.jetbrains.kotlin.backend.konan.library.LinkData
+import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.library.KonanLibraryLayout
 
 internal class MetadataWriterImpl(libraryLayout: KonanLibraryLayout): KonanLibraryLayout by libraryLayout {
 
     fun addLinkData(linkData: LinkData) {
         moduleHeaderFile.writeBytes(linkData.module)
+        linkData.ir?.let { irHeader.writeBytes(it.module) }
         linkData.fragments.forEachIndexed { index, it ->
             val packageFqName = linkData.fragmentNames[index]
             val shortName = packageFqName.substringAfterLast(".")
@@ -23,6 +25,10 @@ internal class MetadataWriterImpl(libraryLayout: KonanLibraryLayout): KonanLibra
             for ((i, fragment) in it.withIndex()) {
                 packageFragmentFile(packageFqName, "${withLeadingZeros(i)}_$shortName").writeBytes(fragment)
             }
+        }
+        linkData.ir?.combinedDeclarationFilePath?.let {
+            // TODO: use Files.move.
+            File(it).copyTo(irFile)
         }
     }
 }

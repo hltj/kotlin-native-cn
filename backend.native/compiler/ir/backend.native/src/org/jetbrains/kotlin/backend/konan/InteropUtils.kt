@@ -14,7 +14,6 @@ import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.scopes.MemberScope
 import org.jetbrains.kotlin.types.TypeUtils
-import org.jetbrains.kotlin.util.OperatorNameConventions
 
 object InteropFqNames {
 
@@ -27,7 +26,7 @@ object InteropFqNames {
     val nativePointed = packageName.child(Name.identifier(nativePointedName)).toUnsafe()
 }
 
-internal class InteropBuiltIns(builtIns: KonanBuiltIns, vararg konanPrimitives: ClassDescriptor) {
+internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
 
     val packageScope = builtIns.builtInsModule.getPackage(InteropFqNames.packageName).memberScope
 
@@ -36,6 +35,7 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns, vararg konanPrimitives: 
     val cValuesRef = this.packageScope.getContributedClass("CValuesRef")
     val cValues = this.packageScope.getContributedClass("CValues")
     val cValue = this.packageScope.getContributedClass("CValue")
+    val cOpaque = this.packageScope.getContributedClass("COpaque")
     val cValueWrite = this.packageScope.getContributedFunctions("write")
             .single { it.extensionReceiverParameter?.type?.constructor?.declarationDescriptor == cValue }
     val cValueRead = this.packageScope.getContributedFunctions("readValue")

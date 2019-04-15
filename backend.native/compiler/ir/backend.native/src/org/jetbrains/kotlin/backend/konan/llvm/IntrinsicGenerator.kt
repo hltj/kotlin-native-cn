@@ -4,6 +4,7 @@ import kotlinx.cinterop.cValuesOf
 import llvm.*
 import org.jetbrains.kotlin.backend.konan.descriptors.TypedIntrinsic
 import org.jetbrains.kotlin.backend.konan.descriptors.isTypedIntrinsic
+import org.jetbrains.kotlin.backend.konan.llvm.objc.genObjCSelector
 import org.jetbrains.kotlin.backend.konan.reportCompilationError
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
@@ -51,6 +52,7 @@ internal enum class IntrinsicType {
     OBJC_GET_OBJC_CLASS,
     OBJC_GET_RECEIVER_OR_SUPER,
     OBJC_INIT_BY,
+    OBJC_GET_SELECTOR,
     // Other
     GET_CLASS_TYPE_INFO,
     CREATE_UNINITIALIZED_INSTANCE,
@@ -58,6 +60,7 @@ internal enum class IntrinsicType {
     IDENTITY,
     IMMUTABLE_BLOB,
     INIT_INSTANCE,
+    SELECT_ENTRY_POINT,
     // Coroutines
     GET_CONTINUATION,
     RETURN_IF_SUSPEND,
@@ -77,6 +80,7 @@ internal enum class IntrinsicType {
     INTEROP_NARROW,
     INTEROP_STATIC_C_FUNCTION,
     INTEROP_FUNPTR_INVOKE,
+    INTEROP_MEMORY_COPY,
     // Worker
     WORKER_EXECUTE
 }
@@ -145,6 +149,10 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
                 val args = listOf(receiver) + constructorArgs
                 environment.evaluateCall(constructorDescriptor, args, Lifetime.IRRELEVANT)
                 receiver
+            }
+            IntrinsicType.OBJC_GET_SELECTOR -> {
+                val selector = (callSite.getValueArgument(0) as IrConst<*>).value as String
+                environment.functionGenerationContext.genObjCSelector(selector)
             }
             IntrinsicType.INIT_INSTANCE -> {
                 val callee = callSite as IrCall
@@ -216,6 +224,8 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
                 IntrinsicType.LIST_OF_INTERNAL -> emitListOfInternal(callSite, args)
                 IntrinsicType.IDENTITY -> emitIdentity(args)
                 IntrinsicType.GET_CONTINUATION -> emitGetContinuation()
+                IntrinsicType.INTEROP_MEMORY_COPY -> emitMemoryCopy(callSite, args)
+                IntrinsicType.SELECT_ENTRY_POINT -> emitEntryPointSelection(args)
                 IntrinsicType.RETURN_IF_SUSPEND,
                 IntrinsicType.INTEROP_BITS_TO_FLOAT,
                 IntrinsicType.INTEROP_BITS_TO_DOUBLE,
@@ -228,6 +238,7 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
                     reportNonLoweredIntrinsic(intrinsicType)
                 IntrinsicType.INIT_INSTANCE,
                 IntrinsicType.OBJC_INIT_BY,
+                IntrinsicType.OBJC_GET_SELECTOR,
                 IntrinsicType.IMMUTABLE_BLOB ->
                     reportSpecialIntrinsic(intrinsicType)
             }
@@ -243,6 +254,12 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
 
     private fun FunctionGenerationContext.emitIdentity(args: List<LLVMValueRef>): LLVMValueRef =
             args.single()
+
+    private fun FunctionGenerationContext.emitEntryPointSelection(args: List<LLVMValueRef>): LLVMValueRef {
+        val entryPoint = context.ir.symbols.entryPoint?.owner ?: return unreachable()!! // TODO: Don't put start.kt in source set unless produce=PROGRAM.
+        return call(codegen.llvmFunction(entryPoint), args.take(entryPoint.valueParameters.size),
+                Lifetime.IRRELEVANT, environment.exceptionHandler)
+    }
 
     private fun FunctionGenerationContext.emitListOfInternal(callSite: IrCall, args: List<LLVMValueRef>): LLVMValueRef {
         val varargExpression = callSite.getValueArgument(0) as IrVararg
@@ -375,6 +392,12 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
         }
         llvm.LLVMBuildStore(builder, bitsToStore, bitsWithPaddingPtr)!!.setUnaligned()
         return codegen.theUnitInstanceRef.llvm
+    }
+
+    private fun FunctionGenerationContext.emitMemoryCopy(callSite: IrCall, args: List<LLVMValueRef>): LLVMValueRef {
+        println("memcpy at ${callSite}")
+        args.map { println(llvm2string(it)) }
+        TODO("Implement me")
     }
 
     private fun extractConstUnsignedInt(value: LLVMValueRef): Long {

@@ -42,6 +42,7 @@
 #include "SourceInfo.h"
 #include "Types.h"
 #include "Utils.h"
+#include "ObjCExceptions.h"
 
 namespace {
 
@@ -57,6 +58,13 @@ class AutoFree {
     konan::free(mem_);
   }
 };
+
+// RuntimeUtils.kt
+extern "C" void ReportUnhandledException(KRef throwable);
+extern "C" void ExceptionReporterLaunchpad(KRef reporter, KRef throwable);
+
+KRef currentUnhandledExceptionHook = nullptr;
+int32_t currentUnhandledExceptionHookLock = 0;
 
 #if USE_GCC_UNWIND
 struct Backtrace {
@@ -206,10 +214,39 @@ void ThrowException(KRef exception) {
 #endif
 }
 
-void ReportUnhandledException(KRef e);
+OBJ_GETTER(Kotlin_setUnhandledExceptionHook, KRef hook) {
+  RETURN_RESULT_OF(SwapRefLocked,
+    &currentUnhandledExceptionHook, currentUnhandledExceptionHook, hook, &currentUnhandledExceptionHookLock);
+}
 
-RUNTIME_NORETURN void TerminateWithUnhandledException(KRef e) {
-  ReportUnhandledException(e);
+void OnUnhandledException(KRef throwable) {
+  ObjHolder handlerHolder;
+  auto* handler = SwapRefLocked(&currentUnhandledExceptionHook, currentUnhandledExceptionHook, nullptr,
+     &currentUnhandledExceptionHookLock, handlerHolder.slot());
+  if (handler == nullptr) {
+    ReportUnhandledException(throwable);
+  } else {
+    ExceptionReporterLaunchpad(handler, throwable);
+  }
+}
+
+#if KONAN_REPORT_BACKTRACE_TO_IOS_CRASH_LOG
+static bool terminating = false;
+static SimpleMutex terminatingMutex;
+#endif
+
+RUNTIME_NORETURN void TerminateWithUnhandledException(KRef throwable) {
+  OnUnhandledException(throwable);
+
+#if KONAN_REPORT_BACKTRACE_TO_IOS_CRASH_LOG
+  {
+    LockGuard<SimpleMutex> lock(terminatingMutex);
+    if (!terminating) {
+      ReportBacktraceToIosCrashLog(throwable);
+    }
+  }
+#endif
+
   konan::abort();
 }
 
@@ -219,12 +256,23 @@ RUNTIME_NORETURN void TerminateWithUnhandledException(KRef e) {
 
 static void (*oldTerminateHandler)() = nullptr;
 
+static void callOldTerminateHandler() {
+#if KONAN_REPORT_BACKTRACE_TO_IOS_CRASH_LOG
+  {
+    LockGuard<SimpleMutex> lock(terminatingMutex);
+    terminating = true;
+  }
+#endif
+
+  RuntimeCheck(oldTerminateHandler != nullptr, "Underlying exception handler is not set.");
+  oldTerminateHandler();
+}
+
 static void KonanTerminateHandler() {
   auto currentException = std::current_exception();
-  RuntimeCheck(oldTerminateHandler != nullptr, "Underlying exception handler is not set.");
   if (!currentException) {
     // No current exception.
-    oldTerminateHandler();
+    callOldTerminateHandler();
   } else {
     try {
       std::rethrow_exception(currentException);
@@ -232,7 +280,7 @@ static void KonanTerminateHandler() {
       TerminateWithUnhandledException(e.obj());
     } catch (...) {
       // Not a Kotlin exception.
-      oldTerminateHandler();
+      callOldTerminateHandler();
     }
   }
 }

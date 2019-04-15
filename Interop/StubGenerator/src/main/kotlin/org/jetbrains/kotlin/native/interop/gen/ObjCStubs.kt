@@ -19,6 +19,7 @@ package org.jetbrains.kotlin.native.interop.gen
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.native.interop.gen.jvm.StubGenerator
 import org.jetbrains.kotlin.native.interop.indexer.*
+import org.jetbrains.kotlin.utils.addIfNotNull
 
 private fun ObjCMethod.getKotlinParameterNames(forConstructorOrFactory: Boolean = false): List<String> {
     val selectorParts = this.selector.split(":")
@@ -73,7 +74,9 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
     override fun generate(context: StubGenerationContext): Sequence<String> =
             if (context.nativeBridges.isSupported(this)) {
                 val result = mutableListOf<String>()
-                result.add("@ObjCMethod".applyToStrings(method.selector, bridgeName))
+                result.add(objCMethodAnnotation)
+                if (method.nsConsumesSelf) result.add("@CCall.ConsumesReceiver")
+                if (method.nsReturnsRetained) result.add("@CCall.ReturnsRetained")
                 result.add(header)
 
                 if (method.isInit) {
@@ -136,9 +139,16 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
                     }
                 }
 
+                val objCBridge = "@ObjCBridge".applyToStrings(
+                        *mutableListOf<String>().apply {
+                            add(method.selector)
+                            add(method.encoding)
+                            addIfNotNull(implementationTemplate)
+                        }.toTypedArray()
+                )
+
                 context.addTopLevelDeclaration(
-                        listOf("@kotlin.native.internal.ExportForCompiler",
-                                "@ObjCBridge".applyToStrings(method.selector, method.encoding, implementationTemplate))
+                        listOf("@kotlin.native.internal.ExportForCompiler", objCBridge)
                                 + block(bridgeHeader, bodyLines)
                 )
 
@@ -154,9 +164,10 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
     private val kotlinParameters: List<KotlinParameter>
     private val kotlinReturnType: String
     private val header: String
-    private val implementationTemplate: String
+    private val implementationTemplate: String?
     internal val bridgeName: String
     private val bridgeHeader: String
+    internal val objCMethodAnnotation: String
 
     init {
         val bodyGenerator = KotlinCodeBuilder(scope = stubGenerator.kotlinFile)
@@ -167,6 +178,7 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
 
         val kniReceiverParameter = "kniR"
         val kniSuperClassParameter = "kniSC"
+        val kniSelectorParameter = "kniSEL"
 
         val voidPtr = PointerType(VoidType)
 
@@ -188,13 +200,17 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
                 TypedKotlinValue(voidPtr,
                         "getReceiverOrSuper($kniReceiverParameter, $kniSuperClassParameter)"))
 
+        kotlinObjCBridgeParameters.add(KotlinParameter(kniSelectorParameter, KotlinTypes.cOpaquePointer))
+        nativeBridgeArguments.add(TypedKotlinValue(voidPtr, kniSelectorParameter))
+
         val kotlinParameterNames = method.getKotlinParameterNames()
 
         method.parameters.forEachIndexed { index, it ->
             val name = kotlinParameterNames[index]
 
             val kotlinType = stubGenerator.mirror(it.type).argType
-            kotlinParameters.add(KotlinParameter(name, kotlinType))
+            val annotatedName = if (it.nsConsumed) "@CCall.Consumed $name" else name
+            kotlinParameters.add(KotlinParameter(annotatedName, kotlinType))
 
             kotlinObjCBridgeParameters.add(KotlinParameter(name, kotlinType))
             nativeBridgeArguments.add(TypedKotlinValue(it.type, name.asSimpleName()))
@@ -210,9 +226,12 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
                 bodyGenerator,
                 this@ObjCMethodStub,
                 returnType,
-                nativeBridgeArguments
+                nativeBridgeArguments,
+                independent = when (container) {
+                    is ObjCClassOrProtocol -> true // Every proper instance has this method in its method table.
+                    is ObjCCategory -> false // Method is contributed by native dependency.
+                }
         ) { nativeValues ->
-            val selector = "@selector(${method.selector})"
             val messengerParameterTypes = mutableListOf<String>()
             messengerParameterTypes.add("void*")
             messengerParameterTypes.add("SEL")
@@ -227,16 +246,22 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
 
             val messenger = "(($messengerType) ${nativeValues.first()})"
 
-            val messengerArguments = listOf(nativeValues[1]) + selector + nativeValues.drop(2)
+            val messengerArguments = nativeValues.drop(1)
 
             "$messenger(${messengerArguments.joinToString()})"
         }
-        bodyGenerator.out("return $result")
+        bodyGenerator.returnResult(result)
 
-        this.implementationTemplate = genImplementationTemplate(stubGenerator)
+        this.implementationTemplate = if (needsImplementationTemplate()) {
+            genImplementationTemplate(stubGenerator)
+        } else {
+            null
+        }
+
         this.bodyLines = bodyGenerator.build()
 
         bridgeName = "objcKniBridge${stubGenerator.nextUniqueId()}"
+        objCMethodAnnotation = "@ObjCMethod".applyToStrings(method.selector, bridgeName)
 
         this.bridgeHeader = buildString {
             append("internal fun ")
@@ -277,6 +302,10 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
         }
     }
 
+    private fun needsImplementationTemplate(): Boolean =
+            method.getReturnType(container.classOrProtocol).isBlockPointer() ||
+                    method.parameters.any { it.type.isBlockPointer() }
+
     private fun genImplementationTemplate(stubGenerator: StubGenerator): String = when (container) {
         is ObjCClassOrProtocol -> {
             val codeBuilder = NativeCodeBuilder(stubGenerator.simpleBridgeGenerator.topLevelNativeScope)
@@ -288,6 +317,8 @@ class ObjCMethodStub(private val stubGenerator: StubGenerator,
         is ObjCCategory -> ""
     }
 }
+
+private fun Type.isBlockPointer() = this.unwrapTypedefs() is ObjCBlockPointer
 
 private fun deprecatedInit(className: String, initParameterNames: List<String>, factory: Boolean): String {
     val replacement = if (factory) "$className.create" else className
@@ -351,7 +382,7 @@ private fun Type.isIntegerLikeType(): Boolean = when (this) {
                     }
         }
     }
-    is ObjCPointer, is PointerType, CharType, BoolType -> true
+    is ObjCPointer, is PointerType, CharType, is BoolType -> true
     is IntegerType -> this.size <= 4
     is Typedef -> this.def.aliased.isIntegerLikeType()
     is EnumType -> this.def.baseType.isIntegerLikeType()
@@ -398,6 +429,7 @@ private val ObjCClassOrProtocol.superTypes: Sequence<ObjCClassOrProtocol>
 private fun ObjCClassOrProtocol.declaredMethods(isClass: Boolean): Sequence<ObjCMethod> =
         this.methods.asSequence().filter { it.isClass == isClass }
 
+@Suppress("UNUSED_PARAMETER")
 private fun Sequence<ObjCMethod>.inheritedTo(container: ObjCClassOrProtocol, isMeta: Boolean): Sequence<ObjCMethod> =
         this // TODO: exclude methods that are marked as unavailable in [container].
 
@@ -499,7 +531,7 @@ abstract class ObjCContainerStub(stubGenerator: StubGenerator,
 
     private val methodStubs get() = methodToStub.values
 
-    val propertyStubs = properties.map {
+    val propertyStubs = properties.mapNotNull {
         createObjCPropertyStub(stubGenerator, it, container, this.methodToStub)
     }
 
@@ -615,19 +647,34 @@ class ObjCClassStub(private val stubGenerator: StubGenerator, private val clazz:
     }
 }
 
+class GeneratedObjCCategoriesMembers {
+    private val propertyNames = mutableSetOf<String>()
+    private val instanceMethodSelectors = mutableSetOf<String>()
+    private val classMethodSelectors = mutableSetOf<String>()
+
+    fun register(method: ObjCMethod): Boolean =
+            (if (method.isClass) classMethodSelectors else instanceMethodSelectors).add(method.selector)
+
+    fun register(property: ObjCProperty): Boolean = propertyNames.add(property.name)
+
+}
+
 class ObjCCategoryStub(
         private val stubGenerator: StubGenerator, private val category: ObjCCategory
 ) : KotlinStub {
 
+    private val generatedMembers = stubGenerator.generatedObjCCategoriesMembers
+            .getOrPut(category.clazz, { GeneratedObjCCategoriesMembers() })
+
     // TODO: consider removing members that are also present in the class or its supertypes.
 
-    private val methodToStub = category.methods.map {
+    private val methodToStub = category.methods.filter { generatedMembers.register(it) }.map {
         it to ObjCMethodStub(stubGenerator, it, category, isDesignatedInitializer = false)
     }.toMap()
 
     private val methodStubs get() = methodToStub.values
 
-    private val propertyStubs = category.properties.map {
+    private val propertyStubs = category.properties.filter { generatedMembers.register(it) }.mapNotNull {
         createObjCPropertyStub(stubGenerator, it, category, methodToStub)
     }
 
@@ -645,11 +692,11 @@ private fun createObjCPropertyStub(
         property: ObjCProperty,
         container: ObjCContainer,
         methodToStub: Map<ObjCMethod, ObjCMethodStub>
-): ObjCPropertyStub {
+): ObjCPropertyStub? {
     // Note: the code below assumes that if the property is generated,
     // then its accessors are also generated as explicit methods.
-    val getterStub = methodToStub[property.getter]!!
-    val setterStub = property.setter?.let { methodToStub[it]!! }
+    val getterStub = methodToStub[property.getter] ?: return null
+    val setterStub = property.setter?.let { methodToStub[it] ?: return null }
     return ObjCPropertyStub(stubGenerator, property, container, getterStub, setterStub)
 }
 
@@ -673,11 +720,11 @@ class ObjCPropertyStub(
         }
         val result = mutableListOf(
                 "$modifiers$kind $receiver${property.name.asSimpleName()}: $kotlinType",
-                "    get() = ${getterStub.bridgeName}(nativeNullPtr, this.objcPtr())"
+                "    ${getterStub.objCMethodAnnotation} external get"
         )
 
         property.setter?.let {
-            result.add("    set(value) = ${setterStub!!.bridgeName}(nativeNullPtr, this.objcPtr(), value)")
+            result.add("    ${setterStub!!.objCMethodAnnotation} external set")
         }
 
         return result.asSequence()

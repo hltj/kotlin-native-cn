@@ -99,7 +99,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 all[key] = value
 
                 val headerId = getHeaderId(getContainingFile(cursor))
-                if (!library.headerInclusionPolicy.excludeAll(headerId)) {
+                if (!library.headerExclusionPolicy.excludeAll(headerId)) {
                     // This declaration is used, and thus should be included:
                     included.add(value)
                 }
@@ -430,7 +430,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         if (library.language == Language.OBJECTIVE_C) {
             if (name == "BOOL" || name == "Boolean") {
                 assert(clang_Type_getSizeOf(type) == 1L)
-                return BoolType
+                return ObjCBoolType
             }
 
             if (underlying is ObjCPointer && (name == "Class" || name == "id") ||
@@ -469,6 +469,36 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         Language.OBJECTIVE_C -> supplier()
     }
 
+    private fun convertUnqualifiedPrimitiveType(type: CValue<CXType>): Type = when (type.kind) {
+        CXTypeKind.CXType_Char_U, CXTypeKind.CXType_Char_S -> {
+            assert(type.getSize() == 1L)
+            CharType
+        }
+
+        CXTypeKind.CXType_UChar, CXTypeKind.CXType_UShort,
+        CXTypeKind.CXType_UInt, CXTypeKind.CXType_ULong, CXTypeKind.CXType_ULongLong -> IntegerType(
+                size = type.getSize().toInt(),
+                isSigned = false,
+                spelling = clang_getTypeSpelling(type).convertAndDispose()
+        )
+
+        CXTypeKind.CXType_SChar, CXTypeKind.CXType_Short,
+        CXTypeKind.CXType_Int, CXTypeKind.CXType_Long, CXTypeKind.CXType_LongLong -> IntegerType(
+                size = type.getSize().toInt(),
+                isSigned = true,
+                spelling = clang_getTypeSpelling(type).convertAndDispose()
+        )
+
+        CXTypeKind.CXType_Float, CXTypeKind.CXType_Double -> FloatingType(
+                size = type.getSize().toInt(),
+                spelling = clang_getTypeSpelling(type).convertAndDispose()
+        )
+
+        CXTypeKind.CXType_Bool -> CBoolType
+
+        else -> UnsupportedType
+    }
+
     fun convertType(type: CValue<CXType>, typeAttributes: CValue<CXTypeAttributes>? = null): Type {
         val primitiveType = convertUnqualifiedPrimitiveType(type)
         if (primitiveType != UnsupportedType) {
@@ -476,6 +506,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
 
         val kind = type.kind
+
         return when (kind) {
             CXType_Elaborated -> convertType(clang_Type_getNamedType(type))
 
@@ -522,14 +553,19 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
             }
 
             CXType_ConstantArray -> {
-                val elemType = convertType(clang_getArrayElementType(type))
+                val elementType = convertType(clang_getArrayElementType(type))
                 val length = clang_getArraySize(type)
-                ConstArrayType(elemType, length)
+                ConstArrayType(elementType, length)
             }
 
             CXType_IncompleteArray -> {
-                val elemType = convertType(clang_getArrayElementType(type))
-                IncompleteArrayType(elemType)
+                val elementType = convertType(clang_getArrayElementType(type))
+                IncompleteArrayType(elementType)
+            }
+
+            CXType_VariableArray -> {
+                val elementType = convertType(clang_getArrayElementType(type))
+                VariableArrayType(elementType)
             }
 
             CXType_FunctionProto -> {
@@ -913,13 +949,11 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 fun buildNativeIndexImpl(library: NativeLibrary, verbose: Boolean): NativeIndex {
     val result = NativeIndexImpl(library, verbose)
     indexDeclarations(result)
-    findMacros(result)
     return result
 }
 
 private fun indexDeclarations(nativeIndex: NativeIndexImpl) {
-    val index = clang_createIndex(0, 0)!!
-    try {
+    withIndex { index ->
         val translationUnit = nativeIndex.library.parse(index, options = CXTranslationUnit_DetailedPreprocessingRecord)
         try {
             translationUnit.ensureNoCompileErrors()
@@ -955,10 +989,10 @@ private fun indexDeclarations(nativeIndex: NativeIndexImpl) {
                 }
                 CXChildVisitResult.CXChildVisit_Continue
             }
+
+            findMacros(nativeIndex, translationUnit, headers)
         } finally {
             clang_disposeTranslationUnit(translationUnit)
         }
-    } finally {
-        clang_disposeIndex(index)
     }
 }

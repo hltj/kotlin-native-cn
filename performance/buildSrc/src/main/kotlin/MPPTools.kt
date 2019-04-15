@@ -16,6 +16,12 @@ import org.jetbrains.report.*
 import org.jetbrains.report.json.*
 import java.nio.file.Paths
 import java.io.File
+import java.io.FileInputStream
+import java.io.BufferedOutputStream
+import java.io.BufferedInputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Base64
 
 /*
  * This file includes short-cuts that may potentially be implemented in Kotlin MPP Gradle plugin in the future.
@@ -70,6 +76,21 @@ fun getNativeProgramExtension(): String = when {
     else -> error("Unknown host")
 }
 
+fun getKotlinNativeExecutable(target: KotlinTarget, buildType: String) =
+        target.compilations.main.getBinary("EXECUTABLE", buildType).toString()
+
+fun getFileSize(filePath: String): Long? {
+    val file = File(filePath)
+    return if (file.exists()) file.length() else null
+}
+
+fun getCodeSizeBenchmark(programName: String, filePath: String): BenchmarkResult {
+    val codeSize = getFileSize(filePath)
+    return BenchmarkResult("$programName",
+            codeSize?. let { BenchmarkResult.Status.PASSED } ?: run { BenchmarkResult.Status.FAILED },
+            codeSize?.toDouble() ?: 0.0, BenchmarkResult.Metric.CODE_SIZE, codeSize?.toDouble() ?: 0.0, 1, 0)
+}
+
 // Create benchmarks json report based on information get from gradle project
 fun createJsonReport(projectProperties: Map<String, Any>): String {
     fun getValue(key: String): String = projectProperties[key] as? String ?: "unknown"
@@ -83,14 +104,57 @@ fun createJsonReport(projectProperties: Map<String, Any>): String {
     val benchDesc = getValue("benchmarks")
     val benchmarksArray = JsonTreeParser.parse(benchDesc)
     val benchmarks = BenchmarksReport.parseBenchmarksArray(benchmarksArray)
-            .union(listOf<BenchmarkResult>(projectProperties["compileTime"] as BenchmarkResult)).toList()
+            .union(projectProperties["compileTime"] as List<BenchmarkResult>).union(
+                    listOf(projectProperties["codeSize"] as BenchmarkResult)).toList()
     val report = BenchmarksReport(env, benchmarks, kotlin)
     return report.toJson()
+}
+
+fun mergeReports(reports: List<File>): String {
+    val reportsToMerge = reports.map {
+        val json = it.inputStream().bufferedReader().use { it.readText() }
+        val reportElement = JsonTreeParser.parse(json)
+        BenchmarksReport.create(reportElement)
+
+    }
+    return reportsToMerge.reduce { result, it -> result + it }.toJson()
 }
 
 // Find file with set name in directory.
 fun findFile(fileName: String, directory: String): String? =
     File(directory).walkBottomUp().find { it.name == fileName }?.getAbsolutePath()
+
+fun uploadFileToBintray(url: String, project: String, version: String, packageName: String, bintrayFilePath: String,
+                        filePath: String, username: String? = null, password: String? = null) {
+    val uploadUrl = "$url/$project/$packageName/$version/$bintrayFilePath?publish=1"
+    sendUploadRequest(uploadUrl, filePath, username, password)
+}
+
+fun sendUploadRequest(url: String, fileName: String, username: String? = null, password: String? = null) {
+    val uploadingFile = File(fileName)
+    val connection = URL(url).openConnection() as HttpURLConnection
+    connection.doOutput = true
+    connection.doInput = true
+    connection.requestMethod = "PUT"
+    connection.setRequestProperty("Content-type", "text/plain")
+    if (username != null && password != null) {
+        val auth = Base64.getEncoder().encode((username + ":" + password).toByteArray()).toString(Charsets.UTF_8)
+        connection.addRequestProperty("Authorization", "Basic $auth")
+    }
+
+    try {
+        connection.connect()
+        BufferedOutputStream(connection.outputStream).use { output ->
+            BufferedInputStream(FileInputStream(uploadingFile)).use { input ->
+                input.copyTo(output)
+            }
+        }
+        val response = connection.responseMessage
+        println("Upload request ended with ${connection.responseCode} - $response")
+    } catch (t: Throwable) {
+        error("Couldn't upload file $fileName to $url")
+    }
+}
 
 // A short-cut to add a Kotlin/Native run task.
 @JvmOverloads
@@ -109,7 +173,20 @@ fun getJvmCompileTime(programName: String): BenchmarkResult =
         TaskTimerListener.getBenchmarkResult(programName, listOf("compileKotlinMetadata", "jvmJar"))
 
 fun getNativeCompileTime(programName: String): BenchmarkResult =
-        TaskTimerListener.getBenchmarkResult(programName, listOf("compileKotlinNative", "linkReleaseExecutableNative"))
+        TaskTimerListener.getBenchmarkResult(programName, listOf("compileKotlinNative", "linkMainReleaseExecutableNative"))
+
+fun getCompileBenchmarkTime(programName: String, tasksNames: Iterable<String>, repeats: Int, exitCodes: Map<String, Int>) =
+    (1..repeats).map { number ->
+        var time = 0.0
+        var status = BenchmarkResult.Status.PASSED
+        tasksNames.forEach {
+            time += TaskTimerListener.getTime("$it$number")
+            status = if (exitCodes["$it$number"] != 0) BenchmarkResult.Status.FAILED else status
+        }
+
+        BenchmarkResult("$programName", status, time, BenchmarkResult.Metric.COMPILE_TIME, time, number, 0)
+    }.toList()
+
 
 // Class time tracker for all tasks.
 class TaskTimerListener: TaskExecutionListener {
@@ -120,11 +197,12 @@ class TaskTimerListener: TaskExecutionListener {
             val time = tasksNames.map { tasksTimes[it] ?: 0.0 }.sum()
             // TODO get this info from gradle plugin with exit code end stacktrace.
             val status = tasksNames.map { tasksTimes.containsKey(it) }.reduce { a, b -> a && b }
-            return BenchmarkResult("$programName.compileTime",
+            return BenchmarkResult("$programName",
                                     if (status) BenchmarkResult.Status.PASSED else BenchmarkResult.Status.FAILED,
-                                    time, time, 1, 0)
+                                    time, BenchmarkResult.Metric.COMPILE_TIME, time, 1, 0)
         }
 
+        fun getTime(taskName: String) = tasksTimes[taskName] ?: 0.0
     }
 
     private var startTime = System.currentTimeMillis()

@@ -1,6 +1,5 @@
 import org.jetbrains.kotlin.KlibInstall
 import org.jetbrains.kotlin.konan.target.*
-import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.konan.util.*
 
 import static org.jetbrains.kotlin.konan.util.VisibleNamedKt.getVisibleName
@@ -22,8 +21,9 @@ buildscript {
     }
 
     ext.konanHome = distDir.absolutePath
-    ext.jvmArgs = project.findProperty("platformLibsJvmArgs") ?: "-Xmx4G"
-    ext.setProperty("konan.home", konanHome)
+    def jvmArguments = [project.findProperty("platformLibsJvmArgs") ?: "-Xmx6G", *HostManager.defaultJvmArgs]
+    ext.jvmArgs = jvmArguments.join(" ")
+    ext.setProperty("org.jetbrains.kotlin.native.home", konanHome)
     ext.setProperty("konan.jvmArgs", jvmArgs)
 }
 

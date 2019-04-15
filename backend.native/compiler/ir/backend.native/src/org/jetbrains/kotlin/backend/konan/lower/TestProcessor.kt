@@ -8,8 +8,10 @@ package org.jetbrains.kotlin.backend.konan.lower
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedClassConstructorDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedClassDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.backend.common.lower.SymbolWithIrBuilder
 import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.backend.common.reportWarning
+import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.KonanBackendContext
 import org.jetbrains.kotlin.backend.konan.descriptors.isAbstract
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
@@ -37,9 +39,12 @@ import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
 import org.jetbrains.kotlin.load.kotlin.PackagePartClassUtils
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
+import org.jetbrains.kotlin.resolve.descriptorUtil.module
+import org.jetbrains.kotlin.types.KotlinType
 import org.jetbrains.kotlin.utils.addToStdlib.firstNotNullResult
 
-internal class TestProcessor (val context: KonanBackendContext) {
+internal class TestProcessor (val context: Context) {
 
     object TEST_SUITE_CLASS: IrDeclarationOriginImpl("TEST_SUITE_CLASS")
     object TEST_SUITE_GENERATED_MEMBER: IrDeclarationOriginImpl("TEST_SUITE_GENERATED_MEMBER")
@@ -133,18 +138,14 @@ internal class TestProcessor (val context: KonanBackendContext) {
     // endregion
 
     // region Classes for annotation collection.
-    internal enum class FunctionKind(annotationNameString: String, runtimeKindString: String) {
-        TEST("kotlin.test.Test", "") {
-            override val runtimeKindName: Name get() = throw NotImplementedError()
-        },
-
+    internal enum class FunctionKind(annotationNameString: String, val runtimeKindString: String) {
+        TEST("kotlin.test.Test", ""),
         BEFORE_TEST("kotlin.test.BeforeTest", "BEFORE_TEST"),
         AFTER_TEST("kotlin.test.AfterTest", "AFTER_TEST"),
         BEFORE_CLASS("kotlin.test.BeforeClass", "BEFORE_CLASS"),
         AFTER_CLASS("kotlin.test.AfterClass", "AFTER_CLASS");
 
         val annotationFqName = FqName(annotationNameString)
-        open val runtimeKindName = Name.identifier(runtimeKindString)
 
         companion object {
             val INSTANCE_KINDS = listOf(TEST, BEFORE_TEST, AFTER_TEST)
@@ -601,11 +602,12 @@ internal class TestProcessor (val context: KonanBackendContext) {
     }
     // endregion
 
-    fun process(irModuleFragment: IrModuleFragment) {
-        irModuleFragment.files.forEach {
-            val annotationCollector = AnnotationCollector(it)
-            it.acceptChildrenVoid(annotationCollector)
-            createTestSuites(it, annotationCollector)
-        }
+    fun process(irFile: IrFile) {
+        // TODO: uses descriptors.
+        if (irFile.packageFragmentDescriptor.module != context.moduleDescriptor)
+            return
+        val annotationCollector = AnnotationCollector(irFile)
+        irFile.acceptChildrenVoid(annotationCollector)
+        createTestSuites(irFile, annotationCollector)
     }
 }

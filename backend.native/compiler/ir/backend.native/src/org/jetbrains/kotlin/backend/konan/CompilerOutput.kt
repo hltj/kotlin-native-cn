@@ -8,6 +8,8 @@ import llvm.LLVMLinkModules2
 import llvm.LLVMModuleRef
 import llvm.LLVMWriteBitcodeToFile
 import org.jetbrains.kotlin.backend.konan.library.impl.buildLibrary
+import org.jetbrains.kotlin.backend.konan.llvm.Llvm
+import org.jetbrains.kotlin.backend.konan.llvm.embedLlvmLinkOptions
 import org.jetbrains.kotlin.backend.konan.llvm.parseBitcodeFile
 import org.jetbrains.kotlin.konan.KonanAbiVersion
 import org.jetbrains.kotlin.konan.KonanVersion
@@ -20,18 +22,18 @@ val CompilerOutputKind.isNativeBinary: Boolean get() = when (this) {
     CompilerOutputKind.LIBRARY, CompilerOutputKind.BITCODE -> false
 }
 
-internal fun produceOutput(context: Context, phaser: PhaseManager) {
-
+internal fun produceCStubs(context: Context) {
     val llvmModule = context.llvmModule!!
+    context.cStubsManager.compile(context.config.clang, context.messageCollector, context.inVerbosePhase)?.let {
+        parseAndLinkBitcodeFile(llvmModule, it.absolutePath)
+    }
+}
+
+internal fun produceOutput(context: Context) {
+
     val config = context.config.configuration
     val tempFiles = context.config.tempFiles
     val produce = config.get(KonanConfigKeys.PRODUCE)
-
-    phaser.phase(KonanPhase.C_STUBS) {
-        context.cStubsManager.compile(context.config.clang, context.messageCollector, context.phase!!.verbose)?.let {
-            parseAndLinkBitcodeFile(llvmModule, it.absolutePath)
-        }
-    }
 
     when (produce) {
         CompilerOutputKind.STATIC,
@@ -41,7 +43,7 @@ internal fun produceOutput(context: Context, phaser: PhaseManager) {
             val output = tempFiles.nativeBinaryFileName
             context.bitcodeFileName = output
 
-            val generatedBitcodeFiles = 
+            val generatedBitcodeFiles =
                 if (produce == CompilerOutputKind.DYNAMIC || produce == CompilerOutputKind.STATIC) {
                     produceCAdapterBitcode(
                         context.config.clang, 
@@ -55,19 +57,20 @@ internal fun produceOutput(context: Context, phaser: PhaseManager) {
                 context.config.defaultNativeLibraries + 
                 generatedBitcodeFiles
 
-            phaser.phase(KonanPhase.BITCODE_LINKER) {
-                for (library in nativeLibraries) {
-                    parseAndLinkBitcodeFile(llvmModule, library)
-                }
+            for (library in nativeLibraries) {
+                parseAndLinkBitcodeFile(context.llvmModule!!, library)
             }
 
-            LLVMWriteBitcodeToFile(llvmModule, output)
+            if (produce == CompilerOutputKind.FRAMEWORK && context.config.produceStaticFramework) {
+                embedAppleLinkerOptionsToBitcode(context.llvm, context.config)
+            }
+
+            LLVMWriteBitcodeToFile(context.llvmModule!!, output)
         }
         CompilerOutputKind.LIBRARY -> {
             val output = context.config.outputFiles.outputName
             val libraryName = context.config.moduleId
-            val neededLibraries 
-                = context.llvm.librariesForLibraryManifest
+            val neededLibraries = context.librariesWithDependencies
             val abiVersion = KonanAbiVersion.CURRENT
             val compilerVersion = KonanVersion.CURRENT
             val libraryVersion = config.get(KonanConfigKeys.LIBRARY_VERSION)
@@ -86,7 +89,7 @@ internal fun produceOutput(context: Context, phaser: PhaseManager) {
                 target,
                 output,
                 libraryName, 
-                llvmModule,
+                null,
                 nopack,
                 manifestProperties,
                 context.dataFlowGraph)
@@ -97,7 +100,7 @@ internal fun produceOutput(context: Context, phaser: PhaseManager) {
         CompilerOutputKind.BITCODE -> {
             val output = context.config.outputFile
             context.bitcodeFileName = output
-            LLVMWriteBitcodeToFile(llvmModule, output)
+            LLVMWriteBitcodeToFile(context.llvmModule!!, output)
         }
     }
 }
@@ -108,4 +111,25 @@ private fun parseAndLinkBitcodeFile(llvmModule: LLVMModuleRef, path: String) {
     if (failed != 0) {
         throw Error("failed to link $path") // TODO: retrieve error message from LLVM.
     }
+}
+
+private fun embedAppleLinkerOptionsToBitcode(llvm: Llvm, config: KonanConfig) {
+    fun findEmbeddableOptions(options: List<String>): List<List<String>> {
+        val result = mutableListOf<List<String>>()
+        val iterator = options.iterator()
+        loop@while (iterator.hasNext()) {
+            val option = iterator.next()
+            result += when {
+                option.startsWith("-l") -> listOf(option)
+                option == "-framework" && iterator.hasNext() -> listOf(option, iterator.next())
+                else -> break@loop // Ignore the rest.
+            }
+        }
+        return result
+    }
+
+    val optionsToEmbed = findEmbeddableOptions(config.platform.configurables.linkerKonanFlags) +
+            llvm.nativeDependenciesToLink.flatMap { findEmbeddableOptions(it.linkerOpts) }
+
+    embedLlvmLinkOptions(llvm.llvmModule, optionsToEmbed)
 }

@@ -13,6 +13,7 @@ import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.constructedClass
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.llvm.objc.ObjCCodeGenerator
+import org.jetbrains.kotlin.backend.konan.llvm.objc.ObjCDataGenerator
 import org.jetbrains.kotlin.backend.konan.objcexport.*
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.konan.CurrentKonanModuleOrigin
@@ -51,6 +52,8 @@ internal class ObjCExportCodeGenerator(
             setFunctionNoUnwind(it)
         }
     }
+
+    val referencedSelectors = mutableMapOf<String, MethodBridge>()
 
     // TODO: currently bridges don't have any custom `landingpad`s,
     // so it is correct to use [callAtFunctionScope] here.
@@ -228,6 +231,20 @@ internal class ObjCExportCodeGenerator(
 
         emitSortedAdapters(placedClassAdapters, "Kotlin_ObjCExport_sortedClassAdapters")
         emitSortedAdapters(placedInterfaceAdapters, "Kotlin_ObjCExport_sortedProtocolAdapters")
+        emitSelectorsHolder()
+    }
+
+    private fun emitSelectorsHolder() {
+        val impType = functionType(voidType, false, int8TypePtr, int8TypePtr)
+        val imp = generateFunction(codegen, impType, "") {
+            unreachable()
+        }
+
+        val methods = referencedSelectors.map { (selector, bridge) ->
+            ObjCDataGenerator.Method(selector, getEncoding(bridge), constPointer(imp))
+        }
+
+        dataGenerator.emitClass("KotlinSelectorsHolder", "NSObject", instanceMethods = methods)
     }
 
     private val impType = pointerType(functionType(int8TypePtr, true, int8TypePtr, int8TypePtr))
@@ -671,7 +688,11 @@ private fun ObjCExportCodeGenerator.generateKotlinToObjCBridge(
                 }
 
                 MethodBridgeReceiver.Instance -> kotlinReferenceToObjC(parameters[parameter]!!)
-                MethodBridgeSelector -> genSelector(namer.getSelector(baseMethod))
+                MethodBridgeSelector -> {
+                    val selector = namer.getSelector(baseMethod)
+                    referencedSelectors.getOrPut(selector) { methodBridge }
+                    genSelector(selector)
+                }
 
                 MethodBridgeReceiver.Static,
                 MethodBridgeReceiver.Factory ->
@@ -895,9 +916,9 @@ private fun ObjCExportCodeGenerator.createTypeAdapter(
 
     exposedMethods.forEach { method ->
         val baseMethods = mapper.getBaseMethods(method)
-        val hasSelectorAmbiguity = baseMethods.map { namer.getSelector(it) }.distinct().size > 1
+        val hasSelectorClash = baseMethods.map { namer.getSelector(it) }.distinct().size > 1
 
-        if (method.isOverridable && !hasSelectorAmbiguity) {
+        if (method.isOverridable && !hasSelectorClash) {
             val baseMethod = baseMethods.first()
 
             val presentVtableBridges = mutableSetOf<Int?>(null)
@@ -929,11 +950,7 @@ private fun ObjCExportCodeGenerator.createTypeAdapter(
             // Mark it as non-overridable:
             baseMethods.distinctBy { namer.getSelector(it) }.forEach { baseMethod ->
                 reverseAdapters += KotlinToObjCMethodAdapter(
-                        namer.getSelector(baseMethod),
-                        -1,
-                        vtableIndex = if (hasSelectorAmbiguity) -2 else -1, // Describes the reason.
-                        kotlinImpl = NullPointer(int8Type)
-                )
+                        namer.getSelector(baseMethod), -1, -1, NullPointer(int8Type))
             }
 
             // TODO: some fake-overrides can be skipped.
@@ -1010,7 +1027,7 @@ private fun ObjCExportCodeGenerator.createDirectAdapters(
         val implementation = if (this.modality == Modality.ABSTRACT) {
             null
         } else {
-            OverriddenFunctionDescriptor(
+            OverriddenFunctionInfo(
                     context.ir.get(this) as IrSimpleFunction,
                     context.ir.get(base) as IrSimpleFunction
             ).getImplementation(context)

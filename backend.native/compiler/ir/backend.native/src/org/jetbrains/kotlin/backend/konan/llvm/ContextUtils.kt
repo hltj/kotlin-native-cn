@@ -14,9 +14,7 @@ import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
 import org.jetbrains.kotlin.descriptors.konan.CompiledKonanModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.CurrentKonanModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.DeserializedKonanModuleOrigin
-import org.jetbrains.kotlin.ir.declarations.IrExternalPackageFragment
-import org.jetbrains.kotlin.ir.declarations.IrField
-import org.jetbrains.kotlin.ir.declarations.IrFile
+import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.konan.library.KonanLibrary
 import org.jetbrains.kotlin.konan.library.resolver.TopologicalLibraryOrder
 import org.jetbrains.kotlin.konan.target.KonanTarget
@@ -143,20 +141,15 @@ internal interface ContextUtils : RuntimeAware {
     val staticData: StaticData
         get() = context.llvm.staticData
 
-    fun isExternal(descriptor: DeclarationDescriptor): Boolean {
-        val pkg = descriptor.findPackage()
-        return when (pkg) {
-            is IrFile -> false
-            is IrExternalPackageFragment -> true
-            else -> error(pkg)
-        }
+    fun isExternal(declaration: IrDeclaration): Boolean {
+        return false
     }
 
     /**
      * LLVM function generated from the Kotlin function.
      * It may be declared as external function prototype.
      */
-    val FunctionDescriptor.llvmFunction: LLVMValueRef
+    val IrFunction.llvmFunction: LLVMValueRef
         get() {
             assert(this.isReal)
 
@@ -171,13 +164,13 @@ internal interface ContextUtils : RuntimeAware {
     /**
      * Address of entry point of [llvmFunction].
      */
-    val FunctionDescriptor.entryPointAddress: ConstPointer
+    val IrFunction.entryPointAddress: ConstPointer
         get() {
             val result = LLVMConstBitCast(this.llvmFunction, int8TypePtr)!!
             return constPointer(result)
         }
 
-    val ClassDescriptor.typeInfoPtr: ConstPointer
+    val IrClass.typeInfoPtr: ConstPointer
         get() {
             return if (isExternal(this)) {
                 constPointer(importGlobal(this.typeInfoSymbolName, runtime.typeInfoType,
@@ -191,7 +184,7 @@ internal interface ContextUtils : RuntimeAware {
      * Pointer to type info for given class.
      * It may be declared as pointer to external variable.
      */
-    val ClassDescriptor.llvmTypeInfoPtr: LLVMValueRef
+    val IrClass.llvmTypeInfoPtr: LLVMValueRef
         get() = typeInfoPtr.llvm
 
     /**
@@ -297,8 +290,19 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
         return LLVMAddFunction(llvmModule, "llvm.memset.p0i8.i32", functionType)!!
     }
 
-    internal fun externalFunction(name: String, type: LLVMTypeRef, origin: CompiledKonanModuleOrigin): LLVMValueRef {
-        this.imports.add(origin)
+    private fun importMemcpy(): LLVMValueRef {
+        val parameterTypes = cValuesOf(int8TypePtr, int8TypePtr, int32Type, int1Type)
+        val functionType = LLVMFunctionType(LLVMVoidType(), parameterTypes, 4, 0)
+        return LLVMAddFunction(llvmModule, "llvm.memcpy.p0i8.p0i8.i32", functionType)!!
+    }
+
+    internal fun externalFunction(
+            name: String,
+            type: LLVMTypeRef,
+            origin: CompiledKonanModuleOrigin,
+            independent: Boolean = false
+    ): LLVMValueRef {
+        this.imports.add(origin, onlyBitcode = independent)
 
         val found = LLVMGetNamedFunction(llvmModule, name)
         if (found != null) {
@@ -337,11 +341,12 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
 
     class ImportsImpl(private val context: Context) : LlvmImports {
 
-        private val usedLibraries = mutableSetOf<KonanLibrary>()
+        private val usedBitcode = mutableSetOf<KonanLibrary>()
+        private val usedNativeDependencies = mutableSetOf<KonanLibrary>()
 
         private val allLibraries by lazy { context.librariesWithDependencies.toSet() }
 
-        override fun add(origin: CompiledKonanModuleOrigin) {
+        override fun add(origin: CompiledKonanModuleOrigin, onlyBitcode: Boolean) {
             val library = when (origin) {
                 CurrentKonanModuleOrigin -> return
                 is DeserializedKonanModuleOrigin -> origin.library
@@ -351,30 +356,31 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
                 error("Library (${library.libraryName}) is used but not requested.\nRequested libraries: ${allLibraries.joinToString { it.libraryName }}")
             }
 
-            usedLibraries.add(library)
+            usedBitcode.add(library)
+            if (!onlyBitcode) {
+                usedNativeDependencies.add(library)
+            }
         }
 
-        override fun isImported(library: KonanLibrary): Boolean = library in usedLibraries
+        override fun bitcodeIsUsed(library: KonanLibrary) = library in usedBitcode
+
+        override fun nativeDependenciesAreUsed(library: KonanLibrary) = library in usedNativeDependencies
     }
 
-    val librariesToLink: List<KonanLibrary> by lazy {
+    val nativeDependenciesToLink: List<KonanLibrary> by lazy {
         context.config.resolvedLibraries
-                .filterRoots { (!it.isDefault && !context.config.purgeUserLibs) || imports.isImported(it.library) }
                 .getFullList(TopologicalLibraryOrder)
+                .filter { (!it.isDefault && !context.config.purgeUserLibs) || imports.nativeDependenciesAreUsed(it) }
+
     }
 
-    val librariesForLibraryManifest: List<KonanLibrary>
-        get() {
-            // Note: library manifest should contain the list of all user libraries and frontend-used default libraries.
-            // However this would result into linking too many default libraries into the application which uses current
-            // library. This problem should probably be fixed by adding different kind of dependencies to library
-            // manifest.
-            // Currently the problem is workarounded like this:
-            return this.librariesToLink
-            // This list contains all user libraries and the default libraries required for link (not frontend).
-            // That's why the workaround doesn't work only in very special cases, e.g. when `-nodefaultlibs` is enabled
-            // when compiling the application, while the library API uses types from default libs.
-        }
+    val bitcodeToLink: List<KonanLibrary> by lazy {
+        context.config.resolvedLibraries
+                .getFullList(TopologicalLibraryOrder)
+                .filter { (!it.isDefault && !context.config.purgeUserLibs) || imports.bitcodeIsUsed(it) }
+    }
+
+    val additionalProducedBitcodeFiles = mutableListOf<String>()
 
     val staticData = StaticData(context)
 
@@ -465,6 +471,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     )
 
     val memsetFunction = importMemset()
+    //val memcpyFunction = importMemcpy()
 
     val usedFunctions = mutableListOf<LLVMValueRef>()
     val usedGlobals = mutableListOf<LLVMValueRef>()

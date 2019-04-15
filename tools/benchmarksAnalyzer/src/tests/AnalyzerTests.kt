@@ -25,12 +25,12 @@ class AnalyzerTests {
     private val eps = 0.000001
 
     private fun createMeanVarianceBenchmarks(): Pair<MeanVarianceBenchmark, MeanVarianceBenchmark> {
-        val firstMean = BenchmarkResult("testBenchmark", BenchmarkResult.Status.PASSED, 9.0, 9.0, 10, 10)
-        val firstVariance = BenchmarkResult("testBenchmark", BenchmarkResult.Status.PASSED, 0.0001, 0.0001, 10, 10)
+        val firstMean = BenchmarkResult("testBenchmark", BenchmarkResult.Status.PASSED, 9.0, BenchmarkResult.Metric.EXECUTION_TIME, 9.0, 10, 10)
+        val firstVariance = BenchmarkResult("testBenchmark", BenchmarkResult.Status.PASSED, 0.0001, BenchmarkResult.Metric.EXECUTION_TIME, 0.0001, 10, 10)
         val first = MeanVarianceBenchmark(firstMean, firstVariance)
 
-        val secondMean = BenchmarkResult("testBenchmark", BenchmarkResult.Status.PASSED, 10.0, 10.0, 10, 10)
-        val secondVariance = BenchmarkResult("testBenchmark", BenchmarkResult.Status.PASSED, 0.0001, 0.0001, 10, 10)
+        val secondMean = BenchmarkResult("testBenchmark", BenchmarkResult.Status.PASSED, 10.0, BenchmarkResult.Metric.EXECUTION_TIME, 10.0, 10, 10)
+        val secondVariance = BenchmarkResult("testBenchmark", BenchmarkResult.Status.PASSED, 0.0001, BenchmarkResult.Metric.EXECUTION_TIME, 0.0001, 10, 10)
         val second = MeanVarianceBenchmark(secondMean, secondVariance)
 
         return Pair(first, second)
@@ -49,7 +49,7 @@ class AnalyzerTests {
         val numbers = listOf(10.1, 10.2, 10.3)
         val value = computeMeanVariance(numbers)
         val expectedMean = 10.2
-        val expectedVariance = 0.092395
+        val expectedVariance = 0.07872455
         assertTrue(abs(value.mean - expectedMean) < eps)
         assertTrue(abs(value.variance - expectedVariance) < eps)
     }
@@ -59,7 +59,7 @@ class AnalyzerTests {
         val inputs = createMeanVarianceBenchmarks()
 
         val percent = inputs.first.calcPercentageDiff(inputs.second)
-        val expectedMean = -10.0
+        val expectedMean = -9.99809998
         val expectedVariance = 0.0021
         assertTrue(abs(percent.mean - expectedMean) < eps)
         assertTrue(abs(percent.variance - expectedVariance) < eps)

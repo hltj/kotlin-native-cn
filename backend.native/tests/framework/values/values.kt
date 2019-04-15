@@ -145,6 +145,8 @@ interface I {
     fun iFun(): String = "I::iFun"
 }
 
+fun I.iFunExt() = iFun()
+
 private interface PI {
     fun piFun(): Any
     fun iFun(): String = "PI::iFun"
@@ -262,3 +264,19 @@ class Bridge : BridgeBase() {
     override fun foo3() = throw MyException()
     override fun foo4() = throw MyException()
 }
+
+fun Any.same() = this
+
+// https://github.com/JetBrains/kotlin-native/issues/2571
+val PROPERTY_NAME_MUST_NOT_BE_ALTERED_BY_SWIFT = 111
+
+// https://github.com/JetBrains/kotlin-native/issues/2667
+class Deeply {
+    class Nested {
+        class Type {
+            val thirtyTwo = 32
+        }
+    }
+}
+
+data class CKeywords(val float: Float, val `enum`: Int, var goto: Boolean)
