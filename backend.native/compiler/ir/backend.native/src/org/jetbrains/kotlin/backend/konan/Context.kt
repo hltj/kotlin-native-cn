@@ -60,7 +60,6 @@ import org.jetbrains.kotlin.ir.symbols.impl.IrTypeParameterSymbolImpl
 /**
  * Offset for synthetic elements created by lowerings and not attributable to other places in the source code.
  */
-internal const val SYNTHETIC_OFFSET = -2
 
 internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler by KonanMangler {
     private val enumSpecialDeclarationsFactory by lazy { EnumSpecialDeclarationsFactory(context) }
@@ -210,7 +209,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
 
     override val configuration get() = config.configuration
 
-    val phaseConfig = PhaseConfig(toplevelPhase)
+    val phaseConfig = config.phaseConfig
 
     private val packageScope by lazy { builtIns.builtInsModule.getPackage(KonanFqNames.internalPackageName).memberScope }
 
@@ -316,7 +315,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     lateinit var bitcodeFileName: String
     lateinit var library: KonanLibraryWriter
 
-    val cStubsManager = CStubsManager()
+    val cStubsManager = CStubsManager(config.target)
 
     val coverage = CoverageManager(this)
 
