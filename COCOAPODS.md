@@ -33,7 +33,7 @@ The podspec generated includes a path to an output framework and script phases w
 this framework during a build process of an Xcode project. Some fields of the podspec file can be
 configured using the `kotlin.cocoapods { ... }` code block.
 
-<div class="sample" markdown="1" theme="idea" mode="kotlin">
+
 
 ```kotlin
 // Apply plugins.
@@ -54,7 +54,7 @@ kotlin {
 }
 ```
 
-</div>
+
 
 The following podspec fields are required by CocoaPods:
   - `version`
@@ -87,7 +87,7 @@ and configure the targets, and specify the required podspec fields.
 
 3. Add a reference to the generated podspec in a Podfile of the Xcode project.
 
-    <div class="sample" markdown="1" theme="idea" mode="ruby">
+
 
     ```ruby
     target 'my-ios-app' do
@@ -95,7 +95,7 @@ and configure the targets, and specify the required podspec fields.
     end
     ```
 
-    </div>
+
 
 4. Run `pod install` for the Xcode project.
     
@@ -110,7 +110,7 @@ parameters (see the [corresponding section](https://kotlinlang.org/docs/referenc
 of the multiplatform plugin documentation). The `cocoapods { ... }` code block allows you to
 add dependencies on CocoaPods libraries.
 
-<div class="sample" markdown="1" theme="idea" mode="kotlin">
+
 
 ```kotlin
 kotlin {
@@ -123,7 +123,7 @@ kotlin {
 }
 ```
 
-</div>
+
 
 To use these dependencies from a Kotlin code, import a package `cocoapods.<library-name>`.
 In the example above, it's `cocoapods.AFNetworking`.
