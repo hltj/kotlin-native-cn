@@ -4,6 +4,10 @@ import org.jetbrains.kotlin.backend.common.descriptors.WrappedClassConstructorDe
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedClassDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedValueParameterDescriptor
+import org.jetbrains.kotlin.backend.common.ir.addFakeOverrides
+import org.jetbrains.kotlin.backend.common.ir.createDispatchReceiverParameter
+import org.jetbrains.kotlin.backend.common.ir.createParameterDeclarations
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.lower.at
 import org.jetbrains.kotlin.backend.common.lower.irNot
 import org.jetbrains.kotlin.backend.konan.PrimitiveBinaryType
@@ -53,11 +57,13 @@ internal interface KotlinStubs {
     fun getUniqueKotlinFunctionReferenceClassName(prefix: String): String
 
     fun reportError(location: IrElement, message: String): Nothing
+    fun throwCompilerError(element: IrElement?, message: String): Nothing
 }
 
 private class KotlinToCCallBuilder(
         val irBuilder: IrBuilderWithScope,
-        val stubs: KotlinStubs
+        val stubs: KotlinStubs,
+        val isObjCMethod: Boolean
 ) {
 
     val cBridgeName = stubs.getUniqueCName("knbridge")
@@ -97,7 +103,7 @@ private fun KotlinToCCallBuilder.addArgument(
     if (!variadic) cFunctionBuilder.addParameter(cArgument.type)
 }
 
-private fun KotlinToCCallBuilder.buildKotlinBridgeCall(transformCall: (IrCall) -> IrExpression = { it }): IrExpression =
+private fun KotlinToCCallBuilder.buildKotlinBridgeCall(transformCall: (IrMemberAccessExpression) -> IrExpression = { it }): IrExpression =
         bridgeCallBuilder.build(
                 bridgeBuilder.buildKotlinBridge().also {
                     this.stubs.addKotlin(it)
@@ -108,7 +114,7 @@ private fun KotlinToCCallBuilder.buildKotlinBridgeCall(transformCall: (IrCall) -
 internal fun KotlinStubs.generateCCall(expression: IrCall, builder: IrBuilderWithScope, isInvoke: Boolean): IrExpression {
     require(expression.dispatchReceiver == null)
 
-    val callBuilder = KotlinToCCallBuilder(builder, this)
+    val callBuilder = KotlinToCCallBuilder(builder, this, isObjCMethod = false)
 
     val callee = expression.symbol.owner as IrSimpleFunction
 
@@ -138,27 +144,10 @@ internal fun KotlinStubs.generateCCall(expression: IrCall, builder: IrBuilderWit
         targetPtrParameter = null
         targetFunctionName = this.getUniqueCName("target")
 
-        (0 until expression.valueArgumentsCount).forEach { index ->
-            val parameter = callee.valueParameters[index]
-            val argument = expression.getValueArgument(index)
-            if (parameter.isVararg) {
-                require(index == expression.valueArgumentsCount - 1)
-                require(argument is IrVararg?)
-                argument?.elements.orEmpty().forEach {
-                    when (it) {
-                        is IrExpression -> callBuilder.addArgument(it, it.type, variadic = true, parameter = null)
-
-                        is IrSpreadElement ->
-                            reportError(it, "spread operator is not supported for variadic C functions")
-
-                        else -> error(it)
-                    }
-                }
-                callBuilder.cFunctionBuilder.variadic = true
-            } else {
-                callBuilder.addArgument(argument!!, parameter.type, variadic = false, parameter = parameter)
-            }
+        val arguments = (0 until expression.valueArgumentsCount).map {
+            expression.getValueArgument(it)
         }
+        callBuilder.addArguments(arguments, callee)
     }
 
     val returnValuePassing = if (isInvoke) {
@@ -182,6 +171,105 @@ internal fun KotlinStubs.generateCCall(expression: IrCall, builder: IrBuilderWit
     callBuilder.emitCBridge()
 
     return result
+}
+
+private fun KotlinToCCallBuilder.addArguments(arguments: List<IrExpression?>, callee: IrFunction) {
+    arguments.forEachIndexed { index, argument ->
+        val parameter = callee.valueParameters[index]
+        if (parameter.isVararg) {
+            require(index == arguments.lastIndex)
+            addVariadicArguments(argument)
+            cFunctionBuilder.variadic = true
+        } else {
+            addArgument(argument!!, parameter.type, variadic = false, parameter = parameter)
+        }
+    }
+}
+
+private fun KotlinToCCallBuilder.addVariadicArguments(
+        argumentForVarargParameter: IrExpression?
+) = handleArgumentForVarargParameter(argumentForVarargParameter) { variable, elements ->
+    if (variable == null) {
+        unwrapVariadicArguments(elements).forEach {
+            addArgument(it, it.type, variadic = true, parameter = null)
+        }
+    } else {
+        // See comment in [handleArgumentForVarargParameter].
+        // Array for this vararg parameter is already computed before the call,
+        // so query statically known typed arguments from this array.
+
+        with(irBuilder) {
+            val argumentTypes = unwrapVariadicArguments(elements).map { it.type }
+            argumentTypes.forEachIndexed { index, type ->
+                val untypedArgument = irCall(symbols.arrayGet[symbols.array]!!.owner).apply {
+                    dispatchReceiver = irGet(variable)
+                    putValueArgument(0, irInt(index))
+                }
+                val argument = irAs(untypedArgument, type) // Note: this cast always succeeds.
+                addArgument(argument, type, variadic = true, parameter = null)
+            }
+        }
+    }
+}
+
+private fun KotlinToCCallBuilder.unwrapVariadicArguments(
+        elements: List<IrVarargElement>
+): List<IrExpression> = elements.flatMap {
+    when (it) {
+        is IrExpression -> listOf(it)
+        is IrSpreadElement -> {
+            val expression = it.expression
+            if (expression is IrCall && expression.symbol == symbols.arrayOf) {
+                handleArgumentForVarargParameter(expression.getValueArgument(0)) { _, elements ->
+                    unwrapVariadicArguments(elements)
+                }
+            } else {
+                stubs.reportError(it, "When calling variadic " +
+                        if (isObjCMethod) "Objective-C methods" else "C functions " +
+                                "spread operator is supported only for *arrayOf(...)")
+            }
+        }
+        else -> stubs.throwCompilerError(it, "unexpected IrVarargElement")
+    }
+}
+
+private fun <R> KotlinToCCallBuilder.handleArgumentForVarargParameter(
+        argument: IrExpression?,
+        block: (variable: IrVariable?, elements: List<IrVarargElement>) -> R
+): R = when (argument) {
+
+    null -> block(null, emptyList())
+
+    is IrVararg -> block(null, argument.elements)
+
+    is IrGetValue -> {
+        /* This is possible when using named arguments with reordering, i.e.
+         *
+         *   foo(second = *arrayOf(...), first = ...)
+         *
+         * psi2ir generates as
+         *
+         *   val secondTmp = *arrayOf(...)
+         *   val firstTmp = ...
+         *   foo(firstTmp, secondTmp)
+         *
+         *
+         **/
+
+        val variable = argument.symbol.owner
+        if (variable is IrVariable && variable.origin == IrDeclarationOrigin.IR_TEMPORARY_VARIABLE && !variable.isVar) {
+            val initializer = variable.initializer
+            if (initializer is IrVararg) {
+                block(variable, initializer.elements)
+            } else {
+                stubs.throwCompilerError(initializer, "unexpected initializer")
+            }
+        } else {
+            stubs.throwCompilerError(variable, "unexpected value declaration")
+        }
+    }
+
+    else -> stubs.throwCompilerError(argument, "unexpected vararg")
 }
 
 private fun KotlinToCCallBuilder.emitCBridge() {
@@ -210,10 +298,10 @@ internal fun KotlinStubs.generateObjCCall(
         call: IrFunctionAccessExpression,
         superQualifier: IrClassSymbol?,
         receiver: IrExpression,
-        arguments: List<IrExpression>
+        arguments: List<IrExpression?>
 ): IrExpression {
 
-    val callBuilder = KotlinToCCallBuilder(builder, this)
+    val callBuilder = KotlinToCCallBuilder(builder, this, isObjCMethod = true)
 
     val superClass = superQualifier?.let { builder.getObjCClass(symbols, it) }
             ?: builder.irNullNativePtr(symbols)
@@ -257,15 +345,7 @@ internal fun KotlinStubs.generateObjCCall(
     callBuilder.cCallBuilder.arguments += "@selector($selector)"
     callBuilder.cFunctionBuilder.addParameter(CTypes.voidPtr)
 
-    (0 until method.valueParameters.size).forEach {
-        val parameter = method.valueParameters[it]
-        callBuilder.addArgument(
-                arguments[it],
-                type = parameter.type,
-                variadic = false,
-                parameter = parameter
-        )
-    }
+    callBuilder.addArguments(arguments, method)
 
     val returnValuePassing =
             mapReturnType(method.returnType, TypeLocation.FunctionCallResult(call), signature = method)
@@ -325,6 +405,14 @@ private fun CCallbackBuilder.addParameter(it: IrValueParameter, functionParamete
         TypeLocation.ObjCMethodParameter(it.index, functionParameter)
     } else {
         TypeLocation.FunctionPointerParameter(cFunctionBuilder.numberOfParameters, location)
+    }
+
+    if (functionParameter.isVararg) {
+        stubs.reportError(typeLocation.element, if (isObjCMethod) {
+            "overriding variadic Objective-C methods is not supported"
+        } else {
+            "variadic function pointers are not supported"
+        })
     }
 
     val valuePassing = stubs.mapType(
@@ -548,8 +636,14 @@ private fun KotlinToCCallBuilder.mapParameter(
         classifier == symbols.interopCValues || // Note: this should not be accepted, but is required for compatibility
                 classifier == symbols.interopCValuesRef -> CValuesRefArgumentPassing
 
-        classifier == symbols.string && (variadic || parameter?.isCStringParameter() == true) ->
+        classifier == symbols.string && (variadic || parameter?.isCStringParameter() == true) -> {
+            if (variadic && isObjCMethod) {
+                stubs.reportError(argument, "Passing String as variadic Objective-C argument is ambiguous; " +
+                        "cast it to NSString or pass with '.cstr' as C string")
+                // TODO: consider reporting a warning for C functions.
+            }
             CStringArgumentPassing()
+        }
 
         classifier == symbols.string && parameter?.isWCStringParameter() == true ->
             WCStringArgumentPassing()
@@ -1177,7 +1271,7 @@ private class ObjCBlockPointerValuePassing(
     }
 
     private fun IrBuilderWithScope.callBlock(blockPtr: IrExpression, arguments: List<IrExpression>): IrExpression {
-        val callBuilder = KotlinToCCallBuilder(this, stubs)
+        val callBuilder = KotlinToCCallBuilder(this, stubs, isObjCMethod = false)
 
         val rawBlockPointerParameter =  callBuilder.passThroughBridge(blockPtr, blockPtr.type, CTypes.id)
         val blockVariableName = "block"

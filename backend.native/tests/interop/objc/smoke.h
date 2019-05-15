@@ -145,3 +145,63 @@ NSObject* createNSObject() {
 @property (class) void (^nullBlock)(void);
 @property (class) void (^notNullBlock)(void);
 @end;
+
+@interface TestVarargs : NSObject
+-(instancetype _Nonnull)initWithFormat:(NSString*)format, ...;
++(instancetype _Nonnull)testVarargsWithFormat:(NSString*)format, ...;
+@property NSString* formatted;
+
++(NSString* _Nonnull)stringWithFormat:(NSString*)format, ...;
++(NSObject* _Nonnull)stringWithFormat:(NSString*)format args:(void*)args;
+@end;
+
+@interface TestVarargs (TestVarargsExtension)
+-(instancetype _Nonnull)initWithFormat:(NSString*)format, ...;
+@end;
+
+@interface TestVarargsSubclass : TestVarargs
+// Test clashes:
+-(instancetype _Nonnull)initWithFormat:(NSString*)format args:(void*)args;
++(NSString* _Nonnull)stringWithFormat:(NSString*)format args:(void*)args;
+@end;
+
+@interface TestOverrideInit : NSObject
+-(instancetype)initWithValue:(int)value NS_DESIGNATED_INITIALIZER;
++(instancetype)createWithValue:(int)value;
+@end;
+
+@interface MultipleInheritanceClashBase : NSObject
+@property (nonnull) MultipleInheritanceClashBase* delegate;
+@end;
+
+@protocol MultipleInheritanceClash
+@optional
+@property (nullable) id<MultipleInheritanceClash> delegate;
+@end;
+
+@interface MultipleInheritanceClash1 : MultipleInheritanceClashBase <MultipleInheritanceClash>
+@end;
+
+@interface MultipleInheritanceClash2 : MultipleInheritanceClashBase <MultipleInheritanceClash>
+@property MultipleInheritanceClashBase* delegate;
+@end;
+
+@interface TestClashingWithAny1 : NSObject
+-(NSString*)toString;
+-(NSString*)toString_;
+-(int)hashCode;
+-(BOOL)equals:(id _Nullable)other;
+@end;
+
+@interface TestClashingWithAny2 : NSObject
+-(void)toString;
+-(void)hashCode;
+-(void)equals:(int)p; // May clash.
+@end;
+
+@interface TestClashingWithAny3 : NSObject
+// Not clashing actually.
+-(NSString*)toString:(int)p;
+-(int)hashCode:(int)p;
+-(BOOL)equals;
+@end;

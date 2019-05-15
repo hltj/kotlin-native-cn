@@ -6,27 +6,39 @@
 package org.jetbrains.kotlin.backend.konan.objcexport
 
 import org.jetbrains.kotlin.backend.konan.Context
+import org.jetbrains.kotlin.backend.konan.KonanConfigKeys
 import org.jetbrains.kotlin.backend.konan.reportCompilationWarning
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
+import org.jetbrains.kotlin.cli.common.messages.MessageUtil
+import org.jetbrains.kotlin.descriptors.DeclarationDescriptorWithSource
 import org.jetbrains.kotlin.descriptors.FunctionDescriptor
 import org.jetbrains.kotlin.descriptors.ModuleDescriptor
-import org.jetbrains.kotlin.ir.util.report
+import org.jetbrains.kotlin.renderer.DescriptorRenderer
+import org.jetbrains.kotlin.resolve.source.getPsi
 
 internal class ObjCExportHeaderGeneratorImpl(
         val context: Context,
         moduleDescriptors: List<ModuleDescriptor>,
         mapper: ObjCExportMapper,
-        namer: ObjCExportNamer
-) : ObjCExportHeaderGenerator(moduleDescriptors, context.builtIns, mapper, namer) {
+        namer: ObjCExportNamer,
+        objcGenerics: Boolean
+) : ObjCExportHeaderGenerator(moduleDescriptors, context.builtIns, mapper, namer, objcGenerics) {
 
     override fun reportWarning(text: String) {
         context.reportCompilationWarning(text)
     }
 
     override fun reportWarning(method: FunctionDescriptor, text: String) {
-        context.report(
-                context.ir.get(method),
-                text,
-                isError = false
-        )
+        val psi = (method as? DeclarationDescriptorWithSource)?.source?.getPsi()
+                ?: return reportWarning(
+                        "$text\n    (at ${DescriptorRenderer.COMPACT_WITH_SHORT_TYPES.render(method)})"
+                )
+
+        val location = MessageUtil.psiElementToMessageLocation(psi)
+
+        context.messageCollector.report(CompilerMessageSeverity.WARNING, text, location)
     }
+
+    override fun getAdditionalImports(): List<String> =
+            context.config.configuration.getNotNull(KonanConfigKeys.FRAMEWORK_IMPORT_HEADERS)
 }

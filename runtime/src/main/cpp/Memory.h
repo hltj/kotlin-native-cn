@@ -569,7 +569,6 @@ class ExceptionObjHolder {
    ObjHeader* obj_;
 };
 
-
 class KRefSharedHolder {
  public:
   inline ObjHeader** slotToInit() {
@@ -581,10 +580,7 @@ class KRefSharedHolder {
     SetHeapRef(slotToInit(), obj);
   }
 
-  inline ObjHeader* ref() const {
-    verifyRefOwner();
-    return obj_;
-  }
+  ObjHeader* ref() const;
 
   inline void dispose() {
     verifyRefOwner();

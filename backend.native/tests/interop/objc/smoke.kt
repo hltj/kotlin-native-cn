@@ -21,6 +21,10 @@ fun run() {
     testExceptions()
     testBlocks()
     testCustomRetain()
+    testVarargs()
+    testOverrideInit()
+    testMultipleInheritanceClash()
+    testClashingWithAny()
 
     assertEquals(2, ForwardDeclaredEnum.TWO.value)
 
@@ -256,7 +260,104 @@ fun testCustomRetain() {
     assertFalse(unexpectedDeallocation)
 }
 
+fun testVarargs() {
+    assertEquals(
+            "a b -1",
+            TestVarargs.testVarargsWithFormat(
+                    "%@ %s %d",
+                    "a" as NSString, "b".cstr, (-1).toByte()
+            ).formatted
+    )
+
+    assertEquals(
+            "2 3 9223372036854775807",
+            TestVarargs(
+                    "%d %d %lld",
+                    2.toShort(), 3, Long.MAX_VALUE
+            ).formatted
+    )
+
+    assertEquals(
+            "0.1 0.2 1 0",
+            TestVarargs.create(
+                    "%.1f %.1lf %d %d",
+                    0.1.toFloat(), 0.2, true, false
+            ).formatted
+    )
+
+    assertEquals(
+            "1 2 3",
+            TestVarargs(
+                    format = "%d %d %d",
+                    args = *arrayOf(1, 2, 3)
+            ).formatted
+    )
+
+    assertEquals(
+            "4 5 6",
+            TestVarargs(
+                    args = *arrayOf(4, *arrayOf(5, 6)),
+                    format = "%d %d %d"
+            ).formatted
+    )
+
+    assertEquals(
+            "7",
+            TestVarargsSubclass.stringWithFormat(
+                    "%d",
+                    7
+            )
+    )
+}
+
+fun testOverrideInit() {
+    assertEquals(42, (TestOverrideInitImpl.createWithValue(42) as TestOverrideInitImpl).value)
+}
+
+class TestOverrideInitImpl @OverrideInit constructor(val value: Int) : TestOverrideInit(value) {
+    companion object : TestOverrideInitMeta()
+}
+
 private class MyException : Throwable()
+
+fun testMultipleInheritanceClash() {
+    val clash1 = MultipleInheritanceClash1()
+    val clash2 = MultipleInheritanceClash2()
+
+    clash1.delegate = clash1
+    assertEquals(clash1, clash1.delegate)
+    clash1.setDelegate(clash2)
+    assertEquals(clash2, clash1.delegate())
+
+    clash2.delegate = clash1
+    assertEquals(clash1, clash2.delegate)
+    clash2.setDelegate(clash2)
+    assertEquals(clash2, clash2.delegate())
+}
+
+fun testClashingWithAny() {
+    assertEquals("description", TestClashingWithAny1().toString())
+    assertEquals("toString", TestClashingWithAny1().toString_())
+    assertEquals("toString_", TestClashingWithAny1().toString__())
+    assertEquals(1, TestClashingWithAny1().hashCode())
+    assertEquals(31, TestClashingWithAny1().hashCode_())
+    assertFalse(TestClashingWithAny1().equals(TestClashingWithAny1()))
+    assertTrue(TestClashingWithAny1().equals_(TestClashingWithAny1()))
+
+    assertEquals("description", TestClashingWithAny2().toString())
+    assertEquals(Unit, TestClashingWithAny2().toString_())
+    assertEquals(2, TestClashingWithAny2().hashCode())
+    assertEquals(Unit, TestClashingWithAny2().hashCode_())
+    assertFalse(TestClashingWithAny2().equals(TestClashingWithAny2()))
+    assertEquals(Unit, TestClashingWithAny2().equals_(42))
+
+    assertEquals("description", TestClashingWithAny3().toString())
+    assertEquals("toString:11", TestClashingWithAny3().toString(11))
+    assertEquals(3, TestClashingWithAny3().hashCode())
+    assertEquals(4, TestClashingWithAny3().hashCode(3))
+    assertFalse(TestClashingWithAny3().equals(TestClashingWithAny3()))
+    assertTrue(TestClashingWithAny3().equals())
+}
 
 fun nsArrayOf(vararg elements: Any): NSArray = NSMutableArray().apply {
     elements.forEach {

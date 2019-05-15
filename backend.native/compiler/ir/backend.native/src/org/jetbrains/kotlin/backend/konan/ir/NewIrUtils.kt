@@ -92,13 +92,6 @@ val IrClass.isFinalClass: Boolean
 
 fun IrClass.isSpecialClassWithNoSupertypes() = this.isAny() || this.isNothing()
 
-private val IrCall.annotationClass
-    get() = (this.symbol.owner as IrConstructor).constructedClass
-
-fun List<IrCall>.findAnnotation(fqName: FqName): IrCall? = this.firstOrNull {
-    it.annotationClass.fqNameSafe == fqName
-}
-
 fun <T> IrDeclaration.getAnnotationArgumentValue(fqName: FqName, argumentName: String): T? {
     val annotation = this.annotations.findAnnotation(fqName)
     if (annotation == null) {
@@ -124,7 +117,7 @@ fun IrValueParameter.isInlineParameter(): Boolean =
 val IrDeclaration.parentDeclarationsWithSelf: Sequence<IrDeclaration>
     get() = generateSequence(this, { it.parent as? IrDeclaration })
 
-fun IrClass.companionObject() = this.declarations.singleOrNull {it is IrClass && it.isCompanion }
+fun IrClass.companionObject() = this.declarations.filterIsInstance<IrClass>().atMostOne { it.isCompanion }
 
 val IrDeclaration.isGetter get() = this is IrSimpleFunction && this == this.correspondingProperty?.getter
 

@@ -6,6 +6,8 @@
 package org.jetbrains.kotlin.backend.konan.lower
 
 import org.jetbrains.kotlin.backend.common.FileLoweringPass
+import org.jetbrains.kotlin.backend.common.ir.createDispatchReceiverParameter
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.lower.*
 import org.jetbrains.kotlin.backend.common.peek
 import org.jetbrains.kotlin.backend.common.pop
@@ -16,7 +18,7 @@ import org.jetbrains.kotlin.backend.konan.descriptors.allOverriddenFunctions
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.konan.ir.*
-import org.jetbrains.kotlin.backend.konan.objcexport.namePrefix
+import org.jetbrains.kotlin.backend.konan.ir.companionObject
 import org.jetbrains.kotlin.backend.konan.llvm.IntrinsicType
 import org.jetbrains.kotlin.backend.konan.llvm.llvmSymbolOrigin
 import org.jetbrains.kotlin.backend.konan.llvm.tryGetIntrinsicType
@@ -76,7 +78,7 @@ internal abstract class BaseInteropIrTransformer(private val context: Context) :
             }
 
             override fun getUniqueCName(prefix: String) =
-                    "_${context.moduleDescriptor.namePrefix}_${context.cStubsManager.getUniqueName(prefix)}"
+                    "_${context.cStubsManager.getUniqueName(prefix)}" // Ok in absence of separate compilation
 
             override fun getUniqueKotlinFunctionReferenceClassName(prefix: String) =
                     "$prefix${context.functionReferenceCount++}"
@@ -85,6 +87,10 @@ internal abstract class BaseInteropIrTransformer(private val context: Context) :
 
             override fun reportError(location: IrElement, message: String): Nothing =
                     context.reportCompilationError(message, irFile, location)
+
+            override fun throwCompilerError(element: IrElement?, message: String): Nothing {
+                error(irFile, element, message)
+            }
         }
     }
 
@@ -95,7 +101,6 @@ internal abstract class BaseInteropIrTransformer(private val context: Context) :
 internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransformer(context), FileLoweringPass {
 
     private val symbols get() = context.ir.symbols
-    private val symbolTable get() = symbols.symbolTable
 
     lateinit var currentFile: IrFile
 
@@ -227,7 +232,7 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
                 SourceElement.NO_SOURCE
         )
 
-        val valueParameters = initMethod.valueParameters.map {
+        val valueParameters = constructor.valueParameters.map {
             val descriptor = ValueParameterDescriptorImpl(
                     resultDescriptor,
                     null,
@@ -595,16 +600,15 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
 
             val initCall = builder.genLoweredObjCMethodCall(
                     initMethodInfo,
-                    superQualifier = symbolTable.referenceClass(expression.descriptor.constructedClass),
+                    superQualifier = expression.symbol.owner.constructedClass.symbol,
                     receiver = builder.getRawPtr(builder.irGet(constructedClass.thisReceiver!!)),
-                    arguments = initMethod.valueParameters.map { expression.getValueArgument(it.index)!! },
+                    arguments = initMethod.valueParameters.map { expression.getValueArgument(it.index) },
                     call = expression,
                     method = initMethod
             )
 
-            val superConstructor = symbolTable.referenceConstructor(
-                    expression.descriptor.constructedClass.constructors.single { it.valueParameters.size == 0 }
-            )
+            val superConstructor = expression.symbol.owner.constructedClass
+                    .constructors.single { it.valueParameters.size == 0 }.symbol
 
             return builder.irBlock(expression) {
                 // Required for the IR to be valid, will be ignored in codegen:
@@ -631,10 +635,15 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
             info: ObjCMethodInfo,
             superQualifier: IrClassSymbol?,
             receiver: IrExpression,
-            arguments: List<IrExpression>,
+            arguments: List<IrExpression?>,
             call: IrFunctionAccessExpression,
             method: IrSimpleFunction
     ): IrExpression = generateWithStubs(call) {
+        if (method.parent !is IrClass) {
+            // Category-provided.
+            this@InteropLoweringPart1.context.llvmImports.add(method.llvmSymbolOrigin)
+        }
+
         this.generateObjCCall(
                 this@genLoweredObjCMethodCall,
                 method,
@@ -647,32 +656,35 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
         )
     }
 
+    override fun visitConstructorCall(expression: IrConstructorCall): IrExpression {
+        expression.transformChildrenVoid()
+
+        val descriptor = expression.descriptor.original
+        val callee = expression.symbol.owner
+        val initMethod = callee.getObjCInitMethod() ?: return expression
+
+        val arguments = descriptor.valueParameters.map { expression.getValueArgument(it) }
+        assert(expression.extensionReceiver == null)
+        assert(expression.dispatchReceiver == null)
+
+        val constructedClass = callee.constructedClass
+        val initMethodInfo = initMethod.getExternalObjCMethodInfo()!!
+        return builder.at(expression).run {
+            val classPtr = getObjCClass(constructedClass.symbol)
+            irForceNotNull(callAllocAndInit(classPtr, initMethodInfo, arguments, expression, initMethod))
+        }
+    }
+
     override fun visitCall(expression: IrCall): IrExpression {
         expression.transformChildrenVoid()
 
         val descriptor = expression.descriptor.original
 
         val callee = expression.symbol.owner
-        if (callee is IrConstructor) {
-            val initMethod = callee.getObjCInitMethod()
-
-            if (initMethod != null) {
-                val arguments = descriptor.valueParameters.map { expression.getValueArgument(it)!! }
-                assert(expression.extensionReceiver == null)
-                assert(expression.dispatchReceiver == null)
-
-                val constructedClass = callee.constructedClass
-                val initMethodInfo = initMethod.getExternalObjCMethodInfo()!!
-                return builder.at(expression).run {
-                    val classPtr = getObjCClass(constructedClass.symbol)
-                    irForceNotNull(callAllocAndInit(classPtr, initMethodInfo, arguments, expression, initMethod))
-                }
-            }
-        }
 
         descriptor.getObjCFactoryInitMethodInfo()?.let { initMethodInfo ->
             val arguments = (0 until expression.valueArgumentsCount)
-                    .map { index -> expression.getValueArgument(index)!! }
+                    .map { index -> expression.getValueArgument(index) }
 
             return builder.at(expression).run {
                 val classPtr = getRawPtr(expression.extensionReceiver!!)
@@ -690,7 +702,7 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
                     builder.scope.scopeOwner.annotations.hasAnnotation(FqName("kotlin.native.internal.ExportForCppRuntime"))
 
             if (!useKotlinDispatch) {
-                val arguments = descriptor.valueParameters.map { expression.getValueArgument(it)!! }
+                val arguments = descriptor.valueParameters.map { expression.getValueArgument(it) }
                 assert(expression.dispatchReceiver == null || expression.extensionReceiver == null)
 
                 if (expression.superQualifier?.isObjCMetaClass() == true) {
@@ -727,11 +739,12 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
                 if (classSymbol == null) {
                     expression
                 } else {
-                    val classDescriptor = classSymbol.descriptor
-                    val companionObject = classDescriptor.companionObjectDescriptor ?:
-                            error("native variable class $classDescriptor must have the companion object")
+                    val irClass = classSymbol.owner
 
-                    builder.at(expression).irGetObject(symbolTable.lazyWrapper.referenceClass(companionObject))
+                    val companionObject = irClass.companionObject() ?:
+                            error("native variable class ${irClass.descriptor} must have the companion object")
+
+                    builder.at(expression).irGetObject(companionObject.symbol)
                 }
             }
             else -> expression
@@ -774,7 +787,7 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
     private fun IrBuilderWithScope.callAllocAndInit(
             classPtr: IrExpression,
             initMethodInfo: ObjCMethodInfo,
-            arguments: List<IrExpression>,
+            arguments: List<IrExpression?>,
             call: IrFunctionAccessExpression,
             initMethod: IrSimpleFunction
     ): IrExpression = irBlock(startOffset, endOffset) {
@@ -855,19 +868,23 @@ private class InteropTransformer(val context: Context, override val irFile: IrFi
     private fun generateCFunctionPointer(function: IrSimpleFunction, expression: IrExpression): IrExpression =
             generateWithStubs { generateCFunctionPointer(function, function, expression) }
 
+    override fun visitConstructorCall(expression: IrConstructorCall): IrExpression {
+        expression.transformChildrenVoid(this)
+
+        val function = expression.symbol.owner
+        val inlinedClass = function.returnType.getInlinedClassNative()
+        if (inlinedClass?.descriptor == interop.cPointer || inlinedClass?.descriptor == interop.nativePointed) {
+            throw Error("Native interop types constructors must not be called directly")
+        }
+        return expression
+    }
+
     override fun visitCall(expression: IrCall): IrExpression {
 
         expression.transformChildrenVoid(this)
         builder.at(expression)
         val descriptor = expression.descriptor.original
         val function = expression.symbol.owner
-
-        if (function is IrConstructor) {
-            val inlinedClass = function.returnType.getInlinedClassNative()
-            if (inlinedClass?.descriptor == interop.cPointer || inlinedClass?.descriptor == interop.nativePointed) {
-                throw Error("Native interop types constructors must not be called directly")
-            }
-        }
 
         if (descriptor == interop.nativePointedRawPtrGetter ||
                 OverridingUtil.overrides(descriptor, interop.nativePointedRawPtrGetter)) {
@@ -1026,8 +1043,7 @@ private class InteropTransformer(val context: Context, override val irFile: IrFi
                     val intrinsic = interop.objCObjectInitBy.name
 
                     val argument = expression.getValueArgument(0)!!
-                    val constructedClass =
-                            ((argument as? IrCall)?.descriptor as? ClassConstructorDescriptor)?.constructedClass
+                    val constructedClass = (argument as? IrConstructorCall)?.symbol?.owner?.constructedClass?.descriptor
 
                     if (constructedClass == null) {
                         context.reportCompilationError("Argument of '$intrinsic' must be a constructor call",

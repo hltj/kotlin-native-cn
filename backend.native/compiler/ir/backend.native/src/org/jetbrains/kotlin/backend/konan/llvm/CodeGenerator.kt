@@ -278,8 +278,6 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
     }
 
     fun store(value: LLVMValueRef, ptr: LLVMValueRef) {
-        // Use updateRef() or storeAny() API for that.
-        assert(!isObjectRef(value))
         LLVMBuildStore(builder, value, ptr)
     }
 
@@ -309,11 +307,15 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
     }
 
     private fun updateReturnRef(value: LLVMValueRef, address: LLVMValueRef) {
-        call(context.llvm.updateReturnRefFunction, listOf(address, value))
+        store(value, address)
     }
 
     private fun updateRef(value: LLVMValueRef, address: LLVMValueRef, onStack: Boolean) {
-        call(if (onStack) context.llvm.updateStackRefFunction else context.llvm.updateHeapRefFunction, listOf(address, value))
+        if (onStack) {
+            store(value, address)
+        } else {
+            call(context.llvm.updateHeapRefFunction, listOf(address, value))
+        }
     }
 
     //-------------------------------------------------------------------------//
@@ -493,7 +495,9 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
     fun icmpLe(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntSLE, arg0, arg1, name)!!
     fun icmpNe(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntNE, arg0, arg1, name)!!
     fun icmpULt(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntULT, arg0, arg1, name)!!
+    fun icmpULe(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntULE, arg0, arg1, name)!!
     fun icmpUGt(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntUGT, arg0, arg1, name)!!
+    fun icmpUGe(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntUGE, arg0, arg1, name)!!
 
     /* floating-point comparisons */
     fun fcmpEq(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildFCmp(builder, LLVMRealPredicate.LLVMRealOEQ, arg0, arg1, name)!!

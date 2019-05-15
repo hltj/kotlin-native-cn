@@ -194,12 +194,14 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                     put(FRIEND_MODULES, arguments.friendModules!!.split(File.pathSeparator).filterNot(String::isEmpty))
 
                 put(EXPORTED_LIBRARIES, selectExportedLibraries(configuration, arguments, outputKind))
+                put(FRAMEWORK_IMPORT_HEADERS, arguments.frameworkImportHeaders.toNonNullList())
 
                 put(BITCODE_EMBEDDING_MODE, selectBitcodeEmbeddingMode(this, arguments, outputKind))
                 put(DEBUG_INFO_VERSION, arguments.debugInfoFormatVersion.toInt())
                 put(COVERAGE, arguments.coverage)
                 put(LIBRARIES_TO_COVER, arguments.coveredLibraries.toNonNullList())
                 arguments.coverageFile?.let { put(PROFRAW_PATH, it) }
+                put(OBJC_GENERICS, arguments.objcGenerics)
             }
         }
     }
@@ -213,13 +215,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
     companion object {
         @JvmStatic fun main(args: Array<String>) {
             profile("Total compiler main()") {
-                val options = args.flatMap {
-                    if (it.startsWith('@')) {
-                        File(it.substring(1)).readStrings()
-                    }
-                    else listOf(it)
-                }
-                CLITool.doMain(K2Native(), options.toTypedArray())
+                CLITool.doMain(K2Native(), args)
             }
         }
     }

@@ -295,7 +295,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     }
 
     private fun appendCAdapters() {
-        CAdapterGenerator(context, codegen).generateBindings()
+        context.cAdapterGenerator.generateBindings(codegen)
     }
 
     //-------------------------------------------------------------------------//
@@ -760,6 +760,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             is IrCall                -> return evaluateCall                   (value)
             is IrDelegatingConstructorCall ->
                                         return evaluateCall                   (value)
+            is IrConstructorCall     -> return evaluateCall                   (value)
             is IrInstanceInitializerCall ->
                                         return evaluateInstanceInitializerCall(value)
             is IrGetValue            -> return evaluateGetValue               (value)
@@ -1577,16 +1578,14 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     }
 
     //-------------------------------------------------------------------------//
-    val dummyFile = IrFileImpl(NaiveSourceBasedFileEntryImpl("no source file"))
-
     private inner class ReturnableBlockScope(val returnableBlock: IrReturnableBlock) :
-            FileScope(returnableBlock.sourceFileSymbol?.owner ?: dummyFile) {
+            FileScope(returnableBlock.sourceFileSymbol?.owner ?: (currentCodeContext.fileScope() as? FileScope)?.file ?: error("returnable block should belong to current file at least") ) {
 
         var bbExit : LLVMBasicBlockRef? = null
         var resultPhi : LLVMValueRef? = null
 
         private fun getExit(): LLVMBasicBlockRef {
-            if (bbExit == null) bbExit = functionGenerationContext.basicBlock("returnable_block_exit", null)
+            if (bbExit == null) bbExit = functionGenerationContext.basicBlock("returnable_block_exit", returnableBlock.startLocation)
             return bbExit!!
         }
 
@@ -1753,6 +1752,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         updateBuilderDebugLocation(value)
         return when (value) {
             is IrDelegatingConstructorCall -> delegatingConstructorCall(value.symbol.owner, args)
+            is IrConstructorCall -> evaluateConstructorCall(value, args)
             else -> evaluateFunctionCall(value as IrCall, args, resultLifetime(value))
         }
     }
@@ -2018,7 +2018,6 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         return when {
             function.isTypedIntrinsic -> intrinsicGenerator.evaluateCall(callee, args)
             function.symbol in context.irBuiltIns.irBuiltInsSymbols -> evaluateOperatorCall(callee, argsWithContinuationIfNeeded)
-            function is IrConstructor -> evaluateConstructorCall(callee, argsWithContinuationIfNeeded)
             else -> evaluateSimpleFunctionCall(function, argsWithContinuationIfNeeded, resultLifetime, callee.superQualifierSymbol?.owner)
         }
     }
@@ -2047,34 +2046,40 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         return lifetimes.getOrElse(callee) { /* TODO: make IRRELEVANT */ Lifetime.GLOBAL }
     }
 
-    private fun evaluateConstructorCall(callee: IrCall, args: List<LLVMValueRef>): LLVMValueRef {
+    private fun evaluateConstructorCall(callee: IrConstructorCall, args: List<LLVMValueRef>): LLVMValueRef {
         context.log{"evaluateConstructorCall        : ${ir2string(callee)}"}
         return memScoped {
-            val constructedClass = (callee.symbol as IrConstructorSymbol).owner.constructedClass
-            val thisValue = if (constructedClass.isArray) {
-                assert(args.isNotEmpty() && args[0].type == int32Type)
-                functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), args[0],
-                        resultLifetime(callee), currentCodeContext.exceptionHandler)
-            } else if (constructedClass == context.ir.symbols.string.owner) {
-                // TODO: consider returning the empty string literal instead.
-                assert(args.isEmpty())
-                functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), count = kImmZero,
-                        lifetime = resultLifetime(callee), exceptionHandler = currentCodeContext.exceptionHandler)
-            } else if (constructedClass.isObjCClass()) {
-                assert(constructedClass.isKotlinObjCClass()) // Calls to other ObjC class constructors must be lowered.
-                val symbols = context.ir.symbols
-                val rawPtr = callDirect(
-                        symbols.interopAllocObjCObject.owner,
-                        listOf(genGetObjCClass(constructedClass)),
-                        Lifetime.IRRELEVANT
-                )
-
-                callDirect(symbols.interopInterpretObjCPointer.owner, listOf(rawPtr), resultLifetime(callee)).also {
-                    // Balance pointer retained by alloc:
-                    callDirect(symbols.interopObjCRelease.owner, listOf(rawPtr), Lifetime.IRRELEVANT)
+            val constructedClass = callee.symbol.owner.constructedClass
+            val thisValue = when {
+                constructedClass.isArray -> {
+                    assert(args.isNotEmpty() && args[0].type == int32Type)
+                    functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), args[0],
+                            resultLifetime(callee), currentCodeContext.exceptionHandler)
                 }
-            } else {
-                functionGenerationContext.allocInstance(constructedClass, resultLifetime(callee))
+
+                constructedClass == context.ir.symbols.string.owner -> {
+                    // TODO: consider returning the empty string literal instead.
+                    assert(args.isEmpty())
+                    functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), count = kImmZero,
+                            lifetime = resultLifetime(callee), exceptionHandler = currentCodeContext.exceptionHandler)
+                }
+
+                constructedClass.isObjCClass() -> {
+                    assert(constructedClass.isKotlinObjCClass()) // Calls to other ObjC class constructors must be lowered.
+                    val symbols = context.ir.symbols
+                    val rawPtr = callDirect(
+                            symbols.interopAllocObjCObject.owner,
+                            listOf(genGetObjCClass(constructedClass)),
+                            Lifetime.IRRELEVANT
+                    )
+
+                    callDirect(symbols.interopInterpretObjCPointer.owner, listOf(rawPtr), resultLifetime(callee)).also {
+                        // Balance pointer retained by alloc:
+                        callDirect(symbols.interopObjCRelease.owner, listOf(rawPtr), Lifetime.IRRELEVANT)
+                    }
+                }
+
+                else -> functionGenerationContext.allocInstance(constructedClass, resultLifetime(callee))
             }
             evaluateSimpleFunctionCall(callee.symbol.owner,
                     listOf(thisValue) + args, Lifetime.IRRELEVANT /* constructor doesn't return anything */)
@@ -2118,26 +2123,46 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
         with(functionGenerationContext) {
             val functionSymbol = function.symbol
-            return when {
-                functionSymbol == ib.eqeqeqSymbol -> icmpEq(args[0], args[1])
-                functionSymbol == ib.booleanNotSymbol -> icmpNe(args[0], kTrue)
-                functionSymbol.isComparisonFunction(ib.greaterFunByOperandType) -> {
-                    if (args[0].type.isFloatingPoint()) fcmpGt(args[0], args[1])
-                    else icmpGt(args[0], args[1])
+            return when (functionSymbol) {
+                ib.eqeqeqSymbol -> icmpEq(args[0], args[1])
+                ib.booleanNotSymbol -> icmpNe(args[0], kTrue)
+                else -> {
+                    val isFloatingPoint = args[0].type.isFloatingPoint()
+                    // LLVM does not distinguish between signed/unsigned integers, so we must check
+                    // the parameter type.
+                    val shouldUseUnsignedComparison = function.valueParameters[0].type.isChar()
+                    when {
+                        functionSymbol.isComparisonFunction(ib.greaterFunByOperandType) -> {
+                            when {
+                                isFloatingPoint -> fcmpGt(args[0], args[1])
+                                shouldUseUnsignedComparison -> icmpUGt(args[0], args[1])
+                                else -> icmpGt(args[0], args[1])
+                            }
+                        }
+                        functionSymbol.isComparisonFunction(ib.greaterOrEqualFunByOperandType) -> {
+                            when {
+                                isFloatingPoint -> fcmpGe(args[0], args[1])
+                                shouldUseUnsignedComparison -> icmpUGe(args[0], args[1])
+                                else -> icmpGe(args[0], args[1])
+                            }
+                        }
+                        functionSymbol.isComparisonFunction(ib.lessFunByOperandType) -> {
+                            when {
+                                isFloatingPoint -> fcmpLt(args[0], args[1])
+                                shouldUseUnsignedComparison -> icmpULt(args[0], args[1])
+                                else -> icmpLt(args[0], args[1])
+                            }
+                        }
+                        functionSymbol.isComparisonFunction(ib.lessOrEqualFunByOperandType) -> {
+                            when {
+                                isFloatingPoint -> fcmpLe(args[0], args[1])
+                                shouldUseUnsignedComparison -> icmpULe(args[0], args[1])
+                                else -> icmpLe(args[0], args[1])
+                            }
+                        }
+                        else -> TODO(function.name.toString())
+                    }
                 }
-                functionSymbol.isComparisonFunction(ib.greaterOrEqualFunByOperandType) -> {
-                    if (args[0].type.isFloatingPoint()) fcmpGe(args[0], args[1])
-                    else icmpGe(args[0], args[1])
-                }
-                functionSymbol.isComparisonFunction(ib.lessFunByOperandType) -> {
-                    if (args[0].type.isFloatingPoint()) fcmpLt(args[0], args[1])
-                    else icmpLt(args[0], args[1])
-                }
-                functionSymbol.isComparisonFunction(ib.lessOrEqualFunByOperandType) -> {
-                    if (args[0].type.isFloatingPoint()) fcmpLe(args[0], args[1])
-                    else icmpLe(args[0], args[1])
-                }
-                else -> TODO(function.name.toString())
             }
         }
     }
@@ -2205,8 +2230,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
     //-------------------------------------------------------------------------//
 
-    private fun delegatingConstructorCall(
-            constructor: IrConstructor, args: List<LLVMValueRef>): LLVMValueRef {
+    private fun delegatingConstructorCall(constructor: IrConstructor, args: List<LLVMValueRef>): LLVMValueRef {
 
         val constructedClass = functionGenerationContext.constructedClass!!
         val thisPtr = currentCodeContext.genGetValue(constructedClass.thisReceiver!!)

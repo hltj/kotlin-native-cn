@@ -20,7 +20,7 @@ import octoTest
 import org.jetbrains.benchmarksLauncher.*
 import org.jetbrains.kliopt.*
 
-class RingLauncher(numWarmIterations: Int, numberOfAttempts: Int, prefix: String): Launcher(numWarmIterations, numberOfAttempts, prefix) {
+class RingLauncher(numWarmIterations: Int, numberOfAttempts: Int, prefix: String) : Launcher(numWarmIterations, numberOfAttempts, prefix) {
     val abstractMethodBenchmark = AbstractMethodBenchmark()
     val classArrayBenchmark = ClassArrayBenchmark()
     val classBaselineBenchmark = ClassBaselineBenchmark()
@@ -220,10 +220,10 @@ class RingLauncher(numWarmIterations: Int, numberOfAttempts: Int, prefix: String
                     "Calls.finalMethod" to callsBenchmark::finalMethodCall,
                     "Calls.openMethodMonomorphic" to callsBenchmark::classOpenMethodCall_MonomorphicCallsite,
                     "Calls.openMethodBimorphic" to callsBenchmark::classOpenMethodCall_BimorphicCallsite,
-                    "Calls.openMethodTrimorphic" to callsBenchmark::classOpenMethodCall_BimorphicCallsite,
+                    "Calls.openMethodTrimorphic" to callsBenchmark::classOpenMethodCall_TrimorphicCallsite,
                     "Calls.interfaceMethodMonomorphic" to callsBenchmark::interfaceMethodCall_MonomorphicCallsite,
                     "Calls.interfaceMethodBimorphic" to callsBenchmark::interfaceMethodCall_BimorphicCallsite,
-                    "Calls.interfaceMethodTrimorphic" to callsBenchmark::interfaceMethodCall_BimorphicCallsite,
+                    "Calls.interfaceMethodTrimorphic" to callsBenchmark::interfaceMethodCall_TrimorphicCallsite,
                     "Calls.returnBoxUnboxFolding" to callsBenchmark::returnBoxUnboxFolding,
                     "Calls.parameterBoxUnboxFolding" to callsBenchmark::parameterBoxUnboxFolding
             )
@@ -232,6 +232,7 @@ class RingLauncher(numWarmIterations: Int, numberOfAttempts: Int, prefix: String
 
 fun main(args: Array<String>) {
     BenchmarksRunner.runBenchmarks(args, { parser: ArgParser ->
-        RingLauncher(parser.get<Int>("warmup")!!, parser.get<Int>("repeat")!!, parser.get<String>("prefix")!!).launch(parser.getAll<String>("filter"))
+        RingLauncher(parser.get<Int>("warmup")!!, parser.get<Int>("repeat")!!, parser.get<String>("prefix")!!)
+                .launch(parser.getAll<String>("filter"), parser.getAll<String>("filterRegex"))
     })
 }

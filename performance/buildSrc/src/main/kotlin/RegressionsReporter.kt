@@ -121,7 +121,7 @@ open class RegressionsReporter : DefaultTask() {
         val changesList = getCommits("id:$buildId", user, password)
         val changesInfo = "*Changes* in branch *$branch:*\n" + buildString {
             changesList.commits.forEach {
-                append("        - Change ${it.revision} by <@${it.developer}> (details: ${it.webUrlWithDescription})\n")
+                append("        - Change ${it.revision} by ${it.developer} (details: ${it.webUrlWithDescription})\n")
             }
         }
 
@@ -167,13 +167,6 @@ open class RegressionsReporter : DefaultTask() {
                 val channel = session.findChannelByName(buildProperties.getProperty("konan-channel-name"))
                 session.sendMessage(channel, message)
             }
-        } else {
-            changesList.commits.filter { it.developer in slackUsers }. map { it.developer }
-                    .toSet().forEach {
-                        val slackUser = session.findUserByUserName(slackUsers[it])
-                        session.sendMessageToUser(slackUser, message, null)
-
-                    }
         }
         session.disconnect()
     }
