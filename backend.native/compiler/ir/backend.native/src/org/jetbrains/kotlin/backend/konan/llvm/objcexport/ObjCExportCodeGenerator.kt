@@ -11,6 +11,7 @@ import org.jetbrains.kotlin.backend.common.descriptors.allParameters
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.constructedClass
+import org.jetbrains.kotlin.backend.konan.irasdescriptors.isOverridable
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.llvm.objc.ObjCCodeGenerator
 import org.jetbrains.kotlin.backend.konan.llvm.objc.ObjCDataGenerator
@@ -916,9 +917,9 @@ private fun ObjCExportCodeGenerator.createTypeAdapter(
 
     exposedMethods.forEach { method ->
         val baseMethods = mapper.getBaseMethods(method)
-        val hasSelectorClash = baseMethods.map { namer.getSelector(it) }.distinct().size > 1
+        val hasSelectorAmbiguity = baseMethods.map { namer.getSelector(it) }.distinct().size > 1
 
-        if (method.isOverridable && !hasSelectorClash) {
+        if (context.ir.get(method).isOverridable && !hasSelectorAmbiguity) {
             val baseMethod = baseMethods.first()
 
             val presentVtableBridges = mutableSetOf<Int?>(null)
@@ -950,7 +951,11 @@ private fun ObjCExportCodeGenerator.createTypeAdapter(
             // Mark it as non-overridable:
             baseMethods.distinctBy { namer.getSelector(it) }.forEach { baseMethod ->
                 reverseAdapters += KotlinToObjCMethodAdapter(
-                        namer.getSelector(baseMethod), -1, -1, NullPointer(int8Type))
+                        namer.getSelector(baseMethod),
+                        -1,
+                        vtableIndex = if (hasSelectorAmbiguity) -2 else -1, // Describes the reason.
+                        kotlinImpl = NullPointer(int8Type)
+                )
             }
 
             // TODO: some fake-overrides can be skipped.
