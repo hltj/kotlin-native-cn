@@ -108,6 +108,9 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = EMBED_BITCODE_MARKER_FLAG, description = "Embed placeholder LLVM IR data as a marker")
     var embedBitcodeMarker: Boolean = false
 
+    @Argument(value = "-Xemit-lazy-objc-header", description = "")
+    var emitLazyObjCHeader: String? = null
+
     @Argument(value = "-Xenable", deprecatedName = "--enable", valueDescription = "<Phase>", description = "Enable backend phase")
     var enablePhases: Array<String>? = null
 
@@ -152,9 +155,6 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
 
     @Argument(value = "-Xtemporary-files-dir", deprecatedName = "--temporary_files_dir", valueDescription = "<path>", description = "Save temporary files to the given directory")
     var temporaryFilesDir: String? = null
-
-    @Argument(value = "-Xtime", deprecatedName = "--time", description = "Report execution time for compiler phases")
-    var timePhases: Boolean = false
 
     @Argument(value = "-Xverify-bitcode", deprecatedName = "--verify_bitcode", description = "Verify llvm bitcode after each method")
     var verifyBitCode: Boolean = false

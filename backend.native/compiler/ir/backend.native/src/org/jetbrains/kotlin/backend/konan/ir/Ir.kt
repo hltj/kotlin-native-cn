@@ -101,13 +101,6 @@ internal class KonanSymbols(context: Context, private val symbolTable: SymbolTab
         }
     }.toMap()
 
-    val list = symbolTable.referenceClass(builtIns.list)
-    val mutableList = symbolTable.referenceClass(builtIns.mutableList)
-    val set = symbolTable.referenceClass(builtIns.set)
-    val mutableSet = symbolTable.referenceClass(builtIns.mutableSet)
-    val map = symbolTable.referenceClass(builtIns.map)
-    val mutableMap = symbolTable.referenceClass(builtIns.mutableMap)
-
     val arrayList = symbolTable.referenceClass(getArrayListClassDescriptor(context))
 
     val symbolName = topLevelClass(RuntimeNames.symbolName)
@@ -133,6 +126,8 @@ internal class KonanSymbols(context: Context, private val symbolTable: SymbolTab
     val interopCPointerGetRawValue = symbolTable.referenceSimpleFunction(context.interopBuiltIns.cPointerGetRawValue)
 
     val interopAllocObjCObject = symbolTable.referenceSimpleFunction(context.interopBuiltIns.allocObjCObject)
+
+    val interopForeignObjCObject = interopClass("ForeignObjCObject")
 
     // These are possible supertypes of forward declarations - we need to reference them explicitly to force their deserialization.
     // TODO: Do it lazily.
@@ -428,6 +423,11 @@ internal class KonanSymbols(context: Context, private val symbolTable: SymbolTab
             context.interopBuiltIns.packageScope
                     .getContributedFunctions(Name.identifier(name), NoLookupLocation.FROM_BACKEND)
                     .single()
+    )
+
+    private fun interopClass(name: String) = symbolTable.referenceClass(
+            context.interopBuiltIns.packageScope
+                    .getContributedClassifier(Name.identifier(name), NoLookupLocation.FROM_BACKEND) as ClassDescriptor
     )
 
     val functions = (0 .. KONAN_FUNCTION_INTERFACES_MAX_PARAMETERS)

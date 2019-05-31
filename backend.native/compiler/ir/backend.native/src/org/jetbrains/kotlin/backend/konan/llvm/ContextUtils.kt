@@ -16,7 +16,7 @@ import org.jetbrains.kotlin.descriptors.konan.CurrentKonanModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.DeserializedKonanModuleOrigin
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.util.file
-import org.jetbrains.kotlin.ir.util.fqNameSafe
+import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
 import org.jetbrains.kotlin.ir.util.isEffectivelyExternal
 import org.jetbrains.kotlin.konan.library.KonanLibrary
 import org.jetbrains.kotlin.konan.library.resolver.TopologicalLibraryOrder
@@ -157,7 +157,7 @@ internal interface ContextUtils : RuntimeAware {
      * It may be declared as external function prototype.
      */
     val IrFunction.llvmFunction: LLVMValueRef
-    get() = llvmFunctionOrNull ?: error("$name in $file/${parent.fqNameSafe}")
+    get() = llvmFunctionOrNull ?: error("$name in $file/${parent.fqNameForIrSerialization}")
 
     val IrFunction.llvmFunctionOrNull: LLVMValueRef?
         get() {
@@ -409,9 +409,11 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val runtimeFile = context.config.distribution.runtime(target)
     val runtime = Runtime(runtimeFile) // TODO: dispose
 
+    val targetTriple = runtime.target
+
     init {
         LLVMSetDataLayout(llvmModule, runtime.dataLayout)
-        LLVMSetTarget(llvmModule, runtime.target)
+        LLVMSetTarget(llvmModule, targetTriple)
     }
 
     private fun importRtFunction(name: String) = importFunction(name, runtime.llvmModule)
@@ -458,6 +460,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val Kotlin_ObjCExport_AbstractMethodCalled by lazyRtFunction
     val Kotlin_ObjCExport_RethrowExceptionAsNSError by lazyRtFunction
     val Kotlin_ObjCExport_RethrowNSErrorAsException by lazyRtFunction
+    val Kotlin_ObjCExport_AllocInstanceWithAssociatedObject by lazyRtFunction
 
     val tlsMode by lazy {
         when (target) {
