@@ -200,7 +200,7 @@ internal class ObjCExportTranslatorImpl(
             return builder.toString()
         }
 
-        assert(mapper.shouldBeExposed(descriptor))
+        assert(mapper.shouldBeExposed(descriptor)) { "Shouldn't be exposed: $descriptor" }
         assert(!descriptor.isInterface)
         generator?.requireClassOrInterface(descriptor)
 
@@ -211,7 +211,7 @@ internal class ObjCExportTranslatorImpl(
     }
 
     private fun referenceProtocol(descriptor: ClassDescriptor): ObjCExportNamer.ClassOrProtocolName {
-        assert(mapper.shouldBeExposed(descriptor))
+        assert(mapper.shouldBeExposed(descriptor)) { "Shouldn't be exposed: $descriptor" }
         assert(descriptor.isInterface)
         generator?.requireClassOrInterface(descriptor)
 
@@ -221,7 +221,7 @@ internal class ObjCExportTranslatorImpl(
     }
 
     private fun translateClassOrInterfaceName(descriptor: ClassDescriptor): ObjCExportNamer.ClassOrProtocolName {
-        assert(mapper.shouldBeExposed(descriptor))
+        assert(mapper.shouldBeExposed(descriptor)) { "Shouldn't be exposed: $descriptor" }
         if (ErrorUtils.isError(descriptor)) {
             return ObjCExportNamer.ClassOrProtocolName("ERROR", "ERROR")
         }
@@ -783,6 +783,11 @@ internal class ObjCExportTranslatorImpl(
             return mapObjCObjectReferenceTypeIgnoringNullability(classDescriptor)
         }
 
+        // Workaround for https://github.com/JetBrains/kotlin-native/issues/3053
+        if (!mapper.shouldBeExposed(classDescriptor)) {
+            return ObjCIdType
+        }
+
         return if (classDescriptor.isInterface) {
             ObjCProtocolType(referenceProtocol(classDescriptor).objCName)
         } else {
@@ -800,17 +805,16 @@ internal class ObjCExportTranslatorImpl(
     private tailrec fun mapObjCObjectReferenceTypeIgnoringNullability(descriptor: ClassDescriptor): ObjCNonNullReferenceType {
         // TODO: more precise types can be used.
 
-        if (descriptor.isObjCMetaClass()) return ObjCIdType
+        if (descriptor.isObjCMetaClass()) return ObjCMetaClassType
+        if (descriptor.isObjCProtocolClass()) return foreignClassType("Protocol")
 
-        if (descriptor.isExternalObjCClass()) {
+        if (descriptor.isExternalObjCClass() || descriptor.isObjCForwardDeclaration()) {
             return if (descriptor.isInterface) {
                 val name = descriptor.name.asString().removeSuffix("Protocol")
-                generator?.referenceProtocol(name)
-                ObjCProtocolType(name)
+                foreignProtocolType(name)
             } else {
                 val name = descriptor.name.asString()
-                generator?.referenceClass(name)
-                ObjCClassType(name)
+                foreignClassType(name)
             }
         }
 
@@ -819,6 +823,16 @@ internal class ObjCExportTranslatorImpl(
         }
 
         return ObjCIdType
+    }
+
+    private fun foreignProtocolType(name: String): ObjCProtocolType {
+        generator?.referenceProtocol(name)
+        return ObjCProtocolType(name)
+    }
+
+    private fun foreignClassType(name: String): ObjCClassType {
+        generator?.referenceClass(name)
+        return ObjCClassType(name)
     }
 
     internal fun mapFunctionTypeIgnoringNullability(

@@ -1403,6 +1403,15 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                 call(isClass, listOf(objCObject)).let {
                     functionGenerationContext.icmpNe(it, Int8(0).llvm)
                 }
+            } else if (dstClass.isObjCProtocolClass()) {
+                // Note: it is not clear whether this class should be looked up this way.
+                // clang does the same, however swiftc uses dynamic lookup.
+                val protocolClass =
+                        functionGenerationContext.getObjCClass("Protocol", context.standardLlvmSymbolsOrigin)
+                call(
+                        context.llvm.Kotlin_Interop_IsObjectKindOfClass,
+                        listOf(objCObject, protocolClass)
+                )
             } else {
                 kTrue
             }
@@ -1884,16 +1893,13 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
     //-------------------------------------------------------------------------//
 
-    private val invokeSuspendFunction = context.ir.symbols.baseContinuationImpl.owner.declarations
-            .filterIsInstance<IrSimpleFunction>().single { it.name.asString() == "invokeSuspend" }
-
     private fun getContinuation(): LLVMValueRef {
         val caller = functionGenerationContext.irFunction!!
         return if (caller.isSuspend)
             codegen.param(caller, caller.allParameters.size)    // The last argument.
         else {
-            // Suspend call from non-suspend function - must be [BaseContinuationImpl].
-            assert ((caller as IrSimpleFunction).overrides(invokeSuspendFunction),
+            // Suspend call from non-suspend function - must be [invokeSuspend].
+            assert ((caller as IrSimpleFunction).overrides(context.ir.symbols.invokeSuspendFunction.owner),
                     { "Expected 'BaseContinuationImpl.invokeSuspend' but was '$caller'" })
             currentCodeContext.genGetValue(caller.dispatchReceiverParameter!!)
         }

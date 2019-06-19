@@ -12,10 +12,25 @@ project.buildscript.repositories {
         url buildKotlinCompilerRepo
     }
     maven {
+        url kotlinCompilerRepo
+    }
+    maven {
         url 'https://cache-redirector.jetbrains.com/maven-central'
     }
 }
 
 project.buildscript.dependencies {
-    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$buildKotlinVersion"
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion"
+}
+configurations {
+    kotlinCompilerClasspath
+}
+project.repositories {
+    maven {
+        url kotlinCompilerRepo
+    }
+}
+
+project.dependencies {
+    kotlinCompilerClasspath("org.jetbrains.kotlin:kotlin-compiler-embeddable:$buildKotlinVersion")
 }
