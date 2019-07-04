@@ -127,6 +127,12 @@ task installTestLibrary(type: KlibInstall) {
     dependsOn compileKonanTestLibraryHost
     klib = konanArtifacts.testLibrary.getArtifactByTarget('host')
     repo = rootProject.file(testLibraryDir)
+
+    doLast {
+        // Remove the version in build/, so that we don't link two copies.
+        def file = project.file("build/konan/libs/${project.target.name}/testLibrary.klib")
+        file.delete()
+    }
 }
 
 // Gets tests from the same Kotlin compiler build
@@ -368,6 +374,12 @@ task slackReportNightly(type:NightlyReporter) {
     externalMacosReport = "external_macos_results/reports.json"
     externalLinuxReport = "external_linux_results/reports.json"
     externalWindowsReport = "external_windows_results/reports.json"
+}
+
+linkTest("localDelegatedPropertyLink") {
+    goldValue = "OK\n"
+    source = "lower/local_delegated_property_link/main.kt"
+    lib = "lower/local_delegated_property_link/lib.kt"
 }
 
 task sum(type: KonanLocalTest) {
@@ -1518,6 +1530,10 @@ task kclass1(type: KonanLocalTest) {
 task kclassEnumArgument(type: KonanLocalTest) {
     goldValue = "String\n"
     source = "codegen/kclass/kClassEnumArgument.kt"
+}
+
+task ktype1(type: KonanLocalTest) {
+    source = "codegen/ktype/ktype1.kt"
 }
 
 task associatedObjects1(type: KonanLocalTest) {
@@ -3645,7 +3661,7 @@ KotlinNativeTestKt.createTest(project, 'stdlibTest', KonanGTest) { task ->
             srcFiles sources
             baseDir "$testOutputStdlib/stdlibTest"
             enableMultiplatform true
-            extraOpts '-tr', '-Xuse-experimental=kotlin.ExperimentalStdlibApi', 
+            extraOpts '-tr', '-Xuse-experimental=kotlin.Experimental,kotlin.ExperimentalStdlibApi', 
                     "-friend-modules", project.rootProject.file("${project.properties['konan.home']}/klib/common/stdlib").absolutePath
             extraOpts project.globalTestArgs
         }
