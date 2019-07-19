@@ -22,6 +22,8 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("disable backend phases")
         val BITCODE_EMBEDDING_MODE: CompilerConfigurationKey<BitcodeEmbedding.Mode>
                 = CompilerConfigurationKey.create("bitcode embedding mode")
+        val EMIT_LAZY_OBJC_HEADER_FILE: CompilerConfigurationKey<String?> =
+                CompilerConfigurationKey.create("output file to emit lazy Obj-C header")
         val ENABLE_ASSERTIONS: CompilerConfigurationKey<Boolean>
                 = CompilerConfigurationKey.create("enable runtime assertions in generated code")
         val ENABLED_PHASES: CompilerConfigurationKey<List<String>> 
@@ -50,6 +52,8 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("list available targets")
         val MANIFEST_FILE: CompilerConfigurationKey<String?> 
                 = CompilerConfigurationKey.create("provide manifest addend file")
+        val MEMORY_MODEL: CompilerConfigurationKey<MemoryModel>
+                = CompilerConfigurationKey.create("memory model")
         val META_INFO: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("generate metadata")
         val MODULE_KIND: CompilerConfigurationKey<ModuleKind> 
@@ -96,8 +100,6 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("target we compile for")
         val TEMPORARY_FILES_DIR: CompilerConfigurationKey<String?>
                 = CompilerConfigurationKey.create("directory for temporary files")
-        val TIME_PHASES: CompilerConfigurationKey<Boolean> 
-                = CompilerConfigurationKey.create("time backend phases")
         val VERIFY_BITCODE: CompilerConfigurationKey<Boolean> 
                 = CompilerConfigurationKey.create("verify bitcode")
         val VERIFY_DESCRIPTORS: CompilerConfigurationKey<Boolean> 

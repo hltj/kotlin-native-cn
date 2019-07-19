@@ -89,6 +89,10 @@ class ObjCBlockPointerType(
     })
 }
 
+object ObjCMetaClassType : ObjCNonNullReferenceType() {
+    override fun render(attrsAndName: String): String = "Class".withAttrsAndName(attrsAndName)
+}
+
 class ObjCPrimitiveType(
         val cName: String
 ) : ObjCType() {
@@ -125,4 +129,12 @@ internal enum class ObjCValueType(val encoding: String) {
     FLOAT("f"),
     DOUBLE("d"),
     POINTER("^v")
+}
+
+internal fun ObjCType.makeNullableIfReferenceOrPointer(): ObjCType = when (this) {
+    is ObjCPointerType -> ObjCPointerType(this.pointee, nullable = true)
+
+    is ObjCNonNullReferenceType -> ObjCNullableReferenceType(this)
+
+    is ObjCNullableReferenceType, is ObjCRawType, is ObjCPrimitiveType, ObjCVoidType -> this
 }
