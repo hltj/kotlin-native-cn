@@ -28,7 +28,7 @@
 
 - md: COCOAPODS.md
   url: cocoapods.html
-  title: "CocoaPods Integration"
+  title: "CocoaPods 集成"
 
 - md: GRADLE_PLUGIN.md
   url: gradle_plugin.html
