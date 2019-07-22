@@ -63,30 +63,28 @@ future.consume {
 -->。
 
 <a name="transfer"></a>
-### Object transfer and freezing
+### 对象转移与冻结
 
-   An important invariant that Kotlin/Native runtime maintains is that the object is either owned by a single
-  thread/worker, or it is immutable (_shared XOR mutable_). This ensures that the same data has a single mutator,
-  and so there is no need for locking to exist. To achieve such an invariant, we use the concept of not externally
-  referred object subgraphs.
-  This is a subgraph which has no external references from outside of the subgraph, which could be checked
-  algorithmically with O(N) complexity (in ARC systems), where N is the number of elements in such a subgraph.
-  Such subgraphs are usually produced as a result of a lambda expression, for example some builder, and may not
-  contain objects, referred to externally.
+   Kotlin/Native 运行时维护的一个重要的不变式是，对象要么归单个<!--
+  -->线程/worker 所有，要么不可变（*共享 XOR 可变*）。这确保了同一数据只有一个修改方，因此不需要锁定。为了实现这个不变式，我们使用了非外部引用的对象子图的概念。
+  这是一个没有来自子图以外的外部引用的子图，（在 ARC 系统中）可由
+  O(N) 复杂度进行算法检测，其中 N 是这种子图中元素的数量。
+  这种子图通常是作为 lambda 表达式的结果而产生的（例如某些构建器），并且可能不<!--
+  -->含外部引用的对象。
 
-   Freezing is a runtime operation making a given object subgraph immutable, by modifying the object header
-  so that future mutation attempts throw an `InvalidMutabilityException`. It is deep, so
-  if an object has a pointer to other objects - transitive closure of such objects will be frozen.
-  Freezing is a one way transformation, frozen objects cannot be unfrozen. Frozen objects have a nice
-  property that due to their immutability, they can be freely shared between multiple workers/threads
-  without breaking the "mutable XOR shared" invariant.
+   冻结是一种运行时操作，通过修改对象头使给定的对象子图不可变，
+  这样之后的修改企图都会抛出 `InvalidMutabilityException`。它是深度冻结，因此<!--
+  -->如果一个对象有指向其他对象的指针——这些对象的传递闭包也都会被冻结。
+  冻结是单向转换，冻结的对象不能解冻。冻结的对象有一个很好的属性，
+  由于其不可变性，它们可以在多个 worker/线程之间自由共享，
+  而不会破坏“可变 XOR 共享”不变式。
 
-   If an object is frozen it can be checked with an extension property `isFrozen`, and if it is, object sharing
- is allowed. Currently, Kotlin/Native runtime only freezes the enum objects after creation, although additional
- autofreezing of certain provably immutable objects could be implemented in the future.
+   一个对象是否已冻结，可以使用扩展属性 `isFrozen` 来检测，如果冻结了就可以<!--
+  -->共享。目前，Kotlin/Native 运行时只能在枚举对象创建后进行冻结，尽管<!--
+  -->将来可能实现自动冻结某些可证明不可变的对象。
 
 <a name="detach"></a>
-### Object subgraph detachment
+### 对象子图分离
 
    An object subgraph without external references can be disconnected using `DetachedObjectGraph<T>` to
   a `COpaquePointer` value, which could be stored in `void*` data, so the disconnected object subgraphs
@@ -134,7 +132,7 @@ val graph = DetachedObjectGraph {
  collected.
 
 <a name="shared"></a>
-### Raw shared memory
+### 原始共享内存
 
   Considering the strong ties between Kotlin/Native and C via interoperability, in conjunction with the other mechanisms
  mentioned above it is possible to build popular data structures, like concurrent hashmap or shared cache with
@@ -175,7 +173,7 @@ So in combination with the top level variable declared above, it can allow looki
 threads and building traditional concurrent structures with platform-specific synchronization primitives.
 
 <a name="top_level"></a>
-### Global variables and singletons
+### 全局变量与单例
 
   Frequently, global variables are a source of unintended concurrency issues, so _Kotlin/Native_ implements
 the following mechanisms to prevent the unintended sharing of state via global objects:
