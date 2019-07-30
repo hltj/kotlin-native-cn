@@ -136,17 +136,17 @@ class SharedData(rawPtr: NativePtr) : CStructVar(rawPtr) {
 <a name="top_level"></a>
 ### 全局变量与单例
 
-  Frequently, global variables are a source of unintended concurrency issues, so _Kotlin/Native_ implements
-the following mechanisms to prevent the unintended sharing of state via global objects:
+  全局变量常常是非预期并发问题的根源，因此 _Kotlin/Native_ 实现了<!--
+-->以下机制来防止意外通过全局对象共享状态：
 
-   * global variables, unless specially marked, can be only accessed from the main thread (that is, the thread
-   _Kotlin/Native_ runtime was first initialized), if other thread access such a global, `IncorrectDereferenceException` is thrown
-   * for global variables marked with the `@kotlin.native.ThreadLocal` annotation each threads keeps thread-local copy,
-   so changes are not visible between threads
-   * for global variables marked with the `@kotlin.native.SharedImmutable` annotation value is shared, but frozen
-   before publishing, so each threads sees the same value
-   * singleton objects unless marked with `@kotlin.native.ThreadLocal` are frozen and shared, lazy values allowed,
-   unless cyclic frozen structures were attempted to be created
-   * enums are always frozen
+   * 全局变量（除非特别标记过）都只能在主线程（即首次初始化
+   _Kotlin/Native_ 运行时的线程）中访问，如果其他线程访问这样的全局变量就会抛出 `IncorrectDereferenceException`
+   * 对于标有 `@kotlin.native.ThreadLocal` 注解的全局变量，每个线程都保留线程局部副本，
+   因此变更在线程之间并不可见
+   * 对于标有 `@kotlin.native.SharedImmutable` 注解的变量，其值是共享的，但是<!--
+   -->在发布之前会被冻结，因此每个线程都会看到相同的值
+   * 单例对象（除非标有 `@kotlin.native.ThreadLocal`）都是冻结且共享的，允许惰性值
+   （除非企图创建循环冻结结构）
+   * 枚举总是冻结的
 
- Combined, these mechanisms allow natural race-freeze programming with code reuse across platforms in MPP projects.
+ 结合起来，这些机制允许在多平台（MPP）项目中跨平台复用代码的自然竞态冻结编程。
