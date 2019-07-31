@@ -93,3 +93,69 @@ To update the blackbox compiler tests set TeamCity build number in `gradle.prope
 * **-Ptest_verbose** enables printing compiler args and other helpful information during a test execution.
 
         ./gradlew -Ptest_verbose :backend.native:tests:mpp_optional_expectation
+       
+ ## Performance measurement
+  
+ Firstly, it's necessary to build analyzer tool to have opportunity to compare different performance results:
+ 
+    cd tools/benchmarksAnalyzer
+    ../../gradlew build
+    
+ To measure performance of Kotlin/Native compiler on existing benchmarks:
+ 
+    ./gradlew :performance:konanRun
+    
+ **konanRun** task can be run separately for one/several benchmark applications:
+ 
+    ./gradlew :performance:cinterop:konanRun
+    
+ **konanRun** task has parameter `filter` which allows to run only some subset of benchmarks:
+ 
+    ./gradlew :performance:cinterop:konanRun --filter=struct,macros
+    
+ Or you can use `filterRegex` if you want to specify the filter as regexes:
+ 
+    ./gradlew :performance:ring:konanRun --filterRegex=String.*,Loop.*
+    
+ There are also tasks for running benchmarks on JVM (pay attention, some benchmarks e.g. cinterop benchmarks can't be run on JVM)
+ 
+    ./gradlew :performance:jvmRun
+    
+ Files with results of benchmarks run are saved in `performance/build/nativeReport.json` for konanRun and `jvmReport.json` for jvmRun.
+ You can change the output filename by setting the `nativeJson` property for konanRun and `jvmJson` for jvmRun:
+
+    ./gradlew :performance:ring:konanRun --filter=String.*,Loop.* -PnativeJson=stringsAndLoops.json
+
+ You can use the `compilerArgs` property to pass flags to the compiler used to compile the benchmarks:
+
+    ./gradlew :performance:konanRun -PcompilerArgs="--time -g"
+
+ To compare different results run benchmarksAnalyzer tool:
+ 
+    cd tools/benchmarksAnalyzer/build/bin/<target>/benchmarksAnalyzerReleaseExecutable/
+    ./benchmarksAnalyzer.kexe <file1> <file2>
+    
+ Tool has several renders which allow produce output report in different forms (text, html, etc.). To set up render use flag `-render/-r`.
+ Output can be redirected to file with flag `-output/-o`.
+ To get detailed information about supported options, please use `-help/-h`.
+ 
+ Analyzer tool can compare both local files and files placed on Bintray/TeamCity.
+ 
+ File description stored on Bintray
+ 
+    bintray:<build number>:<target (Linux|Windows10|MacOSX)>:<filename>
+    
+ Example
+    
+    bintray:1.2-dev-7942:Windows10:nativeReport.json
+    
+ File description stored on TeamCity
+  
+     teamcity:<build locator>:<filename>
+     
+ Example
+     
+     teamcity:id:42491947:nativeReport.json
+     
+ Pay attention, user and password information(with flag `-u <username>:<password>`) should be provided to get data from TeamCity.
+    

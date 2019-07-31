@@ -7,18 +7,16 @@ package org.jetbrains.kotlin.backend.konan.lower
 
 import org.jetbrains.kotlin.backend.common.FileLoweringPass
 import org.jetbrains.kotlin.backend.common.atMostOne
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.lower.IrBuildingTransformer
 import org.jetbrains.kotlin.backend.common.lower.at
 import org.jetbrains.kotlin.backend.common.lower.irNot
 import org.jetbrains.kotlin.backend.konan.*
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.containsNull
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.isSubtypeOf
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.overrides
+import org.jetbrains.kotlin.backend.konan.ir.containsNull
+import org.jetbrains.kotlin.backend.konan.ir.isSubtypeOf
 import org.jetbrains.kotlin.descriptors.CallableMemberDescriptor
-import org.jetbrains.kotlin.descriptors.FunctionDescriptor
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.IrFile
-import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltinOperatorDescriptor
 import org.jetbrains.kotlin.ir.expressions.IrCall
 import org.jetbrains.kotlin.ir.expressions.IrExpression
@@ -26,15 +24,15 @@ import org.jetbrains.kotlin.ir.expressions.IrTypeOperatorCall
 import org.jetbrains.kotlin.ir.expressions.impl.IrCallImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.types.makeNullable
-import org.jetbrains.kotlin.ir.util.irCall
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.symbols.IrFunctionSymbol
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.isNothing
 import org.jetbrains.kotlin.ir.types.toKotlinType
+import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.util.defaultOrNullableType
 import org.jetbrains.kotlin.ir.util.isNullConst
-import org.jetbrains.kotlin.ir.util.simpleFunctions
 import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
 
 /**
@@ -69,19 +67,19 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
         return expression
     }
 
-    private fun ieee754EqualsDescriptors(): List<FunctionDescriptor> =
-            irBuiltins.ieee754equalsFunByOperandType.values.map(IrSimpleFunction::descriptor)
+    private fun ieee754EqualsSymbols(): List<IrSimpleFunctionSymbol> =
+            irBuiltins.ieee754equalsFunByOperandType.values.toList()
 
-    private fun transformBuiltinOperator(expression: IrCall): IrExpression = when (expression.descriptor) {
-        irBuiltins.eqeq, in ieee754EqualsDescriptors() -> lowerEqeq(expression)
+    private fun transformBuiltinOperator(expression: IrCall): IrExpression = when (expression.symbol) {
+        irBuiltins.eqeqSymbol, in ieee754EqualsSymbols() -> lowerEqeq(expression)
 
-        irBuiltins.eqeqeq -> lowerEqeqeq(expression)
+        irBuiltins.eqeqeqSymbol -> lowerEqeqeq(expression)
 
-        irBuiltins.throwNpe -> IrCallImpl(expression.startOffset, expression.endOffset,
+        irBuiltins.throwNpeSymbol -> IrCallImpl(expression.startOffset, expression.endOffset,
                 context.ir.symbols.ThrowNullPointerException.owner.returnType,
                 context.ir.symbols.ThrowNullPointerException)
 
-        irBuiltins.noWhenBranchMatchedException -> IrCallImpl(expression.startOffset, expression.endOffset,
+        irBuiltins.noWhenBranchMatchedExceptionSymbol -> IrCallImpl(expression.startOffset, expression.endOffset,
                 context.ir.symbols.ThrowNoWhenBranchMatchedException.owner.returnType,
                 context.ir.symbols.ThrowNoWhenBranchMatchedException)
 
@@ -92,7 +90,7 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
         val lhs = expression.getValueArgument(0)!!
         val rhs = expression.getValueArgument(1)!!
 
-        return if (lhs.type.isInlined() && rhs.type.isInlined()) {
+        return if (lhs.type.isInlinedNative() && rhs.type.isInlinedNative()) {
             // Achieve the same behavior as with JVM BE: if both sides of `===` are values, then compare by value:
             lowerEqeq(expression)
             // Note: such comparisons are deprecated.
@@ -127,14 +125,14 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
             }
 
             if (expression.symbol == irBuiltins.eqeqSymbol) {
-                lhs.type.getInlinedClass()?.let {
-                    if (it == rhs.type.getInlinedClass() && inlinedClassHasDefaultEquals(it)) {
-                        return genInlineClassEquals(expression.descriptor, rhs, lhs)
+                lhs.type.getInlinedClassNative()?.let {
+                    if (it == rhs.type.getInlinedClassNative() && inlinedClassHasDefaultEquals(it)) {
+                        return genInlineClassEquals(expression.symbol, rhs, lhs)
                     }
                 }
             }
 
-            return genFloatingOrReferenceEquals(expression.descriptor, lhs, rhs)
+            return genFloatingOrReferenceEquals(expression.symbol, lhs, rhs)
         }
     }
 
@@ -155,7 +153,7 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
     }
 
     fun IrBuilderWithScope.genInlineClassEquals(
-            descriptor: FunctionDescriptor,
+            symbol: IrFunctionSymbol,
             rhs: IrExpression,
             lhs: IrExpression
     ): IrExpression {
@@ -176,7 +174,7 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
                 val rhsRawType = irBuiltins.anyClass.owner.defaultOrNullableType(rhsBinaryType.nullable)
 
                 genFloatingOrReferenceEquals(
-                        descriptor,
+                        symbol,
                         reinterpret(lhs, lhsRawType),
                         reinterpret(rhs, rhsRawType)
                 )
@@ -201,11 +199,11 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
     private fun IrBuilderWithScope.irIsNull(exp: IrExpression) = irEqeqeq(exp, irNull())
     private fun IrBuilderWithScope.irIsNotNull(exp: IrExpression) = irNot(irEqeqeq(exp, irNull()))
 
-    private fun IrBuilderWithScope.genFloatingOrReferenceEquals(descriptor: FunctionDescriptor, lhs: IrExpression, rhs: IrExpression): IrExpression {
+    private fun IrBuilderWithScope.genFloatingOrReferenceEquals(symbol: IrFunctionSymbol, lhs: IrExpression, rhs: IrExpression): IrExpression {
         // TODO: areEqualByValue and ieee754Equals intrinsics are specially treated by code generator
         // and thus can be declared synthetically in the compiler instead of explicitly in the runtime.
         fun callEquals(lhs: IrExpression, rhs: IrExpression) =
-                if (descriptor in ieee754EqualsDescriptors())
+                if (symbol in ieee754EqualsSymbols())
                 // Find a type-compatible `konan.internal.ieee754Equals` intrinsic:
                     irCall(selectIntrinsic(symbols.ieee754Equals, lhs.type, rhs.type, true)!!).apply {
                         putValueArgument(0, lhs)
@@ -220,7 +218,7 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
         val lhsIsNotNullable = !lhs.type.containsNull()
         val rhsIsNotNullable = !rhs.type.containsNull()
 
-        return if (descriptor in ieee754EqualsDescriptors()) {
+        return if (symbol in ieee754EqualsSymbols()) {
             if (lhsIsNotNullable && rhsIsNotNullable)
                 callEquals(lhs, rhs)
             else irBlock {

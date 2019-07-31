@@ -56,3 +56,9 @@ backend.native/tests/teamcity-test.property
 # Sample output
 samples/**/*.kt.bc-build
 samples/androidNativeActivity/Polyhedron
+
+# CMake
+llvmCoverageMappingC/CMakeLists.txt
+tools/performance-server/node_modules
+tools/performance-server/server
+tools/performance-server/ui/js

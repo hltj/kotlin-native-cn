@@ -6,14 +6,9 @@
 package org.jetbrains.kotlin.backend.konan.descriptors
 
 import org.jetbrains.kotlin.backend.common.atMostOne
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedCallableDescriptor
 import org.jetbrains.kotlin.backend.konan.RuntimeNames
 import org.jetbrains.kotlin.backend.konan.binaryTypeIsReference
 import org.jetbrains.kotlin.backend.konan.isObjCClass
-import org.jetbrains.kotlin.builtins.functions.FunctionClassDescriptor
-import org.jetbrains.kotlin.builtins.getFunctionalClassKind
-import org.jetbrains.kotlin.builtins.isFunctionType
-import org.jetbrains.kotlin.builtins.isSuspendFunctionType
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.annotations.AnnotationDescriptor
 import org.jetbrains.kotlin.builtins.konan.KonanBuiltIns
@@ -28,15 +23,7 @@ import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.DescriptorFactory
 import org.jetbrains.kotlin.resolve.OverridingUtil
 import org.jetbrains.kotlin.resolve.constants.StringValue
-import org.jetbrains.kotlin.ir.declarations.IrFunction
-import org.jetbrains.kotlin.ir.declarations.IrLocalDelegatedProperty
-import org.jetbrains.kotlin.ir.declarations.IrVariable
-import org.jetbrains.kotlin.ir.declarations.impl.IrLocalDelegatedPropertyImpl
-import org.jetbrains.kotlin.ir.types.toKotlinType
-import org.jetbrains.kotlin.ir.util.isFunction
-import org.jetbrains.kotlin.ir.util.isKFunction
 import org.jetbrains.kotlin.resolve.checkers.ExpectedActualDeclarationChecker
-import org.jetbrains.kotlin.resolve.constants.ConstantValue
 import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
 import org.jetbrains.kotlin.resolve.scopes.MemberScope
@@ -44,10 +31,8 @@ import org.jetbrains.kotlin.serialization.deserialization.descriptors.Deserializ
 import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedSimpleFunctionDescriptor
 import org.jetbrains.kotlin.serialization.konan.KonanPackageFragment
 import org.jetbrains.kotlin.types.KotlinType
-import org.jetbrains.kotlin.types.TypeSubstitutor
 import org.jetbrains.kotlin.types.typeUtil.isNothing
 import org.jetbrains.kotlin.types.typeUtil.isUnit
-import org.jetbrains.kotlin.util.OperatorNameConventions
 import org.jetbrains.kotlin.utils.addToStdlib.ifNotEmpty
 
 
@@ -75,37 +60,11 @@ internal val ClassDescriptor.isArray: Boolean
 internal val ClassDescriptor.isInterface: Boolean
     get() = (this.kind == ClassKind.INTERFACE)
 
-private val kotlinNativeInternalPackageName = FqName.fromSegments(listOf("kotlin", "native", "internal"))
-
 /**
  * @return `konan.internal` member scope
  */
 internal val KonanBuiltIns.kotlinNativeInternal: MemberScope
-    get() = this.builtInsModule.getPackage(kotlinNativeInternalPackageName).memberScope
-
-internal val KotlinType.isKFunctionType: Boolean
-    get() {
-        val kind = constructor.declarationDescriptor?.getFunctionalClassKind()
-        return kind == FunctionClassDescriptor.Kind.KFunction
-    }
-
-internal val FunctionDescriptor.isFunctionInvoke: Boolean
-    get() {
-        val dispatchReceiver = dispatchReceiverParameter ?: return false
-        assert(!dispatchReceiver.type.isKFunctionType)
-
-        return (dispatchReceiver.type.isFunctionType || dispatchReceiver.type.isSuspendFunctionType) &&
-                this.isOperator && this.name == OperatorNameConventions.INVOKE
-    }
-
-internal val IrFunction.isFunctionInvoke: Boolean
-    get() {
-        val dispatchReceiver = dispatchReceiverParameter ?: return false
-        assert(!dispatchReceiver.type.isKFunction())
-
-        return dispatchReceiver.type.isFunction() &&
-               /* this.isOperator &&*/ this.name == OperatorNameConventions.INVOKE
-    }
+    get() = this.builtInsModule.getPackage(RuntimeNames.kotlinNativeInternalPackageName).memberScope
 
 internal fun ClassDescriptor.isUnit() = this.defaultType.isUnit()
 
@@ -164,20 +123,6 @@ internal fun DeclarationDescriptor.allContainingDeclarations(): List<Declaration
     }
     return list
 }
-
-// It is possible to declare "external inline fun",
-// but it doesn't have much sense for native,
-// since externals don't have IR bodies.
-// Enforce inlining of constructors annotated with @InlineConstructor.
-
-private val inlineConstructor = FqName("kotlin.native.internal.InlineConstructor")
-
-internal val FunctionDescriptor.needsInlining: Boolean
-    get() {
-        val inlineConstructor = annotations.hasAnnotation(inlineConstructor)
-        if (inlineConstructor) return true
-        return (this.isInline && !this.isExternal)
-    }
 
 fun AnnotationDescriptor.getStringValueOrNull(name: String): String? {
     val constantValue = this.allValueArguments.entries.atMostOne {
@@ -271,19 +216,14 @@ fun CallableMemberDescriptor.findSourceFile(): SourceFile {
     }
 }
 
-internal val TypedIntrinsic = FqName("kotlin.native.internal.TypedIntrinsic")
-private val symbolNameAnnotation = FqName("kotlin.native.SymbolName")
-private val objCMethodAnnotation = FqName("kotlinx.cinterop.ObjCMethod")
-private val frozenAnnotation = FqName("kotlin.native.internal.Frozen")
-
 internal val DeclarationDescriptor.isFrozen: Boolean
-    get() = this.annotations.hasAnnotation(frozenAnnotation) ||
+    get() = this.annotations.hasAnnotation(RuntimeNames.frozenAnnotation) ||
             (this is org.jetbrains.kotlin.descriptors.ClassDescriptor
                     // RTTI is used for non-reference type box or Objective-C object wrapper:
                     && (!this.defaultType.binaryTypeIsReference() || this.isObjCClass()))
 
 internal val FunctionDescriptor.isTypedIntrinsic: Boolean
-    get() = this.annotations.hasAnnotation(TypedIntrinsic)
+    get() = this.annotations.hasAnnotation(RuntimeNames.typedIntrinsicAnnotation)
 
 // TODO: coalesce all our annotation value getters into fewer functions.
 fun getAnnotationValue(annotation: AnnotationDescriptor): String? {
@@ -294,12 +234,12 @@ fun getAnnotationValue(annotation: AnnotationDescriptor): String? {
 }
 
 fun CallableMemberDescriptor.externalSymbolOrThrow(): String? {
-    this.annotations.findAnnotation(symbolNameAnnotation)?.let {
+    this.annotations.findAnnotation(RuntimeNames.symbolNameAnnotation)?.let {
         return getAnnotationValue(it)!!
     }
-    if (this.annotations.hasAnnotation(objCMethodAnnotation)) return null
+    if (this.annotations.hasAnnotation(RuntimeNames.objCMethodAnnotation)) return null
 
-    if (this.annotations.hasAnnotation(TypedIntrinsic)) return null
+    if (this.annotations.hasAnnotation(RuntimeNames.typedIntrinsicAnnotation)) return null
 
     if (this.annotations.hasAnnotation(RuntimeNames.cCall)) return null
 
@@ -316,42 +256,3 @@ fun createAnnotation(
 )
 
 val ModuleDescriptor.konanLibrary get() = (this.konanModuleOrigin as? DeserializedKonanModuleOrigin)?.library
-
-class WrappedVariableDescriptorWithAccessors
-    : VariableDescriptorWithAccessors, WrappedCallableDescriptor<IrLocalDelegatedProperty>(Annotations.EMPTY, SourceElement.NO_SOURCE) {
-    override val getter: VariableAccessorDescriptor?
-        get() = error("Don't ask wrapped descriptor for so many details.")
-    override val setter: VariableAccessorDescriptor?
-        get() = error("Don't ask wrapped descriptor for so many details.")
-    override val isDelegated: Boolean
-        get() = error("Don't ask wrapped descriptor for so many details.")
-
-    override fun getContainingDeclaration() = (owner.parent as IrFunction).descriptor
-    override fun getType() = owner.type.toKotlinType()
-    override fun getReturnType() = getType()
-    override fun getName() = owner.name
-    override fun isConst() = false
-    override fun isVar() = owner.isVar
-    override fun isLateInit() = false
-
-    override fun getCompileTimeInitializer(): ConstantValue<*>? {
-        TODO("")
-    }
-
-    override fun getOverriddenDescriptors(): Collection<VariableDescriptor> {
-        TODO("Not Implemented")
-    }
-
-    override fun getOriginal() = this
-
-    override fun substitute(substitutor: TypeSubstitutor): VariableDescriptor {
-        TODO("")
-    }
-
-    override fun <R, D> accept(visitor: DeclarationDescriptorVisitor<R, D>?, data: D): R =
-        visitor!!.visitVariableDescriptor(this, data)
-
-    override fun acceptVoid(visitor: DeclarationDescriptorVisitor<Void, Void>?) {
-        visitor!!.visitVariableDescriptor(this, null)
-    }
-}

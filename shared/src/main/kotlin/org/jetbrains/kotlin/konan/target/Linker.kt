@@ -133,15 +133,32 @@ open class MacOSBasedLinker(targetProperties: AppleConfigurables)
     private val libtool = "$absoluteTargetToolchain/usr/bin/libtool"
     private val linker = "$absoluteTargetToolchain/usr/bin/ld"
     private val dsymutil = "$absoluteLlvmHome/bin/llvm-dsymutil"
-    private val compilerRtLibrary: String? by lazy {
-            val suffix = when (configurables.target.family) {
+
+    private fun provideCompilerRtLibrary(libraryName: String): String? {
+        val suffix = if (libraryName.isNotEmpty() && target == KonanTarget.IOS_X64) {
+            "iossim"
+        } else {
+            when (val family = configurables.target.family) {
                 Family.OSX -> "osx"
                 Family.IOS -> "ios"
-                else -> TODO()
+                else -> error("Family $family is unsupported")
             }
-            val dir = File("$absoluteTargetToolchain/usr/lib/clang/").listFiles.firstOrNull()?.absolutePath
-            if (dir != null) "$dir/lib/darwin/libclang_rt.$suffix.a" else null
         }
+        val dir = File("$absoluteTargetToolchain/usr/lib/clang/").listFiles.firstOrNull()?.absolutePath
+        val mangledName = if (libraryName.isEmpty()) "" else "${libraryName}_"
+
+        return if (dir != null) "$dir/lib/darwin/libclang_rt.$mangledName$suffix.a" else null
+    }
+
+    private val compilerRtLibrary: String? by lazy {
+        provideCompilerRtLibrary("")
+    }
+
+    // Code coverage requires this library.
+    private val profileLibrary: String? by lazy {
+        provideCompilerRtLibrary("profile")
+    }
+
     private val osVersionMinFlags: List<String> by lazy {
         listOf(osVersionMinFlagLd, osVersionMin + ".0")
     }
@@ -171,6 +188,7 @@ open class MacOSBasedLinker(targetProperties: AppleConfigurables)
             if (dynamic) +linkerDynamicFlags
             +linkerKonanFlags
             if (compilerRtLibrary != null) +compilerRtLibrary!!
+            if (profileLibrary != null) +profileLibrary!!
             +libraries
             +linkerArgs
             +rpath(dynamic)
@@ -235,7 +253,7 @@ open class LinuxBasedLinker(targetProperties: LinuxBasedConfigurables)
 
     private val ar = if (HostManager.hostIsMac) "$absoluteTargetToolchain/bin/llvm-ar"
         else "$absoluteTargetToolchain/bin/ar"
-    override val libGcc: String = "$absoluteTargetSysRoot/${super.libGcc}"
+    override val libGcc = "$absoluteTargetSysRoot/${super.libGcc}"
     private val linker = "$absoluteLlvmHome/bin/ld.lld"
     private val specificLibs = abiSpecificLibraries.map { "-L${absoluteTargetSysRoot}/$it" }
 
@@ -250,6 +268,7 @@ open class LinuxBasedLinker(targetProperties: LinuxBasedConfigurables)
 
         val isMips = (configurables is LinuxMIPSConfigurables)
         val dynamic = kind == LinkerOutputKind.DYNAMIC_LIBRARY
+        val crtPrefix = if (configurables.target == KonanTarget.LINUX_ARM64) "usr/lib" else "usr/lib64"
         // TODO: Can we extract more to the konan.configurables?
         return listOf(Command(linker).apply {
             +"--sysroot=${absoluteTargetSysRoot}"
@@ -262,8 +281,8 @@ open class LinuxBasedLinker(targetProperties: LinuxBasedConfigurables)
             +dynamicLinker
             +"-o"
             +executable
-            if (!dynamic) +"$absoluteTargetSysRoot/usr/lib64/crt1.o"
-            +"$absoluteTargetSysRoot/usr/lib64/crti.o"
+            if (!dynamic) +"$absoluteTargetSysRoot/$crtPrefix/crt1.o"
+            +"$absoluteTargetSysRoot/$crtPrefix/crti.o"
             +if (dynamic) "$libGcc/crtbeginS.o" else "$libGcc/crtbegin.o"
             +"-L$llvmLib"
             +"-L$libGcc"
@@ -278,7 +297,7 @@ open class LinuxBasedLinker(targetProperties: LinuxBasedConfigurables)
             +listOf("-lgcc", "--as-needed", "-lgcc_s", "--no-as-needed",
                     "-lc", "-lgcc", "--as-needed", "-lgcc_s", "--no-as-needed")
             +if (dynamic) "$libGcc/crtendS.o" else "$libGcc/crtend.o"
-            +"$absoluteTargetSysRoot/usr/lib64/crtn.o"
+            +"$absoluteTargetSysRoot/$crtPrefix/crtn.o"
             +libraries
             +linkerArgs
         })
@@ -390,7 +409,7 @@ open class ZephyrLinker(targetProperties: ZephyrConfigurables)
 
 fun linker(configurables: Configurables): LinkerFlags =
         when (configurables.target) {
-            KonanTarget.LINUX_X64, KonanTarget.LINUX_ARM32_HFP ->
+            KonanTarget.LINUX_X64, KonanTarget.LINUX_ARM32_HFP,  KonanTarget.LINUX_ARM64 ->
                 LinuxBasedLinker(configurables as LinuxConfigurables)
             KonanTarget.LINUX_MIPS32, KonanTarget.LINUX_MIPSEL32 ->
                 LinuxBasedLinker(configurables as LinuxMIPSConfigurables)

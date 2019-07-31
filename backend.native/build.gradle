@@ -1,3 +1,4 @@
+import org.jetbrains.kotlin.CopyCommonSources
 import org.jetbrains.kotlin.konan.target.HostManager
 
 /*
@@ -80,11 +81,12 @@ task renamePackage {
 kotlinNativeInterop {
     llvm {
         dependsOn ":llvmDebugInfoC:debugInfoStaticLibrary"
+        dependsOn ":llvmCoverageMappingC:coverageMappingStaticLibrary"
         defFile 'llvm.def'
         if (!project.parent.convention.plugins.platformInfo.isWindows())
             compilerOpts "-fPIC"
-        compilerOpts "-I$llvmDir/include", "-I${project(':llvmDebugInfoC').projectDir}/src/main/include"
-        linkerOpts "-L$llvmDir/lib", "-L${project(':llvmDebugInfoC').buildDir}/libs/debugInfo/static"
+        compilerOpts "-I$llvmDir/include", "-I${project(':llvmDebugInfoC').projectDir}/src/main/include", "-I${project(':llvmCoverageMappingC').projectDir}/src/main/include"
+        linkerOpts "-L$llvmDir/lib", "-L${project(':llvmDebugInfoC').buildDir}/libs/debugInfo/static", "-L${project(':llvmCoverageMappingC').buildDir}/libs/coverageMapping/static"
     }
 
     hash { // TODO: copy-pasted from ':common:compileHash'
@@ -110,10 +112,11 @@ configurations {
     kotlin_stdlib_jar
     kotlin_reflect_jar
     kotlin_script_runtime_jar
-    kotlin_common_stdlib_src
-    kotlin_test_common_src
-    kotlin_test_annotations_common_src
+    kotlin_native_utils_jar
+    kotlin_util_io_jar
+    kotlin_util_klib_jar
     trove4j_jar
+    kotlinCommonSources
 
     cli_bcRuntime {
         extendsFrom compilerRuntime
@@ -131,9 +134,13 @@ dependencies {
     kotlin_stdlib_jar "$kotlinStdLibModule@jar"
     kotlin_reflect_jar "$kotlinReflectModule@jar"
     kotlin_script_runtime_jar "$kotlinScriptRuntimeModule@jar"
-    kotlin_common_stdlib_src kotlinCommonStdlibModule
-    kotlin_test_common_src kotlinTestCommonModule
-    kotlin_test_annotations_common_src kotlinTestAnnotationsCommonModule
+    kotlin_native_utils_jar "$kotlinNativeUtilsModule@jar"
+    kotlin_util_io_jar "$kotlinUtilIoModule@jar"
+    kotlin_util_klib_jar "$kotlinUtilKlibModule@jar"
+
+    [kotlinCommonStdlibModule, kotlinTestCommonModule, kotlinTestAnnotationsCommonModule].each {
+        kotlinCommonSources(it) { transitive = false }
+    }
 
     compilerCompile "com.google.protobuf:protobuf-java:${protobufVersion}"
 
@@ -162,23 +169,9 @@ task stdlib(dependsOn: "${hostName}Stdlib")
 
 def commonSrc = file('build/stdlib')
 
-task unzipStdlibSources(type: Copy) {
-    dependsOn configurations.kotlin_common_stdlib_src
-    dependsOn configurations.kotlin_test_common_src
-    dependsOn configurations.kotlin_test_annotations_common_src
-
-    def jarFiles = configurations.kotlin_common_stdlib_src.files +
-            configurations.kotlin_test_common_src.files +
-            configurations.kotlin_test_annotations_common_src.files
-
-    jarFiles.forEach { jarFile ->
-        from(zipTree(jarFile)) {
-            include 'generated/**/*.kt'
-            include 'kotlin/**/*.kt'
-            include 'kotlin.test/*.kt'
-        }
-    }
-    destinationDir commonSrc
+task unzipStdlibSources(type: CopyCommonSources) {
+    outputDir commonSrc
+    sourcePaths configurations.kotlinCommonSources.files
 }
 
 final List<File> stdLibSrc = [
@@ -188,28 +181,6 @@ final List<File> stdLibSrc = [
         project(':runtime').file('src/main/kotlin'),
         project(':runtime').file('src/launcher/kotlin')
 ]
-
-task zipStdLibSources(type: Zip, dependsOn: unzipStdlibSources) {
-    from stdLibSrc, {
-        into "native"
-    }
-
-    from commonSrc, {
-        into "common"
-    }
-
-    archiveName 'kotlin-stdlib-native-sources.zip'
-    destinationDir buildDir
-}
-
-task teamcityPublishStdLibSources {
-    dependsOn zipStdLibSources
-    if (System.getenv("TEAMCITY_BUILD_PROPERTIES_FILE") != null) {
-        doLast {
-            println " ##teamcity[publishArtifacts '${tasks.zipStdLibSources.archivePath}'] "
-        }
-    }
-}
 
 // These files are built before the 'dist' is complete,
 // so we provide custom values for
@@ -267,7 +238,7 @@ jar {
     dependsOn ':runtime:hostRuntime', 'external_jars'
 }
 
-def externalJars = ['compiler', 'stdlib', 'reflect', 'script_runtime']
+def externalJars = ['compiler', 'stdlib', 'reflect', 'script_runtime', 'native_utils', 'util_io', 'util_klib']
 
 task trove4jCopy(type: Copy) {
     from configurations.getByName("trove4j_jar") {
@@ -319,4 +290,3 @@ task debugCompiler(type: JavaExec) {
     enableAssertions = true
     args = findProperty("konan.debug.args").toString().tokenize() ?: []
 }
-

@@ -65,7 +65,7 @@ OBJ_GETTER(Konan_getWeakReferenceImpl, ObjHeader* referred) {
      ObjHolder counterHolder;
      // Cast unneeded, just to emphasize we store an object reference as void*.
      ObjHeader* counter = makeWeakReferenceCounter(reinterpret_cast<void*>(referred), counterHolder.slot());
-     UpdateRefIfNull(&meta->counter_, counter);
+     UpdateHeapRefIfNull(&meta->counter_, counter);
   }
   RETURN_OBJ(meta->counter_);
 }
@@ -77,11 +77,7 @@ OBJ_GETTER(Konan_WeakReferenceCounter_get, ObjHeader* counter) {
   RETURN_OBJ(*referredAddress);
 #else
   int32_t* lockAddress = &asWeakReferenceCounter(counter)->lock;
-  // Spinlock.
-  lock(lockAddress);
-  ObjHolder holder(*referredAddress);
-  unlock(lockAddress);
-  RETURN_OBJ(holder.obj());
+  RETURN_RESULT_OF(ReadHeapRefLocked, referredAddress, lockAddress);
 #endif
 }
 

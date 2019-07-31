@@ -9,29 +9,53 @@ fun getModulesInfo(compilation: Compilation, modules: List<String>): ModulesInfo
     if (modules.isEmpty()) return ModulesInfo(emptyList(), emptySet())
 
     withIndex { index ->
-
-        val ownHeaders = mutableSetOf<String>()
-        val topLevelHeaders = linkedSetOf<String>()
-
-        getModulesASTFiles(index, compilation, modules).forEach {
-            val moduleTranslationUnit = clang_createTranslationUnit(index, it)!!
-            try {
-                val modulesHeaders = getModulesHeaders(index, moduleTranslationUnit, modules.toSet(), topLevelHeaders)
-                modulesHeaders.mapTo(ownHeaders) { it.canonicalPath }
-            } finally {
-                clang_disposeTranslationUnit(moduleTranslationUnit)
-            }
+        ModularCompilation(compilation).use {
+            val modulesASTFiles = getModulesASTFiles(index, it, modules)
+            return buildModulesInfo(index, modules, modulesASTFiles)
         }
-
-        return ModulesInfo(topLevelHeaders.toList(), ownHeaders)
     }
 }
 
-private fun getModulesASTFiles(index: CXIndex, compilation: Compilation, modules: List<String>): List<String> {
-    val compilationWithImports = object : Compilation by compilation {
-        override val compilerArgs = compilation.compilerArgs + "-fmodules"
-        override val additionalPreambleLines = modules.map { "@import $it;" } + compilation.additionalPreambleLines
+private fun buildModulesInfo(index: CXIndex, modules: List<String>, modulesASTFiles: List<String>): ModulesInfo {
+    val ownHeaders = mutableSetOf<String>()
+    val topLevelHeaders = linkedSetOf<String>()
+    modulesASTFiles.forEach {
+        val moduleTranslationUnit = clang_createTranslationUnit(index, it)!!
+        try {
+            val modulesHeaders = getModulesHeaders(index, moduleTranslationUnit, modules.toSet(), topLevelHeaders)
+            modulesHeaders.mapTo(ownHeaders) { it.canonicalPath }
+        } finally {
+            clang_disposeTranslationUnit(moduleTranslationUnit)
+        }
     }
+
+    return ModulesInfo(topLevelHeaders.toList(), ownHeaders)
+}
+
+internal open class ModularCompilation(compilation: Compilation): Compilation by compilation, Disposable {
+
+    companion object {
+        private const val moduleCacheFlag = "-fmodules-cache-path="
+    }
+
+    private val moduleCacheDirectory = if (compilation.compilerArgs.none { it.startsWith(moduleCacheFlag) }) {
+        createTempDir("ModuleCache")
+    } else {
+        null
+    }
+
+    override val compilerArgs: List<String> = compilation.compilerArgs +
+            listOfNotNull("-fmodules", moduleCacheDirectory?.let { "$moduleCacheFlag${it.absolutePath}" })
+
+    override fun dispose() {
+        moduleCacheDirectory?.deleteRecursively()
+    }
+}
+
+private fun getModulesASTFiles(index: CXIndex, compilation: ModularCompilation, modules: List<String>): List<String> {
+    val compilationWithImports = compilation.copy(
+            additionalPreambleLines = modules.map { "@import $it;" } + compilation.additionalPreambleLines
+    )
 
     val result = linkedSetOf<String>()
 

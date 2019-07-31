@@ -14,13 +14,11 @@ import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.InteropFqNames
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.konan.KonanBackendContext
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.typeWithStarProjections
+import org.jetbrains.kotlin.backend.konan.ir.typeWithStarProjections
 import org.jetbrains.kotlin.backend.konan.isObjCClass
-import org.jetbrains.kotlin.backend.konan.SYNTHETIC_OFFSET
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.annotations.AnnotationDescriptorImpl
 import org.jetbrains.kotlin.descriptors.annotations.Annotations
-import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFieldImpl
@@ -31,6 +29,7 @@ import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrClassifierSymbol
 import org.jetbrains.kotlin.ir.symbols.IrConstructorSymbol
+import org.jetbrains.kotlin.ir.symbols.IrLocalDelegatedPropertySymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrFieldSymbolImpl
 import org.jetbrains.kotlin.ir.types.*
 import org.jetbrains.kotlin.ir.types.IrType
@@ -82,7 +81,7 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
     }
 
     override fun lower(irFile: IrFile) {
-        val kProperties = mutableMapOf<VariableDescriptorWithAccessors, Pair<IrExpression, Int>>()
+        val kProperties = mutableMapOf<IrDeclaration, Pair<IrExpression, Int>>()
 
         val arrayClass = context.ir.symbols.array.owner
 
@@ -129,7 +128,7 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
                         2 -> error("Callable reference to properties with two receivers is not allowed: ${expression.descriptor}")
 
                         else -> { // Cache KProperties with no arguments.
-                            val field = kProperties.getOrPut(expression.descriptor) {
+                            val field = kProperties.getOrPut(expression.symbol.owner) {
                                 createKProperty(expression, this) to kProperties.size
                             }
 
@@ -149,16 +148,14 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
                 val endOffset = expression.endOffset
                 val irBuilder = context.createIrBuilder(currentScope!!.scope.scopeOwnerSymbol, startOffset, endOffset)
                 irBuilder.run {
-                    val propertyDescriptor = expression.descriptor
-
                     val receiversCount = listOf(expression.dispatchReceiver, expression.extensionReceiver).count { it != null }
                     if (receiversCount == 2)
-                        throw AssertionError("Callable reference to properties with two receivers is not allowed: $propertyDescriptor")
+                        throw AssertionError("Callable reference to properties with two receivers is not allowed: ${expression}")
                     else { // Cache KProperties with no arguments.
                         // TODO: what about `receiversCount == 1` case?
-                        val field = kProperties.getOrPut(propertyDescriptor) {
+                        val field = kProperties.getOrPut(expression.symbol.owner) {
                             createLocalKProperty(
-                                    propertyDescriptor,
+                                    expression.symbol.owner.name.asString(),
                                     expression.getter.owner.returnType,
                                     this
                             ) to kProperties.size
@@ -273,7 +270,7 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
         }
     }
 
-    private fun createLocalKProperty(propertyDescriptor: VariableDescriptorWithAccessors,
+    private fun createLocalKProperty(propertyName: String,
                                      propertyType: IrType,
                                      irBuilder: IrBuilderWithScope): IrExpression {
         irBuilder.run {
@@ -283,7 +280,7 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
                     isLocal = true,
                     isMutable = false)
             val initializer = irCall(symbol.owner, constructorTypeArguments).apply {
-                putValueArgument(0, irString(propertyDescriptor.name.asString()))
+                putValueArgument(0, irString(propertyName))
                 putValueArgument(1, irKType(this@PropertyDelegationLowering.context, propertyType))
             }
             return initializer

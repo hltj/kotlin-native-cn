@@ -19,25 +19,39 @@ package org.jetbrains.benchmarksLauncher
 import kotlin.math.sqrt
 import org.jetbrains.report.BenchmarkResult
 import org.jetbrains.kliopt.*
+import kotlin.reflect.KFunction0
 
 abstract class Launcher(val numWarmIterations: Int, val numberOfAttempts: Int, val prefix: String = "") {
     class Results(val mean: Double, val variance: Double)
 
     abstract val benchmarks: BenchmarksCollection
 
-    protected val benchmarkResults = mutableListOf<BenchmarkResult>()
+    fun add(name: String, benchmark:() -> Any?) {
+        fun benchmarkWrapper() {
+            benchmark()
+        }
+        benchmarks[name] = ::benchmarkWrapper
+    }
 
-    fun launch(benchmarksToRun: Collection<String>? = null): List<BenchmarkResult> {
-        val runningBenchmarks = benchmarksToRun ?: benchmarks.keys
-        runningBenchmarks.forEach {
-            val benchmark = benchmarks[it]
-            benchmark ?: error("Benchmark $it wasn't found!")
+    fun launch(filters: Collection<String>? = null,
+               filterRegexes: Collection<String>? = null): List<BenchmarkResult> {
+        val regexes = filterRegexes?.map { it.toRegex() } ?: listOf()
+        val filterSet = filters?.toHashSet() ?: hashSetOf()
+        // Filter benchmarks using given filters, or run all benchmarks if none were given.
+        val runningBenchmarks = if (filterSet.isNotEmpty() || regexes.isNotEmpty()) {
+            benchmarks.filterKeys { benchmark -> benchmark in filterSet || regexes.any { it.matches(benchmark) } }
+        } else benchmarks
+        if (runningBenchmarks.isEmpty())
+            error("No matching benchmarks found")
+        val benchmarkResults = mutableListOf<BenchmarkResult>()
+        for ((name, benchmark) in runningBenchmarks) {
             var i = numWarmIterations
             while (i-- > 0) benchmark()
             cleanup()
             var autoEvaluatedNumberOfMeasureIteration = 1
             while (true) {
                 var j = autoEvaluatedNumberOfMeasureIteration
+                cleanup()
                 val time = measureNanoTime {
                     while (j-- > 0) {
                         benchmark()
@@ -51,6 +65,7 @@ abstract class Launcher(val numWarmIterations: Int, val numberOfAttempts: Int, v
             val samples = DoubleArray(numberOfAttempts)
             for (k in samples.indices) {
                 i = autoEvaluatedNumberOfMeasureIteration
+                cleanup()
                 val time = measureNanoTime {
                     while (i-- > 0) {
                         benchmark()
@@ -60,7 +75,7 @@ abstract class Launcher(val numWarmIterations: Int, val numberOfAttempts: Int, v
                 val scaledTime = time * 1.0 / autoEvaluatedNumberOfMeasureIteration
                 samples[k] = scaledTime
                 // Save benchmark object
-                benchmarkResults.add(BenchmarkResult("$prefix$it", BenchmarkResult.Status.PASSED,
+                benchmarkResults.add(BenchmarkResult("$prefix$name", BenchmarkResult.Status.PASSED,
                         scaledTime / 1000, BenchmarkResult.Metric.EXECUTION_TIME, scaledTime / 1000,
                         k + 1, numWarmIterations))
             }
@@ -72,11 +87,12 @@ abstract class Launcher(val numWarmIterations: Int, val numberOfAttempts: Int, v
 object BenchmarksRunner {
     fun parse(args: Array<String>): ArgParser {
         val options = listOf(
-                OptionDescriptor(ArgType.Int(), "warmup", "w", "Number of warm up iterations", "0"),
-                OptionDescriptor(ArgType.Int(), "repeat", "r", "Number of each becnhmark run", "10"),
+                OptionDescriptor(ArgType.Int(), "warmup", "w", "Number of warm up iterations", "20"),
+                OptionDescriptor(ArgType.Int(), "repeat", "r", "Number of each benchmark run", "60"),
                 OptionDescriptor(ArgType.String(), "prefix", "p", "Prefix added to benchmark name", ""),
                 OptionDescriptor(ArgType.String(), "output", "o", "Output file"),
-                OptionDescriptor(ArgType.String(), "filter", "f", "Benchmark to run", isMultiple = true)
+                OptionDescriptor(ArgType.String(), "filter", "f", "Benchmark to run", isMultiple = true),
+                OptionDescriptor(ArgType.String(), "filterRegex", "fr", "Benchmark to run, described by a regular expression", isMultiple = true)
         )
 
         // Parse args.

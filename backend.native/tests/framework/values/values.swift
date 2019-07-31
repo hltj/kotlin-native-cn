@@ -350,6 +350,42 @@ func testCharExtensions() throws {
 
 func testLambda() throws {
     try assertEquals(actual: ValuesKt.sumLambda(3, 4), expected: 7)
+
+    var blockRuns = 0
+
+    try assertTrue(ValuesKt.runUnitBlock { blockRuns += 1 })
+    try assertEquals(actual: blockRuns, expected: 1)
+
+    let unitBlock: () -> Void = ValuesKt.asUnitBlock {
+        blockRuns += 1
+        return 42
+    }
+    try assertTrue(unitBlock() == Void())
+    try assertEquals(actual: blockRuns, expected: 2)
+
+    let nothingBlock: () -> Void = ValuesKt.asNothingBlock { blockRuns += 1 }
+    try assertTrue(ValuesKt.runNothingBlock(block: nothingBlock))
+    try assertEquals(actual: blockRuns, expected: 3)
+
+    try assertTrue(ValuesKt.getNullBlock() == nil)
+    try assertTrue(ValuesKt.isBlockNull(block: nil))
+
+    // Test dynamic conversion:
+    let intBlocks = IntBlocksImpl()
+    try assertEquals(actual: intBlocks.getPlusOneBlock()(1), expected: 2)
+    try assertEquals(actual: intBlocks.callBlock(argument: 2) { KotlinInt(value: $0.int32Value + 2) }, expected: 4)
+
+    // Test round trip with dynamic conversion:
+    let coercedUnitBlock: () -> KotlinUnit = UnitBlockCoercionImpl().coerce { blockRuns += 1 }
+    try assertTrue(coercedUnitBlock() === KotlinUnit())
+    try assertEquals(actual: blockRuns, expected: 4)
+
+    let uncoercedUnitBlock: () -> Void = UnitBlockCoercionImpl().uncoerce {
+        blockRuns += 1
+        return KotlinUnit()
+    }
+    try assertTrue(uncoercedUnitBlock() == Void())
+    try assertEquals(actual: blockRuns, expected: 5)
 }
 
 // -------- Tests for classes and interfaces -------
@@ -381,6 +417,7 @@ func testClassInstances() throws {
 }
 
 func testEnum() throws {
+    try assertEquals(actual: ValuesKt.passEnum(), expected: Enumeration.answer)
     try assertEquals(actual: ValuesKt.passEnum().enumValue, expected: 42)
     try assertEquals(actual: ValuesKt.passEnum().name, expected: "ANSWER")
     ValuesKt.receiveEnum(e: 1)
@@ -493,7 +530,78 @@ func testPureSwiftClasses() throws {
 func testNames() throws {
     try assertEquals(actual: ValuesKt.PROPERTY_NAME_MUST_NOT_BE_ALTERED_BY_SWIFT, expected: 111)
     try assertEquals(actual: Deeply.NestedType().thirtyTwo, expected: 32)
+    try assertEquals(actual: WithGenericDeeply.NestedType().thirtyThree, expected: 33)
     try assertEquals(actual: CKeywords(float: 1.0, enum : 42, goto: true).goto_, expected: true)
+}
+
+class Base123 : Base23, ExtendedBase1 {
+    override func same(value: KotlinInt?) -> KotlinInt {
+        return value!
+    }
+}
+
+func testSwiftOverride() throws {
+    let impl = Base123()
+    try assertEquals(actual: ValuesKt.call(base1: impl, value: 1), expected: 1)
+    try assertEquals(actual: ValuesKt.call(extendedBase1: impl, value: 2), expected: 2)
+    try assertEquals(actual: ValuesKt.call(base2: impl, value: 3), expected: 3)
+    try assertEquals(actual: ValuesKt.call(base3: impl, value: 4), expected: 4)
+    try assertEquals(actual: ValuesKt.call(base23: impl, value: 5), expected: 5)
+}
+
+class TransformIntToLongCallingSuper : TransformIntToLong {
+    override func map(value: KotlinInt) -> KotlinLong {
+        return super.map(value: value)
+    }
+}
+
+func testKotlinOverride() throws {
+    try assertEquals(actual: TransformInheritingDefault().map(value: 1) as! Int32, expected: 1)
+    try assertEquals(actual: TransformIntToDecimalString().map(value: 2), expected: "2")
+    try assertEquals(actual: TransformIntToDecimalString().map(intValue: 3), expected: "3")
+    try assertEquals(actual: ValuesKt.createTransformDecimalStringToInt().map(value: "4") as! Int32, expected: 4)
+    try assertEquals(actual: TransformIntToLongCallingSuper().map(value: 5), expected: 5)
+}
+
+// See https://github.com/JetBrains/kotlin-native/issues/2945
+func testGH2945() throws {
+    let gh2945 = GH2945(errno: 1)
+    try assertEquals(actual: 1, expected: gh2945.errno)
+    gh2945.errno = 2
+    try assertEquals(actual: 2, expected: gh2945.errno)
+
+    try assertEquals(actual: 7, expected: gh2945.testErrnoInSelector(p: 3, errno: 4))
+}
+
+// See https://github.com/JetBrains/kotlin-native/issues/2830
+func testGH2830() throws {
+  try assertTrue(GH2830().getI() is GH2830I)
+}
+
+// See https://github.com/JetBrains/kotlin-native/issues/2959
+func testGH2959() throws {
+  try assertEquals(actual: GH2959().getI(id: 2959)[0].id, expected: 2959)
+}
+
+// See https://github.com/JetBrains/kotlin-native/issues/2931
+func testGH2931() throws {
+    for i in 0..<50000 {
+        let holder = GH2931.Holder()
+        let queue = DispatchQueue.global(qos: .background)
+        let group = DispatchGroup()
+
+        for j in 0..<2 {
+            group.enter()
+            queue.async {
+                autoreleasepool {
+                    holder.data
+                }
+                group.leave()
+            }
+        }
+
+        group.wait()
+    }
 }
 
 // -------- Execution of the test --------
@@ -533,6 +641,12 @@ class ValuesTests : TestProvider {
             TestCase(name: "TestShared", method: withAutorelease(testShared)),
             TestCase(name: "TestPureSwiftClasses", method: withAutorelease(testPureSwiftClasses)),
             TestCase(name: "TestNames", method: withAutorelease(testNames)),
+            TestCase(name: "TestSwiftOverride", method: withAutorelease(testSwiftOverride)),
+            TestCase(name: "TestKotlinOverride", method: withAutorelease(testKotlinOverride)),
+            TestCase(name: "TestGH2945", method: withAutorelease(testGH2945)),
+            TestCase(name: "TestGH2830", method: withAutorelease(testGH2830)),
+            TestCase(name: "TestGH2959", method: withAutorelease(testGH2959)),
+            TestCase(name: "TestGH2931", method: withAutorelease(testGH2931)),
         ]
     }
 }

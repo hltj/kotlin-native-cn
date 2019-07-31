@@ -40,7 +40,7 @@ class IntrinsicType {
         const val OBJC_GET_MESSENGER            = "OBJC_GET_MESSENGER"
         const val OBJC_GET_MESSENGER_STRET      = "OBJC_GET_MESSENGER_STRET"
         const val OBJC_GET_OBJC_CLASS           = "OBJC_GET_OBJC_CLASS"
-        const val OBJC_GET_RECEIVER_OR_SUPER    = "OBJC_GET_RECEIVER_OR_SUPER"
+        const val OBJC_CREATE_SUPER_STRUCT      = "OBJC_CREATE_SUPER_STRUCT"
         const val OBJC_INIT_BY                  = "OBJC_INIT_BY"
         const val OBJC_GET_SELECTOR             = "OBJC_GET_SELECTOR"
 
@@ -57,6 +57,7 @@ class IntrinsicType {
 
         const val GET_CONTINUATION              = "GET_CONTINUATION"
         const val RETURN_IF_SUSPEND             = "RETURN_IF_SUSPEND"
+        const val COROUTINE_LAUNCHPAD           = "COROUTINE_LAUNCHPAD"
 
         // Interop
         const val INTEROP_READ_PRIMITIVE        = "INTEROP_READ_PRIMITIVE"

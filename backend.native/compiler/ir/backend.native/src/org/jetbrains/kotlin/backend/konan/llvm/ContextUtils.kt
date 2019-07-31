@@ -8,13 +8,17 @@ package org.jetbrains.kotlin.backend.konan.llvm
 import kotlinx.cinterop.*
 import llvm.*
 import org.jetbrains.kotlin.backend.konan.Context
-import org.jetbrains.kotlin.backend.konan.descriptors.findPackage
 import org.jetbrains.kotlin.backend.konan.hash.GlobalHash
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
+import org.jetbrains.kotlin.backend.konan.ir.isReal
+import org.jetbrains.kotlin.backend.konan.ir.llvmSymbolOrigin
 import org.jetbrains.kotlin.descriptors.konan.CompiledKonanModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.CurrentKonanModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.DeserializedKonanModuleOrigin
 import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.ir.util.file
+import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
+import org.jetbrains.kotlin.ir.util.isEffectivelyExternal
+import org.jetbrains.kotlin.ir.util.isReal
 import org.jetbrains.kotlin.konan.library.KonanLibrary
 import org.jetbrains.kotlin.konan.library.resolver.TopologicalLibraryOrder
 import org.jetbrains.kotlin.konan.target.KonanTarget
@@ -141,6 +145,10 @@ internal interface ContextUtils : RuntimeAware {
     val staticData: StaticData
         get() = context.llvm.staticData
 
+    /**
+     * TODO: maybe it'd be better to replace with [IrDeclaration::isEffectivelyExternal()],
+     * or just drop all [else] branches of corresponding conditionals.
+     */
     fun isExternal(declaration: IrDeclaration): Boolean {
         return false
     }
@@ -150,6 +158,9 @@ internal interface ContextUtils : RuntimeAware {
      * It may be declared as external function prototype.
      */
     val IrFunction.llvmFunction: LLVMValueRef
+    get() = llvmFunctionOrNull ?: error("$name in $file/${parent.fqNameForIrSerialization}")
+
+    val IrFunction.llvmFunctionOrNull: LLVMValueRef?
         get() {
             assert(this.isReal)
 
@@ -157,7 +168,7 @@ internal interface ContextUtils : RuntimeAware {
                 context.llvm.externalFunction(this.symbolName, getLlvmFunctionType(this),
                         origin = this.llvmSymbolOrigin)
             } else {
-                context.llvmDeclarations.forFunction(this).llvmFunction
+                context.llvmDeclarations.forFunctionOrNull(this)?.llvmFunction
             }
         }
 
@@ -249,7 +260,8 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
             throw IllegalArgumentException("function $name already exists")
         }
 
-        val externalFunction = LLVMGetNamedFunction(otherModule, name)!!
+        val externalFunction = LLVMGetNamedFunction(otherModule, name) ?:
+            throw Error("function $name not found")
 
         val functionType = getFunctionType(externalFunction)
         val function = LLVMAddFunction(llvmModule, name, functionType)!!
@@ -294,6 +306,16 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
         val parameterTypes = cValuesOf(int8TypePtr, int8TypePtr, int32Type, int1Type)
         val functionType = LLVMFunctionType(LLVMVoidType(), parameterTypes, 4, 0)
         return LLVMAddFunction(llvmModule, "llvm.memcpy.p0i8.p0i8.i32", functionType)!!
+    }
+
+    private fun llvmIntrinsic(name: String, type: LLVMTypeRef, vararg attributes: String): LLVMValueRef {
+        val result = LLVMAddFunction(llvmModule, name, type)!!
+        attributes.forEach {
+            val kindId = getLlvmAttributeKindId(it)
+            val attribute = LLVMCreateEnumAttribute(LLVMGetTypeContext(type), kindId, 0)!!
+            LLVMAddAttributeAtIndex(result, LLVMAttributeFunctionIndex, attribute)
+        }
+        return result
     }
 
     internal fun externalFunction(
@@ -389,25 +411,28 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val runtimeFile = context.config.distribution.runtime(target)
     val runtime = Runtime(runtimeFile) // TODO: dispose
 
+    val targetTriple = runtime.target
+
     init {
         LLVMSetDataLayout(llvmModule, runtime.dataLayout)
-        LLVMSetTarget(llvmModule, runtime.target)
+        LLVMSetTarget(llvmModule, targetTriple)
     }
 
     private fun importRtFunction(name: String) = importFunction(name, runtime.llvmModule)
+    private fun importModelSpecificRtFunction(name: String) =
+            importRtFunction(name + context.memoryModel.suffix)
 
     private fun importRtGlobal(name: String) = importGlobal(name, runtime.llvmModule)
 
-    val allocInstanceFunction = importRtFunction("AllocInstance")
-    val allocArrayFunction = importRtFunction("AllocArrayInstance")
-    val initInstanceFunction = importRtFunction("InitInstance")
-    val initSharedInstanceFunction = importRtFunction("InitSharedInstance")
+    val allocInstanceFunction = importModelSpecificRtFunction("AllocInstance")
+    val allocArrayFunction = importModelSpecificRtFunction("AllocArrayInstance")
+    val initInstanceFunction = importModelSpecificRtFunction("InitInstance")
+    val initSharedInstanceFunction = importModelSpecificRtFunction("InitSharedInstance")
+    val updateHeapRefFunction = importRtFunction("UpdateHeapRef")
+    val updateStackRefFunction = importRtFunction("UpdateStackRef")
     val updateReturnRefFunction = importRtFunction("UpdateReturnRef")
-    val updateRefFunction = importRtFunction("UpdateRef")
     val enterFrameFunction = importRtFunction("EnterFrame")
     val leaveFrameFunction = importRtFunction("LeaveFrame")
-    val getReturnSlotIfArenaFunction = importRtFunction("GetReturnSlotIfArena")
-    val getParamSlotIfArenaFunction = importRtFunction("GetParamSlotIfArena")
     val lookupOpenMethodFunction = importRtFunction("LookupOpenMethod")
     val isInstanceFunction = importRtFunction("IsInstance")
     val checkInstanceFunction = importRtFunction("CheckInstance")
@@ -439,6 +464,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val Kotlin_ObjCExport_AbstractMethodCalled by lazyRtFunction
     val Kotlin_ObjCExport_RethrowExceptionAsNSError by lazyRtFunction
     val Kotlin_ObjCExport_RethrowNSErrorAsException by lazyRtFunction
+    val Kotlin_ObjCExport_AllocInstanceWithAssociatedObject by lazyRtFunction
 
     val tlsMode by lazy {
         when (target) {
@@ -453,6 +479,12 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
         KonanTarget.MINGW_X64 -> "__gxx_personality_seh0"
         else -> "__gxx_personality_v0"
     }
+
+    val cxxStdTerminate = externalNounwindFunction(
+            "_ZSt9terminatev", // mangled C++ 'std::terminate'
+            functionType(voidType, false),
+            origin = context.standardLlvmSymbolsOrigin
+    )
 
     val gxxPersonalityFunction = externalNounwindFunction(
             personalityFunctionName,
@@ -473,6 +505,18 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val memsetFunction = importMemset()
     //val memcpyFunction = importMemcpy()
 
+    val llvmTrap = llvmIntrinsic(
+            "llvm.trap",
+            functionType(voidType, false),
+            "cold", "noreturn", "nounwind"
+    )
+
+    val llvmEhTypeidFor = llvmIntrinsic(
+            "llvm.eh.typeid.for",
+            functionType(int32Type, false, int8TypePtr),
+            "nounwind", "readnone"
+    )
+
     val usedFunctions = mutableListOf<LLVMValueRef>()
     val usedGlobals = mutableListOf<LLVMValueRef>()
     val compilerUsedGlobals = mutableListOf<LLVMValueRef>()
@@ -491,4 +535,10 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
             override fun getValue(thisRef: Llvm, property: KProperty<*>): LLVMValueRef = value
         }
     }
+    val llvmInt8 = LLVMInt8Type()!!
+    val llvmInt16 = LLVMInt16Type()!!
+    val llvmInt32 = LLVMInt32Type()!!
+    val llvmInt64 = LLVMInt64Type()!!
+    val llvmFloat = LLVMFloatType()!!
+    val llvmDouble = LLVMDoubleType()!!
 }

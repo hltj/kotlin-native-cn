@@ -39,8 +39,9 @@ typedef enum {
   // Mask for container type.
   CONTAINER_TAG_MASK = CONTAINER_TAG_INCREMENT - 1,
 
-  // Shift to get actual object count.
-  CONTAINER_TAG_GC_SHIFT     = 6,
+  // Shift to get actual object count, if has it.
+  CONTAINER_TAG_GC_SHIFT     = 7,
+  CONTAINER_TAG_GC_MASK      = (1 << CONTAINER_TAG_GC_SHIFT) - 1,
   CONTAINER_TAG_GC_INCREMENT = 1 << CONTAINER_TAG_GC_SHIFT,
   // Color mask of a container.
   CONTAINER_TAG_COLOR_SHIFT   = 3,
@@ -64,7 +65,9 @@ typedef enum {
   // Individual state bits used during GC and freezing.
   CONTAINER_TAG_GC_MARKED   = 1 << CONTAINER_TAG_COLOR_SHIFT,
   CONTAINER_TAG_GC_BUFFERED = 1 << (CONTAINER_TAG_COLOR_SHIFT + 1),
-  CONTAINER_TAG_GC_SEEN     = 1 << (CONTAINER_TAG_COLOR_SHIFT + 2)
+  CONTAINER_TAG_GC_SEEN     = 1 << (CONTAINER_TAG_COLOR_SHIFT + 2),
+  // If indeed has more that one object.
+  CONTAINER_TAG_GC_HAS_OBJECT_COUNT = 1 << (CONTAINER_TAG_COLOR_SHIFT + 3)
 } ContainerTag;
 
 typedef enum {
@@ -109,8 +112,8 @@ struct ContainerHeader {
     return (refCount_ & CONTAINER_TAG_MASK) == CONTAINER_TAG_STACK;
   }
 
-  inline unsigned refCount() const {
-    return refCount_ >> CONTAINER_TAG_SHIFT;
+  inline int refCount() const {
+    return (int)refCount_ >> CONTAINER_TAG_SHIFT;
   }
 
   inline void setRefCount(unsigned refCount) {
@@ -140,20 +143,50 @@ struct ContainerHeader {
     return value >> CONTAINER_TAG_SHIFT;
   }
 
+  inline int decRefCount() {
+  #ifdef KONAN_NO_THREADS
+      int value = refCount_ -= CONTAINER_TAG_INCREMENT;
+  #else
+      int value = shareable() ?
+         __sync_sub_and_fetch(&refCount_, CONTAINER_TAG_INCREMENT) : refCount_ -= CONTAINER_TAG_INCREMENT;
+  #endif
+      return value >> CONTAINER_TAG_SHIFT;
+  }
+
   inline unsigned tag() const {
     return refCount_ & CONTAINER_TAG_MASK;
   }
 
   inline unsigned objectCount() const {
-    return objectCount_ >> CONTAINER_TAG_GC_SHIFT;
+    return (objectCount_ & CONTAINER_TAG_GC_HAS_OBJECT_COUNT) != 0 ?
+        (objectCount_ >> CONTAINER_TAG_GC_SHIFT) : 1;
   }
 
   inline void incObjectCount() {
+    RuntimeAssert((objectCount_ & CONTAINER_TAG_GC_HAS_OBJECT_COUNT) != 0, "Must have object count");
     objectCount_ += CONTAINER_TAG_GC_INCREMENT;
   }
 
   inline void setObjectCount(int count) {
-    objectCount_ = count << CONTAINER_TAG_GC_SHIFT;
+    if (count == 1) {
+      objectCount_ &= ~CONTAINER_TAG_GC_HAS_OBJECT_COUNT;
+    } else {
+      objectCount_ = (count << CONTAINER_TAG_GC_SHIFT) | CONTAINER_TAG_GC_HAS_OBJECT_COUNT;
+    }
+  }
+
+  inline unsigned containerSize() const {
+    RuntimeAssert((objectCount_ & CONTAINER_TAG_GC_HAS_OBJECT_COUNT) == 0, "Must be single-object");
+    return (objectCount_ >> CONTAINER_TAG_GC_SHIFT);
+  }
+
+  inline void setContainerSize(unsigned size) {
+    RuntimeAssert((objectCount_ & CONTAINER_TAG_GC_HAS_OBJECT_COUNT) == 0, "Must not have object count");
+    objectCount_ = (objectCount_ & CONTAINER_TAG_GC_MASK) | (size << CONTAINER_TAG_GC_SHIFT);
+  }
+
+  inline bool hasContainerSize() {
+    return (objectCount_ & CONTAINER_TAG_GC_HAS_OBJECT_COUNT) == 0;
   }
 
   inline unsigned color() const {
@@ -213,6 +246,7 @@ struct ContainerHeader {
     objectCount_ &= ~CONTAINER_TAG_GC_SEEN;
   }
 
+  // Following operations only work on freed container which is in finalization queue.
   // We cannot use 'this' here, as it conflicts with aliasing analysis in clang.
   inline void setNextLink(ContainerHeader* next) {
     *reinterpret_cast<ContainerHeader**>(this + 1) = next;
@@ -296,10 +330,11 @@ struct ObjHeader {
 
   ContainerHeader* container() const {
     unsigned bits = getPointerBits(typeInfoOrMeta_, OBJECT_TAG_MASK);
-    if ((bits & OBJECT_TAG_PERMANENT_CONTAINER) != 0) return nullptr;
-    return (bits & OBJECT_TAG_NONTRIVIAL_CONTAINER) != 0 ?
-         (reinterpret_cast<MetaObjHeader*>(clearPointerBits(typeInfoOrMeta_, OBJECT_TAG_MASK)))->container_ :
-         reinterpret_cast<ContainerHeader*>(const_cast<ObjHeader*>(this)) - 1;
+    if ((bits & (OBJECT_TAG_PERMANENT_CONTAINER | OBJECT_TAG_NONTRIVIAL_CONTAINER)) == 0)
+      return reinterpret_cast<ContainerHeader*>(const_cast<ObjHeader*>(this)) - 1;
+    if ((bits & OBJECT_TAG_PERMANENT_CONTAINER) != 0)
+      return nullptr;
+    return (reinterpret_cast<MetaObjHeader*>(clearPointerBits(typeInfoOrMeta_, OBJECT_TAG_MASK)))->container_;
   }
 
   // Unsafe cast to ArrayHeader. Use carefully!
@@ -336,6 +371,8 @@ inline bool PermanentOrFrozen(ObjHeader* obj) {
 
 // Class representing arbitrary placement container.
 class Container {
+ public:
+  ContainerHeader* header() const { return header_; }
  protected:
   // Data where everything is being stored.
   ContainerHeader* header_;
@@ -350,97 +387,10 @@ class Container {
   }
 };
 
-// Container for a single object.
-class ObjectContainer : public Container {
- public:
-  // Single instance.
-  explicit ObjectContainer(const TypeInfo* type_info) {
-    Init(type_info);
-  }
-
-  // Object container shalln't have any dtor, as it's being freed by
-  // ::Release().
-
-  ObjHeader* GetPlace() const {
-    return reinterpret_cast<ObjHeader*>(header_ + 1);
-  }
-
- private:
-  void Init(const TypeInfo* type_info);
-};
-
-
-class ArrayContainer : public Container {
- public:
-  ArrayContainer(const TypeInfo* type_info, uint32_t elements) {
-    Init(type_info, elements);
-  }
-
-  // Array container shalln't have any dtor, as it's being freed by ::Release().
-
-  ArrayHeader* GetPlace() const {
-    return reinterpret_cast<ArrayHeader*>(header_ + 1);
-  }
-
- private:
-  void Init(const TypeInfo* type_info, uint32_t elements);
-};
-
-// Class representing arena-style placement container.
-// Container is used for reference counting, and it is assumed that objects
-// with related placement will share container. Only
-// whole container can be freed, individual objects are not taken into account.
-class ArenaContainer;
-
-struct ContainerChunk {
-  ContainerChunk* next;
-  ArenaContainer* arena;
-  // Then we have ContainerHeader here.
-  ContainerHeader* asHeader() {
-    return reinterpret_cast<ContainerHeader*>(this + 1);
-  }
-};
-
-class ArenaContainer {
- public:
-  void Init();
-  void Deinit();
-
-  // Place individual object in this container.
-  ObjHeader* PlaceObject(const TypeInfo* type_info);
-
-  // Places an array of certain type in this container. Note that array_type_info
-  // is type info for an array, not for an individual element. Also note that exactly
-  // same operation could be used to place strings.
-  ArrayHeader* PlaceArray(const TypeInfo* array_type_info, container_size_t count);
-
-  ObjHeader** getSlot();
-
- private:
-  void* place(container_size_t size);
-
-  bool allocContainer(container_size_t minSize);
-
-  void setHeader(ObjHeader* obj, const TypeInfo* typeInfo) {
-    obj->typeInfoOrMeta_ = const_cast<TypeInfo*>(typeInfo);
-    obj->setContainer(currentChunk_->asHeader());
-    // Here we do not take into account typeInfo's immutability for ARC strategy, as there's no ARC.
-  }
-
-  ContainerChunk* currentChunk_;
-  uint8_t* current_;
-  uint8_t* end_;
-  ArrayHeader* slots_;
-  uint32_t slotsCount_;
-};
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Bit or'ed to slot pointer, marking the fact that allocation shall happen
-// in arena pointed by the slot.
-#define ARENA_BIT 1
 #define OBJ_RESULT __result__
 #define OBJ_GETTER0(name) ObjHeader* name(ObjHeader** OBJ_RESULT)
 #define OBJ_GETTER(name, ...) ObjHeader* name(__VA_ARGS__, ObjHeader** OBJ_RESULT)
@@ -476,11 +426,30 @@ void ResumeMemory(MemoryState* state);
 // Escape analysis algorithm is the provider of information for decision on exact aux slot
 // selection, and comes from upper bound esteemation of object lifetime.
 //
+OBJ_GETTER(AllocInstanceStrict, const TypeInfo* type_info) RUNTIME_NOTHROW;
+OBJ_GETTER(AllocInstanceRelaxed, const TypeInfo* type_info) RUNTIME_NOTHROW;
 OBJ_GETTER(AllocInstance, const TypeInfo* type_info) RUNTIME_NOTHROW;
-OBJ_GETTER(AllocArrayInstance, const TypeInfo* type_info, uint32_t elements) RUNTIME_NOTHROW;
+
+OBJ_GETTER(AllocArrayInstanceStrict, const TypeInfo* type_info, int32_t elements);
+OBJ_GETTER(AllocArrayInstanceRelaxed, const TypeInfo* type_info, int32_t elements);
+OBJ_GETTER(AllocArrayInstance, const TypeInfo* type_info, int32_t elements);
+
+OBJ_GETTER(InitInstanceStrict,
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+OBJ_GETTER(InitInstanceRelaxed,
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+OBJ_GETTER(InitInstance,
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+
+OBJ_GETTER(InitSharedInstanceStrict,
+    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+OBJ_GETTER(InitSharedInstanceRelaxed,
+    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+OBJ_GETTER(InitSharedInstance,
+    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+
+// Cleanup references inside object.
 void DeinitInstanceBody(const TypeInfo* typeInfo, void* body);
-OBJ_GETTER(InitInstance, ObjHeader** location, const TypeInfo* type_info,
-           void (*ctor)(ObjHeader*));
 
 // Weak reference operations.
 // Atomically clears counter object reference.
@@ -492,7 +461,7 @@ void WeakReferenceCounterClear(ObjHeader* counter);
 // Reference management scheme we use assumes significant degree of flexibility, so that
 // one could implement either pure reference counting scheme, or tracing collector without
 // much ado.
-// Most important primitive is UpdateRef() API, which modifies location to use new
+// Most important primitive is Update*Ref() API, which modifies location to use new
 // object reference. In pure reference counted scheme it will check old value,
 // decrement reference, increment counter on the new value, and store it into the field.
 // In tracing collector-like scheme, only field updates counts, and all other operations are
@@ -508,33 +477,33 @@ void WeakReferenceCounterClear(ObjHeader* counter);
 //    in intermediate frames when throwing
 //
 
-// Sets location.
-void SetRef(ObjHeader** location, const ObjHeader* object) RUNTIME_NOTHROW;
-// Updates location.
-void UpdateRef(ObjHeader** location, const ObjHeader* object) RUNTIME_NOTHROW;
+// Sets stack location.
+void SetStackRef(ObjHeader** location, const ObjHeader* object) RUNTIME_NOTHROW;
+// Sets heap location.
+void SetHeapRef(ObjHeader** location, const ObjHeader* object) RUNTIME_NOTHROW;
+// Zeroes heap location.
+void ZeroHeapRef(ObjHeader** location) RUNTIME_NOTHROW;
+// Zeroes stack location.
+void ZeroStackRef(ObjHeader** location) RUNTIME_NOTHROW;
+// Updates stack location.
+void UpdateStackRef(ObjHeader** location, const ObjHeader* object) RUNTIME_NOTHROW;
+// Updates heap/static data location.
+void UpdateHeapRef(ObjHeader** location, const ObjHeader* object) RUNTIME_NOTHROW;
 // Updates location if it is null, atomically.
-void UpdateRefIfNull(ObjHeader** location, const ObjHeader* object) RUNTIME_NOTHROW;
+void UpdateHeapRefIfNull(ObjHeader** location, const ObjHeader* object) RUNTIME_NOTHROW;
 // Updates reference in return slot.
 void UpdateReturnRef(ObjHeader** returnSlot, const ObjHeader* object) RUNTIME_NOTHROW;
 // Compares and swaps reference with taken lock.
-OBJ_GETTER(SwapRefLocked,
+OBJ_GETTER(SwapHeapRefLocked,
     ObjHeader** location, ObjHeader* expectedValue, ObjHeader* newValue, int32_t* spinlock) RUNTIME_NOTHROW;
 // Sets reference with taken lock.
-void SetRefLocked(ObjHeader** location, ObjHeader* newValue, int32_t* spinlock) RUNTIME_NOTHROW;
+void SetHeapRefLocked(ObjHeader** location, ObjHeader* newValue, int32_t* spinlock) RUNTIME_NOTHROW;
 // Reads reference with taken lock.
-OBJ_GETTER(ReadRefLocked, ObjHeader** location, int32_t* spinlock) RUNTIME_NOTHROW;
-// Optimization: release all references in range.
-void ReleaseRefs(ObjHeader** start, int count) RUNTIME_NOTHROW;
+OBJ_GETTER(ReadHeapRefLocked, ObjHeader** location, int32_t* spinlock) RUNTIME_NOTHROW;
 // Called on frame enter, if it has object slots.
 void EnterFrame(ObjHeader** start, int parameters, int count) RUNTIME_NOTHROW;
 // Called on frame leave, if it has object slots.
 void LeaveFrame(ObjHeader** start, int parameters, int count) RUNTIME_NOTHROW;
-// Tries to use returnSlot's arena for allocation.
-ObjHeader** GetReturnSlotIfArena(ObjHeader** returnSlot, ObjHeader** localSlot) RUNTIME_NOTHROW;
-// Tries to use param's arena for allocation.
-ObjHeader** GetParamSlotIfArena(ObjHeader* param, ObjHeader** localSlot) RUNTIME_NOTHROW;
-// Collect garbage, which cannot be found by reference counting (cycles).
-void GarbageCollect() RUNTIME_NOTHROW;
 // Clears object subgraph references from memory subsystem, and optionally
 // checks if subgraph referenced by given root is disjoint from the rest of
 // object graph, i.e. no external references exists.
@@ -557,24 +526,63 @@ void EnsureNeverFrozen(ObjHeader* obj);
 }
 #endif
 
+
+struct FrameOverlay {
+  void* arena;
+  FrameOverlay* previous;
+  // As they go in pair, sizeof(FrameOverlay) % sizeof(void*) == 0 is always held.
+  int32_t parameters;
+  int32_t count;
+};
+
 // Class holding reference to an object, holding object during C++ scope.
 class ObjHolder {
  public:
-   ObjHolder() : obj_(nullptr) {}
+   ObjHolder() : obj_(nullptr) {
+     EnterFrame(frame(), 0, sizeof(*this)/sizeof(void*));
+   }
 
    explicit ObjHolder(const ObjHeader* obj) {
-     ::SetRef(&obj_, obj);
+     EnterFrame(frame(), 0, sizeof(*this)/sizeof(void*));
+     ::SetStackRef(slot(), obj);
    }
+
    ~ObjHolder() {
-     ::UpdateRef(&obj_, nullptr);
+     LeaveFrame(frame(), 0, sizeof(*this)/sizeof(void*));
    }
 
    ObjHeader* obj() { return obj_; }
-   const ObjHeader* obj() const { return obj_; }
-   ObjHeader** slot() { return &obj_; }
-   void clear() { ::UpdateRef(&obj_, nullptr); }
 
-  private:
+   const ObjHeader* obj() const { return obj_; }
+
+   ObjHeader** slot() {
+     return &obj_;
+   }
+
+   void clear() { ::ZeroStackRef(&obj_); }
+
+ private:
+   ObjHeader** frame() { return reinterpret_cast<ObjHeader**>(&frame_); }
+
+   FrameOverlay frame_;
+   ObjHeader* obj_;
+};
+
+class ExceptionObjHolder {
+ public:
+   explicit ExceptionObjHolder(const ObjHeader* obj) {
+     ::SetHeapRef(&obj_, obj);
+   }
+
+   ~ExceptionObjHolder() {
+     ZeroHeapRef(&obj_);
+   }
+
+   ObjHeader* obj() { return obj_; }
+
+   const ObjHeader* obj() const { return obj_; }
+
+ private:
    ObjHeader* obj_;
 };
 
@@ -586,17 +594,14 @@ class KRefSharedHolder {
   }
 
   inline void init(ObjHeader* obj) {
-    SetRef(slotToInit(), obj);
+    SetHeapRef(slotToInit(), obj);
   }
 
-  inline ObjHeader* ref() const {
-    verifyRefOwner();
-    return obj_;
-  }
+  ObjHeader* ref() const;
 
   inline void dispose() {
     verifyRefOwner();
-    UpdateRef(&obj_, nullptr);
+    ZeroHeapRef(&obj_);
   }
 
  private:

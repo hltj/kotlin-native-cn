@@ -51,9 +51,10 @@ apply plugin: 'com.github.johnrengelman.shadow'
 apply plugin: "com.gradle.plugin-publish"
 
 String determineVersion() {
-    // With Gradle 4.10 we are no longer able to depend on
-    // a 'shared' build included into the root one and use the KonanVersion API provided
-    // by it. So we have to manually construct the version.
+    // With Gradle 5.1 adding a dependency on the 'shared' build
+    // in this buildscript causes an IDE import error.
+    // So we are not able to use the KonanVersion API and
+    // have to manually construct the version.
     // TODO: Remove this code when 'shared' is built separately (from a separate repo).
     def meta = findProperty('konanMetaVersion') ?: 'dev'
     def overriddenVersion = findProperty('pluginVersionOverride') as String
@@ -62,16 +63,12 @@ String determineVersion() {
         return overriddenVersion
     }
 
-    if (meta == 'release') {
-        return kotlinVersion
-    } else {
-        def buildNumber = findProperty("build.number")?.tokenize('-')?.get(2)
-        def result = "$kotlinVersion-native-$konanVersion-$meta"
-        if (buildNumber != null) {
-            result += "-$buildNumber"
-        }
-        return result
+    def buildNumber = findProperty("build.number")?.tokenize('-')?.get(2)
+    def result = "$kotlinVersion-native-$konanVersion-$meta"
+    if (buildNumber != null) {
+        result += "-$buildNumber"
     }
+    return result
 }
 
 group = 'org.jetbrains.kotlin'
@@ -105,7 +102,9 @@ dependencies {
     bundleDependencies "org.jetbrains.kotlin:kotlin-serialization:$kotlinVersion"
     bundleDependencies "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion"
     bundleDependencies "org.jetbrains.kotlin:kotlin-gradle-plugin-api:$kotlinVersion"
+    bundleDependencies "org.jetbrains.kotlin:kotlin-native-utils:$kotlinVersion"
     bundleDependencies "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
+    bundleDependencies "org.jetbrains.kotlin:kotlin-util-io:$kotlinVersion"
 
     testImplementation 'junit:junit:4.12'
     testImplementation "org.jetbrains.kotlin:kotlin-test:$buildKotlinVersion"

@@ -122,4 +122,3 @@ public actual fun UShortArray.asList(): List<UShort> {
         override fun lastIndexOf(element: UShort): Int = this@asList.lastIndexOf(element)
     }
 }
-

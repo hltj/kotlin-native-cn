@@ -34,6 +34,7 @@ import org.gradle.util.GradleVersion
 import org.jetbrains.kotlin.gradle.plugin.konan.KonanPlugin.Companion.COMPILE_ALL_TASK_NAME
 import org.jetbrains.kotlin.gradle.plugin.model.KonanToolingModelBuilder
 import org.jetbrains.kotlin.gradle.plugin.tasks.*
+import org.jetbrains.kotlin.konan.CURRENT
 import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.parseKonanVersion
 import org.jetbrains.kotlin.konan.target.HostManager
@@ -90,7 +91,7 @@ internal val Project.konanHome: String
 
 internal val Project.konanVersion: KonanVersion
     get() = project.findProperty(KonanPlugin.ProjectProperty.KONAN_VERSION)
-        ?.toString()?.parseKonanVersion()
+        ?.toString()?.let { KonanVersion.fromString(it) }
         ?: KonanVersion.CURRENT
 
 internal val Project.konanBuildRoot          get() = buildDir.resolve("konan")
@@ -199,12 +200,6 @@ internal fun MutableList<String>.addFileArgs(parameter: String, values: FileColl
 internal fun MutableList<String>.addFileArgs(parameter: String, values: Collection<FileCollection>) {
     values.forEach {
         addFileArgs(parameter, it)
-    }
-}
-
-internal fun MutableList<String>.addListArg(parameter: String, values: List<String>) {
-    if (values.isNotEmpty()) {
-        addArg(parameter, values.joinToString(separator = " "))
     }
 }
 

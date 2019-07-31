@@ -28,6 +28,7 @@ class AppleConfigurablesImpl(
 
     private val sdkDependency = this.targetSysRoot!!
     private val toolchainDependency = this.targetToolchain!!
+    private val xcodeAddonDependency = this.additionalToolsDir!!
 
     override val absoluteTargetSysRoot: String get() = when (xcodePartsProvider) {
         is XcodePartsProvider.Local -> when (target) {
@@ -44,9 +45,14 @@ class AppleConfigurablesImpl(
         XcodePartsProvider.InternalServer -> absolute(toolchainDependency)
     }
 
+    override val absoluteAdditionalToolsDir: String get() = when (xcodePartsProvider) {
+        is XcodePartsProvider.Local -> xcodePartsProvider.xcode.additionalTools
+        XcodePartsProvider.InternalServer -> absolute(additionalToolsDir)
+    }
+
     override val dependencies get() = super.dependencies + when (xcodePartsProvider) {
         is XcodePartsProvider.Local -> emptyList()
-        XcodePartsProvider.InternalServer -> listOf(sdkDependency, toolchainDependency)
+        XcodePartsProvider.InternalServer -> listOf(sdkDependency, toolchainDependency, xcodeAddonDependency)
     }
 
     private val xcodePartsProvider = if (InternalServer.isAvailable) {

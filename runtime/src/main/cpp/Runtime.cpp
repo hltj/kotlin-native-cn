@@ -79,13 +79,14 @@ RuntimeState* initRuntime() {
   SetKonanTerminateHandler();
   RuntimeState* result = konanConstructInstance<RuntimeState>();
   if (!result) return nullptr;
+  RuntimeCheck(runtimeState == nullptr, "No active runtimes allowed");
+  runtimeState = result;
   result->memoryState = InitMemory();
   bool firstRuntime = atomicAdd(&aliveRuntimesCount, 1) == 1;
   // Keep global variables in state as well.
   if (firstRuntime) {
     isMainThread = 1;
     konan::consoleInit();
-
     InitOrDeinitGlobalVariables(INIT_GLOBALS);
   }
   InitOrDeinitGlobalVariables(INIT_THREAD_LOCAL_GLOBALS);
@@ -117,7 +118,7 @@ void AppendToInitializersTail(InitNode *next) {
 
 void Kotlin_initRuntimeIfNeeded() {
   if (runtimeState == nullptr) {
-    runtimeState = initRuntime();
+    initRuntime();
     RuntimeCheck(updateStatusIf(runtimeState, SUSPENDED, RUNNING), "Cannot transition state to RUNNING for init");
     // Register runtime deinit function at thread cleanup.
     konan::onThreadExit(Kotlin_deinitRuntimeIfNeeded);
@@ -165,6 +166,62 @@ RuntimeState* RUNTIME_USED Kotlin_getRuntime() {
 void CheckIsMainThread() {
   if (!isMainThread)
     ThrowIncorrectDereferenceException();
+}
+
+int Konan_Platform_canAccessUnaligned() {
+#if KONAN_NO_UNALIGNED_ACCESS
+  return 0;
+#else
+  return 1;
+#endif
+}
+
+int Konan_Platform_isLittleEndian() {
+#ifdef __BIG_ENDIAN__
+  return 0;
+#else
+  return 1;
+#endif
+}
+
+int Konan_Platform_getOsFamily() {
+#if KONAN_MACOSX
+  return 1;
+#elif KONAN_IOS
+  return 2;
+#elif KONAN_LINUX
+  return 3;
+#elif KONAN_WINDOWS
+  return 4;
+#elif KONAN_ANDROID
+  return 5;
+#elif KONAN_WASM
+  return 6;
+#else
+#warning "Unknown platform"
+  return 0;
+#endif
+}
+
+int Konan_Platform_getCpuArchitecture() {
+#if KONAN_ARM32
+  return 1;
+#elif KONAN_ARM64
+  return 2;
+#elif KONAN_X86
+  return 3;
+#elif KONAN_X64
+  return 4;
+#elif KONAN_MIPS32
+  return 5;
+#elif KONAN_MIPSEL32
+  return 6;
+#elif KONAN_WASM
+  return 7;
+#else
+#warning "Unknown CPU"
+  return 0;
+#endif
 }
 
 }  // extern "C"

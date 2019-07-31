@@ -7,16 +7,17 @@ package org.jetbrains.kotlin.backend.konan.optimizations
 
 import org.jetbrains.kotlin.backend.common.atMostOne
 import org.jetbrains.kotlin.backend.common.ir.ir2stringWhole
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.peek
 import org.jetbrains.kotlin.backend.common.pop
 import org.jetbrains.kotlin.backend.common.push
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.allOverriddenFunctions
-import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.backend.konan.descriptors.target
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
+import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.llvm.functionName
 import org.jetbrains.kotlin.backend.konan.llvm.localHash
+import org.jetbrains.kotlin.backend.konan.llvm.longName
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.expressions.*
@@ -24,10 +25,10 @@ import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrTypeParameterSymbol
 import org.jetbrains.kotlin.ir.types.*
+import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.util.constructors
 import org.jetbrains.kotlin.ir.util.getArguments
 import org.jetbrains.kotlin.ir.util.parentAsClass
-import org.jetbrains.kotlin.ir.util.simpleFunctions
 import org.jetbrains.kotlin.ir.visitors.IrElementVisitorVoid
 import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
 import org.jetbrains.kotlin.ir.visitors.acceptVoid
@@ -211,12 +212,16 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
             }
 
             override fun visitFunction(declaration: IrFunction) {
-                declaration.body?.let {
+                val body = declaration.body
+                if (body == null) {
+                    // External function or intrinsic.
+                    symbolTable.mapFunction(declaration)
+                } else {
                     DEBUG_OUTPUT(0) {
                         println("Analysing function ${declaration.descriptor}")
                         println("IR: ${ir2stringWhole(declaration)}")
                     }
-                    analyze(declaration, it)
+                    analyze(declaration, body)
                 }
             }
 
@@ -408,6 +413,7 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
     private val executeImplProducerClassSymbol = symbols.functions[0]
     private val executeImplProducerInvoke = executeImplProducerClassSymbol.owner.simpleFunctions()
             .single { it.name == OperatorNameConventions.INVOKE }
+    private val reinterpret = symbols.reinterpret
 
     private inner class FunctionDFGBuilder(val expressionValuesExtractor: ExpressionValuesExtractor,
                                            val variableValues: VariableValues,
@@ -479,11 +485,32 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
             )
         }
 
+        private fun IrType.erasure(): IrType {
+            if (this !is IrSimpleType) return this
+
+            val classifier = this.classifier
+            return when (classifier) {
+                is IrClassSymbol -> this
+                is IrTypeParameterSymbol -> {
+                    val upperBound = classifier.owner.superTypes.singleOrNull() ?:
+                    TODO("${classifier.descriptor} : ${classifier.descriptor.upperBounds}")
+
+                    if (this.hasQuestionMark) {
+                        // `T?`
+                        upperBound.erasure().makeNullable()
+                    } else {
+                        upperBound.erasure()
+                    }
+                }
+                else -> TODO(classifier.toString())
+            }
+        }
+
         private fun expressionToEdge(expression: IrExpression) =
                 if (expression is IrTypeOperatorCall && expression.operator.isCast())
                     DataFlowIR.Edge(
                             getNode(expression.argument),
-                            symbolTable.mapClassReferenceType(expression.typeOperand.getClass()!!)
+                            symbolTable.mapClassReferenceType(expression.typeOperand.erasure().getClass()!!)
                     )
                 else DataFlowIR.Edge(getNode(expression), null)
 
@@ -523,9 +550,18 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                         when (value) {
                             is IrGetValue -> getNode(value)
 
-                            is IrVararg,
-                            is IrConst<*>,
-                            is IrFunctionReference -> DataFlowIR.Node.Const(symbolTable.mapType(value.type))
+                            is IrVararg -> DataFlowIR.Node.Const(symbolTable.mapType(value.type))
+
+                            is IrFunctionReference -> {
+                                val callee = value.symbol.owner
+                                DataFlowIR.Node.FunctionReference(symbolTable.mapFunction(callee), symbolTable.mapType(value.type))
+                            }
+
+                            is IrConst<*> ->
+                                if (value.value == null)
+                                    DataFlowIR.Node.Null
+                                else
+                                    DataFlowIR.Node.Const(symbolTable.mapType(value.type))
 
                             is IrGetObjectValue -> DataFlowIR.Node.Singleton(
                                     symbolTable.mapType(value.type),
@@ -533,6 +569,17 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                         null
                                     else symbolTable.mapFunction(value.symbol.owner.constructors.single())
                             )
+
+                            is IrConstructorCall -> {
+                                val callee = value.symbol.owner
+                                val arguments = value.getArguments().map { expressionToEdge(it.second) }
+                                DataFlowIR.Node.NewObject(
+                                        symbolTable.mapFunction(callee),
+                                        arguments,
+                                        symbolTable.mapClassReferenceType(callee.constructedClass, false),
+                                        value
+                                )
+                            }
 
                             is IrCall -> when (value.symbol) {
                                 getContinuationSymbol -> getContinuation()
@@ -548,11 +595,13 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                             value.getTypeArgument(0)!!.getClass()!!
                                     ))
 
+                                reinterpret -> getNode(value.extensionReceiver!!)
+
                                 initInstanceSymbol -> {
                                     val thiz = expressionToEdge(value.getValueArgument(0)!!)
-                                    val initializer = value.getValueArgument(1) as IrCall
+                                    val initializer = value.getValueArgument(1) as IrConstructorCall
                                     val arguments = listOf(thiz) + initializer.getArguments().map { expressionToEdge(it.second) }
-                                    val callee = initializer.symbol.owner as IrConstructor
+                                    val callee = initializer.symbol.owner
                                     DataFlowIR.Node.StaticCall(
                                             symbolTable.mapFunction(callee),
                                             arguments,
@@ -572,12 +621,7 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                                     it
                                             }
                                     if (callee is IrConstructor) {
-                                        DataFlowIR.Node.NewObject(
-                                                symbolTable.mapFunction(callee),
-                                                arguments,
-                                                symbolTable.mapClassReferenceType(callee.constructedClass, false),
-                                                value
-                                        )
+                                        error("Constructor call should be done with IrConstructorCall")
                                     } else {
                                         callee as IrSimpleFunction
                                         if (callee.isOverridable && value.superQualifier == null) {
@@ -611,8 +655,7 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                                         value
                                                 )
                                             } else {
-                                                val vTableBuilder = context.getVtableBuilder(owner)
-                                                val vtableIndex = vTableBuilder.vtableIndex(callee)
+                                                val vtableIndex = context.getLayoutBuilder(owner).vtableIndex(callee)
                                                 DataFlowIR.Node.VtableCall(
                                                         symbolTable.mapFunction(callee.target),
                                                         receiverType,

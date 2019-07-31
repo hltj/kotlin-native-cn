@@ -8,13 +8,15 @@ package org.jetbrains.kotlin.backend.konan.llvm
 import llvm.LLVMStoreSizeOfType
 import llvm.LLVMValueRef
 import org.jetbrains.kotlin.backend.common.atMostOne
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.getStringValue
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
+import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.util.constructors
-import org.jetbrains.kotlin.ir.util.simpleFunctions
+import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
+import org.jetbrains.kotlin.ir.util.hasAnnotation
 import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
 
 internal class KotlinObjCClassInfoGenerator(override val context: Context) : ContextUtils {
@@ -70,8 +72,7 @@ internal class KotlinObjCClassInfoGenerator(override val context: Context) : Con
         objCLLvmDeclarations.bodyOffsetGlobal.setInitializer(Int32(0))
     }
 
-    private fun IrClass.generateMethodDescs(): List<ObjCMethodDesc> =
-            this.generateOverridingMethodDescs() + this.generateImpMethodDescs()
+    private fun IrClass.generateMethodDescs(): List<ObjCMethodDesc> = this.generateImpMethodDescs()
 
     private fun generateInstanceMethodDescs(
             irClass: IrClass
@@ -96,7 +97,7 @@ internal class KotlinObjCClassInfoGenerator(override val context: Context) : Con
             ?: if (irClass.annotations.hasAnnotation(exportObjCClassAnnotation))
                 irClass.name.asString()
             else if (irClass.isExported()) {
-                irClass.fqNameSafe.asString()
+                irClass.fqNameForIrSerialization.asString()
             } else {
                 null // Generate as anonymous.
             }
@@ -112,23 +113,6 @@ internal class KotlinObjCClassInfoGenerator(override val context: Context) : Con
             staticData.cStringLiteral(selector),
             staticData.cStringLiteral(encoding)
     )
-
-    private fun generateMethodDesc(info: ObjCMethodInfo) = info.imp?.let { imp ->
-        ObjCMethodDesc(
-                info.selector,
-                info.encoding,
-                context.llvm.externalFunction(
-                        imp,
-                        functionType(voidType),
-                        origin = info.bridge.llvmSymbolOrigin,
-                        independent = true
-                )
-        )
-    }
-
-    private fun IrClass.generateOverridingMethodDescs(): List<ObjCMethodDesc> =
-            this.simpleFunctions().filter { it.isReal }
-                    .mapNotNull { it.getObjCMethodInfo() }.mapNotNull { generateMethodDesc(it) }
 
     private fun IrClass.generateImpMethodDescs(): List<ObjCMethodDesc> = this.declarations
             .filterIsInstance<IrSimpleFunction>()

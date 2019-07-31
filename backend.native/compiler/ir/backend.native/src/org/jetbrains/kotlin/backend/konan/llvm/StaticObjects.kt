@@ -7,13 +7,10 @@ package org.jetbrains.kotlin.backend.konan.llvm
 
 import kotlinx.cinterop.cValuesOf
 import llvm.*
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.fqNameSafe
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.llvmSymbolOrigin
-import org.jetbrains.kotlin.descriptors.ClassDescriptor
-import org.jetbrains.kotlin.incremental.components.NoLookupLocation
+import org.jetbrains.kotlin.backend.konan.ir.fqNameForIrSerialization
+import org.jetbrains.kotlin.backend.konan.ir.llvmSymbolOrigin
 import org.jetbrains.kotlin.ir.declarations.IrClass
-import org.jetbrains.kotlin.name.FqName
-import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
 
 private fun ConstPointer.add(index: Int): ConstPointer {
     return constPointer(LLVMConstGEP(llvm, cValuesOf(Int32(index).llvm), 1)!!)
@@ -95,7 +92,7 @@ internal fun StaticData.createInitializer(type: IrClass, vararg fields: ConstVal
 internal fun StaticData.createConstArrayList(array: ConstPointer, length: Int): ConstPointer {
     val arrayListClass = context.ir.symbols.arrayList.owner
 
-    val arrayListFqName = arrayListClass.fqNameSafe
+    val arrayListFqName = arrayListClass.fqNameForIrSerialization
     val arrayListFields = mapOf(
         "$arrayListFqName.array" to array,
         "$arrayListFqName.offset" to Int32(0),
@@ -105,8 +102,8 @@ internal fun StaticData.createConstArrayList(array: ConstPointer, length: Int): 
     // Now sort these values according to the order of fields returned by getFields()
     // to match the sorting order of the real ArrayList().
     val sorted = linkedMapOf<String, ConstValue>()
-    getFields(arrayListClass).forEach {
-        val fqName = it.fqNameSafe.asString()
+    context.getLayoutBuilder(arrayListClass).fields.forEach {
+        val fqName = it.fqNameForIrSerialization.asString()
         sorted.put(fqName, arrayListFields[fqName]!!)
     }
 

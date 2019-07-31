@@ -9,16 +9,12 @@ import llvm.*
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedValueParameterDescriptor
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.fqNameSafe
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
-import org.jetbrains.kotlin.descriptors.annotations.Annotations
-import org.jetbrains.kotlin.descriptors.impl.SimpleFunctionDescriptorImpl
-import org.jetbrains.kotlin.descriptors.impl.ValueParameterDescriptorImpl
-import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
+import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrValueParameterImpl
@@ -30,18 +26,9 @@ import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.types.KotlinType
 
 internal fun KonanSymbols.getTypeConversion(actualType: IrType, expectedType: IrType): IrSimpleFunctionSymbol? =
-        getTypeConversionImpl(actualType.getInlinedClass(), expectedType.getInlinedClass())
-
-internal fun KonanSymbols.getTypeConversion(actualType: KotlinType, expectedType: KotlinType): IrSimpleFunctionSymbol? {
-    // TODO: rework all usages and remove this method.
-    val actualInlinedClass = actualType.getInlinedClass()?.let { context.ir.get(it) }
-    val expectedInlinedClass = expectedType.getInlinedClass()?.let { context.ir.get(it) }
-
-    return getTypeConversionImpl(actualInlinedClass, expectedInlinedClass)
-}
+        getTypeConversionImpl(actualType.getInlinedClassNative(), expectedType.getInlinedClassNative())
 
 private fun KonanSymbols.getTypeConversionImpl(
         actualInlinedClass: IrClass?,
@@ -53,12 +40,13 @@ private fun KonanSymbols.getTypeConversionImpl(
         actualInlinedClass == null && expectedInlinedClass == null -> null
         actualInlinedClass != null && expectedInlinedClass == null -> context.getBoxFunction(actualInlinedClass)
         actualInlinedClass == null && expectedInlinedClass != null -> context.getUnboxFunction(expectedInlinedClass)
-        else -> error("actual type is ${actualInlinedClass?.fqNameSafe}, expected ${expectedInlinedClass?.fqNameSafe}")
+        else -> error("actual type is ${actualInlinedClass?.fqNameForIrSerialization}, expected ${expectedInlinedClass?.fqNameForIrSerialization}")
     }?.symbol
 }
 
 internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.lazyMapMember { inlinedClass ->
     assert(inlinedClass.isUsedAsBoxClass())
+    assert(inlinedClass.parent is IrFile) { "Expected top level inline class" }
 
     val symbols = ir.symbols
 
@@ -77,7 +65,7 @@ internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.la
             startOffset, endOffset,
             IrDeclarationOrigin.DEFINED,
             IrSimpleFunctionSymbolImpl(descriptor),
-            Name.special("<box>"),
+            Name.special("<${inlinedClass.name}-box>"),
             Visibilities.PUBLIC,
             Modality.FINAL,
             returnType,
@@ -103,12 +91,13 @@ internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.la
             }
         })
         descriptor.bind(function)
-        function.parent = inlinedClass
+        function.parent = inlinedClass.getContainingFile()!!
     }
 }
 
 internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.lazyMapMember { inlinedClass ->
     assert(inlinedClass.isUsedAsBoxClass())
+    assert(inlinedClass.parent is IrFile) { "Expected top level inline class" }
 
     val symbols = ir.symbols
 
@@ -127,7 +116,7 @@ internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.
             startOffset, endOffset,
             IrDeclarationOrigin.DEFINED,
             IrSimpleFunctionSymbolImpl(descriptor),
-            Name.special("<unbox>"),
+            Name.special("<${inlinedClass.name}-unbox>"),
             Visibilities.PUBLIC,
             Modality.FINAL,
             returnType,
@@ -153,7 +142,7 @@ internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.
             }
         })
         descriptor.bind(function)
-        function.parent = inlinedClass
+        function.parent = inlinedClass.getContainingFile()!!
     }
 }
 

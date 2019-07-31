@@ -3,21 +3,22 @@ package org.jetbrains.kotlin.backend.konan
 import org.jetbrains.kotlin.backend.common.LoggingContext
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.phaser.*
+import org.jetbrains.kotlin.backend.common.serialization.DeserializationStrategy
 import org.jetbrains.kotlin.backend.konan.descriptors.isForwardDeclarationModule
 import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
+import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
 import org.jetbrains.kotlin.backend.konan.serialization.*
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
-import org.jetbrains.kotlin.ir.IrElement
-import org.jetbrains.kotlin.ir.declarations.IrDeclarationParent
+import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
-import org.jetbrains.kotlin.ir.util.*
-import org.jetbrains.kotlin.ir.visitors.acceptVoid
+import org.jetbrains.kotlin.ir.util.SymbolTable
+import org.jetbrains.kotlin.ir.util.patchDeclarationParents
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.psi2ir.Psi2IrConfiguration
 import org.jetbrains.kotlin.psi2ir.Psi2IrTranslator
@@ -50,25 +51,50 @@ internal val frontendPhase = konanUnitPhase(
         description = "Frontend builds AST"
 )
 
-// FIXME: a temporary workaround with JVM-inliner issue. It's unable to obtain compiled function body
-internal inline fun <reified T : IrElement> T.deepCopyWithSymbols(
-        initialParent: IrDeclarationParent? = null,
-        descriptorRemapper: DescriptorsRemapper = DescriptorsRemapper.DEFAULT
-): T {
-    val symbolRemapper = DeepCopySymbolRemapper(descriptorRemapper)
-    acceptVoid(symbolRemapper)
-    val typeRemapper = DeepCopyTypeRemapper(symbolRemapper)
-    return transform(DeepCopyIrTreeWithSymbols(symbolRemapper, typeRemapper), null).patchDeclarationParents(initialParent) as T
-}
+/**
+ * Valid from [createSymbolTablePhase] until [destroySymbolTablePhase].
+ */
+private var Context.symbolTable: SymbolTable? by Context.nullValue()
+
+internal val createSymbolTablePhase = konanUnitPhase(
+        op = {
+            this.symbolTable = SymbolTable()
+        },
+        name = "CreateSymbolTable",
+        description = "Create SymbolTable"
+)
+
+internal val objCExportPhase = konanUnitPhase(
+        op = {
+            objCExport = ObjCExport(this, symbolTable!!)
+        },
+        name = "ObjCExport",
+        description = "Objective-C header generation",
+        prerequisite = setOf(createSymbolTablePhase)
+)
+
+internal val buildCExportsPhase = konanUnitPhase(
+        op = {
+            if (this.isNativeLibrary) {
+                this.cAdapterGenerator = CAdapterGenerator(this).also {
+                    it.buildExports(this.symbolTable!!)
+                }
+            }
+        },
+        name = "BuildCExports",
+        description = "Build C exports",
+        prerequisite = setOf(createSymbolTablePhase)
+)
 
 internal val psiToIrPhase = konanUnitPhase(
         op = {
             // Translate AST to high level IR.
+
+            val symbolTable = symbolTable!!
+
             val translator = Psi2IrTranslator(config.configuration.languageVersionSettings,
                     Psi2IrConfiguration(false))
-            val generatorContext = translator.createGeneratorContext(moduleDescriptor, bindingContext)
-            @Suppress("DEPRECATION")
-            psi2IrGeneratorContext = generatorContext
+            val generatorContext = translator.createGeneratorContext(moduleDescriptor, bindingContext, symbolTable)
 
             val forwardDeclarationsModuleDescriptor = moduleDescriptor.allDependencyModules.firstOrNull { it.isForwardDeclarationModule }
 
@@ -76,7 +102,7 @@ internal val psiToIrPhase = konanUnitPhase(
                     moduleDescriptor,
                     this as LoggingContext,
                     generatorContext.irBuiltIns,
-                    generatorContext.symbolTable,
+                    symbolTable,
                     forwardDeclarationsModuleDescriptor,
                     getExportedDependencies()
             )
@@ -94,7 +120,7 @@ internal val psiToIrPhase = konanUnitPhase(
                 dependenciesCount = dependencies.size
             }
 
-            val symbols = KonanSymbols(this, generatorContext.symbolTable, generatorContext.symbolTable.lazyWrapper)
+            val symbols = KonanSymbols(this, symbolTable, symbolTable.lazyWrapper)
             val module = translator.generateModuleFragment(generatorContext, environment.getSourceFiles(), deserializer)
 
             irModule = module
@@ -104,7 +130,17 @@ internal val psiToIrPhase = konanUnitPhase(
 //        validateIrModule(this, module)
         },
         name = "Psi2Ir",
-        description = "Psi to IR conversion"
+        description = "Psi to IR conversion",
+        prerequisite = setOf(createSymbolTablePhase)
+)
+
+internal val destroySymbolTablePhase = konanUnitPhase(
+        op = {
+            this.symbolTable = null // TODO: invalidate symbolTable itself.
+        },
+        name = "DestroySymbolTable",
+        description = "Destroy SymbolTable",
+        prerequisite = setOf(createSymbolTablePhase)
 )
 
 internal val irGeneratorPluginsPhase = konanUnitPhase(
@@ -125,7 +161,7 @@ internal val irGeneratorPluginsPhase = konanUnitPhase(
 // That requires some design and implementation work.
 internal val copyDefaultValuesToActualPhase = konanUnitPhase(
         op = {
-            irModule!!.files.forEach(ExpectToActualDefaultValueCopier(this)::lower)
+            ExpectToActualDefaultValueCopier(irModule!!).process()
         },
         name = "CopyDefaultValuesToActual",
         description = "Copy default values from expect to actual declarations"
@@ -139,7 +175,7 @@ internal val patchDeclarationParents0Phase = konanUnitPhase(
 
 internal val serializerPhase = konanUnitPhase(
         op = {
-            val declarationTable = DeclarationTable(irModule!!.irBuiltins, DescriptorTable())
+            val declarationTable = KonanDeclarationTable(irModule!!.irBuiltins, DescriptorTable())
             val serializedIr = KonanIrModuleSerializer(this, declarationTable).serializedIrModule(irModule!!)
             val serializer = KonanSerializationUtil(this, config.configuration.get(CommonConfigurationKeys.METADATA_VERSION)!!, declarationTable)
             serializedLinkData =
@@ -223,11 +259,10 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
         prerequisite = emptySet(),
         dumperVerifier = EmptyDumperVerifier(),
         lower = object : CompilerPhase<Context, IrModuleFragment, IrModuleFragment> {
-            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState, context: Context, irModule: IrModuleFragment): IrModuleFragment {
-
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<IrModuleFragment>, context: Context, input: IrModuleFragment): IrModuleFragment {
                 val files = mutableListOf<IrFile>()
-                files += irModule.files
-                irModule.files.clear()
+                files += input.files
+                input.files.clear()
 
                 // TODO: KonanLibraryResolver.TopologicalLibraryOrder actually returns libraries in the reverse topological order.
                 context.librariesWithDependencies
@@ -236,10 +271,10 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
                             val libModule = context.irModules[it.libraryName]
                                     ?: return@forEach
 
-                            irModule.files += libModule.files
-                            allLoweringsPhase.invoke(phaseConfig, phaserState, context, irModule)
+                            input.files += libModule.files
+                            allLoweringsPhase.invoke(phaseConfig, phaserState, context, input)
 
-                            irModule.files.clear()
+                            input.files.clear()
                         }
 
                 // Save all files for codegen in reverse topological order.
@@ -248,13 +283,12 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
                         .forEach {
                             val libModule = context.irModules[it.libraryName]
                                     ?: return@forEach
-                            irModule.files += libModule.files
+                            input.files += libModule.files
                         }
-                irModule.files += files
+                input.files += files
 
-                return irModule
+                return input
             }
-
         })
 
 internal val bitcodePhase = namedIrModulePhase(
@@ -263,19 +297,27 @@ internal val bitcodePhase = namedIrModulePhase(
         lower = contextLLVMSetupPhase then
                 RTTIPhase then
                 generateDebugInfoHeaderPhase then
+                buildDFGPhase then
+                serializeDFGPhase then
                 deserializeDFGPhase then
                 devirtualizationPhase then
                 escapeAnalysisPhase then
                 codegenPhase then
                 finalizeDebugInfoPhase then
+                bitcodePassesPhase then
                 cStubsPhase
 )
 
-internal val toplevelPhase = namedUnitPhase(
+// Have to hide Context as type parameter in order to expose toplevelPhase outside of this module.
+val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
         name = "Compiler",
         description = "The whole compilation process",
         lower = frontendPhase then
+                createSymbolTablePhase then
+                objCExportPhase then
+                buildCExportsPhase then
                 psiToIrPhase then
+                destroySymbolTablePhase then
                 irGeneratorPluginsPhase then
                 copyDefaultValuesToActualPhase then
                 patchDeclarationParents0Phase then
@@ -287,9 +329,6 @@ internal val toplevelPhase = namedUnitPhase(
                                 allLoweringsPhase then // Lower current module first.
                                 dependenciesLowerPhase then // Then lower all libraries in topological order.
                                                             // With that we guarantee that inline functions are unlowered while being inlined.
-                                moduleIndexForCodegenPhase then
-                                buildDFGPhase then
-                                serializeDFGPhase then
                                 bitcodePhase then
                                 produceOutputPhase then
                                 verifyBitcodePhase then
@@ -302,9 +341,7 @@ internal val toplevelPhase = namedUnitPhase(
 internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
     with(config.configuration) {
         disable(compileTimeEvaluatePhase)
-        disable(buildDFGPhase)
         disable(deserializeDFGPhase)
-        disable(devirtualizationPhase)
         disable(escapeAnalysisPhase)
         disable(serializeDFGPhase)
 
@@ -314,5 +351,7 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         switch(bitcodePhase, config.produce != CompilerOutputKind.LIBRARY)
         switch(linkPhase, config.produce.isNativeBinary)
         switch(testProcessorPhase, getNotNull(KonanConfigKeys.GENERATE_TEST_RUNNER) != TestRunnerKind.NONE)
+        switch(buildDFGPhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
+        switch(devirtualizationPhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
     }
 }

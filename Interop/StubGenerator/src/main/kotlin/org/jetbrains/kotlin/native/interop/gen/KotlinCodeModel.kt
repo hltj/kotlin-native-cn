@@ -191,6 +191,7 @@ object KotlinTypes {
     val objCObjectMeta by InteropClassifier
     val objCClass by InteropClassifier
     val objCClassOf by InteropClassifier
+    val objCProtocol by InteropClassifier
 
     val cValuesRef by InteropClassifier
 
@@ -283,7 +284,7 @@ abstract class KotlinFile(
 
     override fun declare(classifier: Classifier): String {
         if (classifier.pkg != this.pkg) {
-            throw IllegalArgumentException("wrong package; expected '$pkg', got '${classifier.pkg}'")
+            throw IllegalArgumentException("wrong package for classifier ${classifier.fqName}; expected '$pkg', got '${classifier.pkg}'")
         }
 
         if (!classifier.isTopLevel) {
@@ -321,6 +322,17 @@ abstract class KotlinFile(
 
 }
 
-data class KotlinParameter(val name: String, val type: KotlinType) {
-    fun render(scope: KotlinScope) = "${name.asSimpleName()}: ${type.render(scope)}"
+data class KotlinParameter(
+        val name: String,
+        val type: KotlinType,
+        val isVararg: Boolean,
+        val annotations: List<String>
+) {
+    fun render(scope: KotlinScope) = buildString {
+        annotations.forEach { append("$it ") }
+        if (isVararg) append("vararg ")
+        append(name.asSimpleName())
+        append(": ")
+        append(type.render(scope))
+    }
 }

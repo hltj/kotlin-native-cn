@@ -144,7 +144,6 @@ internal class NSDictionaryAsKMap : Map<Any?, Any?>, ObjCObjectWrapper {
 
         override val size: Int get() = this@NSDictionaryAsKMap.size
 
-        @SymbolName("Kotlin_NSSetAsKSet_iterator")
         override fun iterator(): Iterator<Map.Entry<Any?, Any?>> = this@NSDictionaryAsKMap.EntryIterator()
 
         override fun contains(element: Map.Entry<Any?, Any?>): Boolean {
@@ -287,6 +286,7 @@ private fun Kotlin_ObjCExport_isUnchecked(exception: Throwable): Boolean =
 
 @PublishedApi
 @SymbolName("Kotlin_ObjCExport_trapOnUndeclaredException")
+@ExportForCppRuntime
 internal external fun trapOnUndeclaredException(exception: Throwable)
 
 @ExportForCppRuntime

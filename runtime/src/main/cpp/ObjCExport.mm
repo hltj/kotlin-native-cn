@@ -76,6 +76,7 @@ struct ObjCTypeAdapter {
 };
 
 typedef id (*convertReferenceToObjC)(ObjHeader* obj);
+typedef OBJ_GETTER((*convertReferenceFromObjC), id obj);
 
 struct TypeInfoObjCExportAddition {
   /*convertReferenceToObjC*/ void* convert;
@@ -108,24 +109,25 @@ inline static OBJ_GETTER(AllocInstanceWithAssociatedObject, const TypeInfo* type
   return result;
 }
 
+extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
+                            const TypeInfo* typeInfo, id associatedObject) RUNTIME_NOTHROW;
+
+extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
+                            const TypeInfo* typeInfo, id associatedObject) {
+  RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, associatedObject);
+}
+
 static Class getOrCreateClass(const TypeInfo* typeInfo);
 static void initializeClass(Class clazz);
 extern "C" ALWAYS_INLINE void Kotlin_ObjCExport_releaseAssociatedObject(void* associatedObject);
 
-static inline id AtomicSetAssociatedObject(ObjHeader* obj, id associatedObject) {
-  if (!PermanentOrFrozen(obj)) {
-    SetAssociatedObject(obj, associatedObject);
-    return associatedObject;
-  } else {
-    void* old = __sync_val_compare_and_swap(&obj->meta_object()->associatedObject_, nullptr, (void*)associatedObject);
-    if (old == nullptr) {
-      return associatedObject;
-    } else {
-      Kotlin_ObjCExport_releaseAssociatedObject((void*)associatedObject);
-      return (id)old;
-    }
-  }
+static inline id AtomicCompareAndSwapAssociatedObject(ObjHeader* obj, id expectedValue, id newValue) {
+  id* location = reinterpret_cast<id*>(&obj->meta_object()->associatedObject_);
+  return __sync_val_compare_and_swap(location, expectedValue, newValue);
 }
+
+extern "C" id objc_retainAutoreleaseReturnValue(id self);
+extern "C" id objc_autoreleaseReturnValue(id self);
 
 @interface NSObject (NSObjectPrivateMethods)
 // Implemented for NSObject in libobjc/NSObject.mm
@@ -169,24 +171,31 @@ static void initializeObjCExport();
           format:@"%s must be allocated and initialized with a factory method",
           class_getName(object_getClass(self))];
   }
-
-  AllocInstanceWithAssociatedObject(typeInfo, result, result->refHolder.slotToInit());
-
+  ObjHolder holder;
+  AllocInstanceWithAssociatedObject(typeInfo, result, holder.slot());
+  UpdateHeapRef(result->refHolder.slotToInit(), holder.obj());
   return result;
 }
 
 +(instancetype)createWrapper:(ObjHeader*)obj {
-  KotlinBase* result = [super allocWithZone:nil];
+  KotlinBase* candidate = [super allocWithZone:nil];
   // TODO: should we call NSObject.init ?
-  result->refHolder.init(obj);
-  [result autorelease];
+  candidate->refHolder.init(obj);
 
-  if (!obj->permanent()) {
-    return AtomicSetAssociatedObject(obj, result);
-  } else {
-    // TODO: permanent objects should probably be supported as custom types.
-    return result;
+  if (!obj->permanent()) { // TODO: permanent objects should probably be supported as custom types.
+    if (!obj->container()->shareable()) {
+      SetAssociatedObject(obj, candidate);
+    } else {
+      id old = AtomicCompareAndSwapAssociatedObject(obj, nullptr, candidate);
+      if (old != nullptr) {
+        candidate->refHolder.dispose();
+        [candidate releaseAsAssociatedObject];
+        return objc_retainAutoreleaseReturnValue(old);
+      }
+    }
   }
+
+  return objc_autoreleaseReturnValue(candidate);
 }
 
 -(instancetype)retain {
@@ -223,7 +232,6 @@ static void initializeObjCExport();
 }
 
 -(void)releaseAsAssociatedObject {
-  RuntimeAssert(!refHolder.ref()->permanent(), "");
   [super release];
 }
 
@@ -250,9 +258,6 @@ extern "C" id Kotlin_ObjCExport_convertUnit(ObjHeader* unitInstance) {
   return instance;
 }
 
-extern "C" id objc_retainBlock(id self);
-extern "C" id objc_retainAutoreleaseReturnValue(id self);
-
 extern "C" id Kotlin_ObjCExport_CreateNSStringFromKString(ObjHeader* str) {
   KChar* utf16Chars = CharArrayAddressOfElementAt(str->array(), 0);
   auto numBytes = str->array()->count_ * sizeof(KChar);
@@ -264,11 +269,21 @@ extern "C" id Kotlin_ObjCExport_CreateNSStringFromKString(ObjHeader* str) {
         freeWhenDone:NO] autorelease];
   } else {
     // TODO: consider making NSString subclass to avoid copying here.
-    NSString* result = [[NSString alloc] initWithBytes:utf16Chars
+    NSString* candidate = [[NSString alloc] initWithBytes:utf16Chars
       length:numBytes
       encoding:NSUTF16LittleEndianStringEncoding];
 
-    return objc_retainAutoreleaseReturnValue(AtomicSetAssociatedObject(str, result));
+    if (!str->container()->shareable()) {
+      SetAssociatedObject(str, candidate);
+    } else {
+      id old = AtomicCompareAndSwapAssociatedObject(str, nullptr, candidate);
+      if (old != nullptr) {
+        objc_release(candidate);
+        return objc_retainAutoreleaseReturnValue(old);
+      }
+    }
+
+    return objc_retainAutoreleaseReturnValue(candidate);
   }
 }
 static const ObjCTypeAdapter* findAdapterByName(
@@ -318,18 +333,21 @@ static const ObjCTypeAdapter* getTypeAdapter(const TypeInfo* typeInfo) {
   return typeInfo->writableInfo_->objCExport.typeAdapter;
 }
 
-static Protocol* getProtocolForInterface(const TypeInfo* interfaceInfo) {
+static void addProtocolForAdapter(Class clazz, const ObjCTypeAdapter* protocolAdapter) {
+  Protocol* protocol = objc_getProtocol(protocolAdapter->objCName);
+  if (protocol != nullptr) {
+    class_addProtocol(clazz, protocol);
+    class_addProtocol(object_getClass(clazz), protocol);
+  } else {
+    // TODO: construct the protocol in compiler instead, because this case can't be handled easily.
+  }
+}
+
+static void addProtocolForInterface(Class clazz, const TypeInfo* interfaceInfo) {
   const ObjCTypeAdapter* protocolAdapter = getTypeAdapter(interfaceInfo);
   if (protocolAdapter != nullptr) {
-    Protocol* protocol = objc_getProtocol(protocolAdapter->objCName);
-    if (protocol != nullptr) {
-      return protocol;
-    } else {
-      // TODO: construct the protocol in compiler instead, because this case can't be handled easily.
-    }
+    addProtocolForAdapter(clazz, protocolAdapter);
   }
-
-  return nullptr;
 }
 
 static const TypeInfo* getOrCreateTypeInfo(Class clazz);
@@ -364,11 +382,7 @@ static void initializeClass(Class clazz) {
   if (isClassForPackage) return;
 
   for (int i = 0; i < typeInfo->implementedInterfacesCount_; ++i) {
-    Protocol* protocol = getProtocolForInterface(typeInfo->implementedInterfaces_[i]);
-    if (protocol != nullptr) {
-      class_addProtocol(clazz, protocol);
-      class_addProtocol(object_getClass(clazz), protocol);
-    }
+    addProtocolForInterface(clazz, typeInfo->implementedInterfaces_[i]);
   }
 
 }
@@ -568,9 +582,9 @@ static const char* getBlockEncoding(id block) {
 }
 
 // Note: replaced by compiler in appropriate compilation modes.
-__attribute__((weak)) const TypeInfo * const * Kotlin_ObjCExport_functionAdaptersToBlock = nullptr;
+__attribute__((weak)) convertReferenceFromObjC* Kotlin_ObjCExport_blockToFunctionConverters = nullptr;
 
-static const TypeInfo* getFunctionTypeInfoForBlock(id block) {
+static OBJ_GETTER(blockToKotlinImp, id block, SEL cmd) {
   const char* encoding = getBlockEncoding(block);
 
   // TODO: optimize:
@@ -595,15 +609,7 @@ static const TypeInfo* getFunctionTypeInfoForBlock(id block) {
           format:@"Blocks with non-reference-typed return value aren't supported (%s)", returnTypeEncoding];
   }
 
-  // TODO: support Unit-as-void.
-
-  return Kotlin_ObjCExport_functionAdaptersToBlock[parameterCount];
-}
-
-static OBJ_GETTER(blockToKotlinImp, id self, SEL cmd) {
-  const TypeInfo* typeInfo = getFunctionTypeInfoForBlock(self);
-  RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, objc_retainBlock(self));
-  // TODO: call (Any) constructor?
+  RETURN_RESULT_OF(Kotlin_ObjCExport_blockToFunctionConverters[parameterCount], block);
 }
 
 static id Kotlin_ObjCExport_refToObjC_slowpath(ObjHeader* obj);
@@ -641,6 +647,12 @@ extern "C" ALWAYS_INLINE id Kotlin_Interop_refToObjC(ObjHeader* obj) {
 extern "C" ALWAYS_INLINE OBJ_GETTER(Kotlin_Interop_refFromObjC, id obj) {
   // TODO: consider removing this function.
   RETURN_RESULT_OF(Kotlin_ObjCExport_refFromObjC, obj);
+}
+
+extern "C" OBJ_GETTER(Kotlin_Interop_CreateObjCObjectHolder, id obj) {
+  RuntimeAssert(obj != nullptr, "wrapped object must not be null");
+  const TypeInfo* typeInfo = theForeignObjCObjectTypeInfo;
+  RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, objc_retain(obj));
 }
 
 extern "C" OBJ_GETTER(Kotlin_ObjCExport_refFromObjC, id obj) {
@@ -999,6 +1011,7 @@ static Class createClass(const TypeInfo* typeInfo, Class superClass) {
       const ObjCTypeAdapter* typeAdapter = getTypeAdapter(interface);
       if (typeAdapter != nullptr) {
         addVirtualAdapters(result, typeAdapter);
+        addProtocolForAdapter(result, typeAdapter);
       }
     }
   }

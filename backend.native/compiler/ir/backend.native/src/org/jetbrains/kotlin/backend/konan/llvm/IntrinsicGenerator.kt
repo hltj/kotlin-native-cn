@@ -2,15 +2,17 @@ package org.jetbrains.kotlin.backend.konan.llvm
 
 import kotlinx.cinterop.cValuesOf
 import llvm.*
-import org.jetbrains.kotlin.backend.konan.descriptors.TypedIntrinsic
+import org.jetbrains.kotlin.backend.konan.RuntimeNames
 import org.jetbrains.kotlin.backend.konan.descriptors.isTypedIntrinsic
 import org.jetbrains.kotlin.backend.konan.llvm.objc.genObjCSelector
 import org.jetbrains.kotlin.backend.konan.reportCompilationError
 import org.jetbrains.kotlin.ir.IrElement
-import org.jetbrains.kotlin.ir.declarations.IrConstructor
+import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.types.getClass
+import org.jetbrains.kotlin.ir.util.dump
+import org.jetbrains.kotlin.ir.util.isSuspend
 import org.jetbrains.kotlin.name.Name
 
 internal enum class IntrinsicType {
@@ -50,7 +52,7 @@ internal enum class IntrinsicType {
     OBJC_GET_MESSENGER,
     OBJC_GET_MESSENGER_STRET,
     OBJC_GET_OBJC_CLASS,
-    OBJC_GET_RECEIVER_OR_SUPER,
+    OBJC_CREATE_SUPER_STRUCT,
     OBJC_INIT_BY,
     OBJC_GET_SELECTOR,
     // Other
@@ -64,6 +66,7 @@ internal enum class IntrinsicType {
     // Coroutines
     GET_CONTINUATION,
     RETURN_IF_SUSPEND,
+    COROUTINE_LAUNCHPAD,
     // Interop
     INTEROP_READ_BITS,
     INTEROP_WRITE_BITS,
@@ -98,7 +101,7 @@ internal interface IntrinsicGeneratorEnvironment {
 
     fun calculateLifetime(element: IrElement): Lifetime
 
-    fun evaluateCall(function: IrFunction, args: List<LLVMValueRef>, resultLifetime: Lifetime): LLVMValueRef
+    fun evaluateCall(function: IrFunction, args: List<LLVMValueRef>, resultLifetime: Lifetime, superClass: IrClass? = null): LLVMValueRef
 
     fun evaluateExplicitArgs(expression: IrMemberAccessExpression): List<LLVMValueRef>
 
@@ -110,7 +113,7 @@ internal fun tryGetIntrinsicType(callSite: IrFunctionAccessExpression): Intrinsi
 
 private fun getIntrinsicType(callSite: IrFunctionAccessExpression): IntrinsicType {
     val function = callSite.symbol.owner
-    val annotation = function.descriptor.annotations.findAnnotation(TypedIntrinsic)!!
+    val annotation = function.descriptor.annotations.findAnnotation(RuntimeNames.typedIntrinsicAnnotation)!!
     val value = annotation.allValueArguments.getValue(Name.identifier("kind")).value as String
     return IntrinsicType.valueOf(value)
 }
@@ -143,8 +146,8 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
             }
             IntrinsicType.OBJC_INIT_BY -> {
                 val receiver = environment.evaluateExpression(callSite.extensionReceiver!!)
-                val irConstructorCall = callSite.getValueArgument(0) as IrCall
-                val constructorDescriptor = irConstructorCall.symbol.owner as IrConstructor
+                val irConstructorCall = callSite.getValueArgument(0) as IrConstructorCall
+                val constructorDescriptor = irConstructorCall.symbol.owner
                 val constructorArgs = environment.evaluateExplicitArgs(irConstructorCall)
                 val args = listOf(receiver) + constructorArgs
                 environment.evaluateCall(constructorDescriptor, args, Lifetime.IRRELEVANT)
@@ -155,15 +158,25 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
                 environment.functionGenerationContext.genObjCSelector(selector)
             }
             IntrinsicType.INIT_INSTANCE -> {
-                val callee = callSite as IrCall
-                val initializer = callee.getValueArgument(1) as IrCall
-                val thiz = environment.evaluateExpression(callee.getValueArgument(0)!!)
+                val initializer = callSite.getValueArgument(1) as IrConstructorCall
+                val thiz = environment.evaluateExpression(callSite.getValueArgument(0)!!)
                 environment.evaluateCall(
                         initializer.symbol.owner,
                         listOf(thiz) + environment.evaluateExplicitArgs(initializer),
                         environment.calculateLifetime(initializer)
                 )
                 codegen.theUnitInstanceRef.llvm
+            }
+            IntrinsicType.COROUTINE_LAUNCHPAD -> {
+                val suspendFunctionCall = callSite.getValueArgument(0) as IrCall
+                val continuation = environment.evaluateExpression(callSite.getValueArgument(1)!!)
+                val suspendFunction = suspendFunctionCall.symbol.owner
+                assert(suspendFunction.isSuspend) { "Call to a suspend function expected but was ${suspendFunction.dump()}" }
+                environment.evaluateCall(suspendFunction,
+                        environment.evaluateExplicitArgs(suspendFunctionCall) + listOf(continuation),
+                        environment.calculateLifetime(suspendFunctionCall),
+                        suspendFunction.parent as? IrClass // Call non-virtually.
+                )
             }
             else -> null
         }
@@ -210,7 +223,7 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
                 IntrinsicType.OBJC_GET_MESSENGER -> emitObjCGetMessenger(args, isStret = false)
                 IntrinsicType.OBJC_GET_MESSENGER_STRET -> emitObjCGetMessenger(args, isStret = true)
                 IntrinsicType.OBJC_GET_OBJC_CLASS -> emitGetObjCClass(callSite)
-                IntrinsicType.OBJC_GET_RECEIVER_OR_SUPER -> emitGetReceiverOrSuper(args)
+                IntrinsicType.OBJC_CREATE_SUPER_STRUCT -> emitObjCCreateSuperStruct(args)
                 IntrinsicType.GET_CLASS_TYPE_INFO -> emitGetClassTypeInfo(callSite)
                 IntrinsicType.INTEROP_READ_BITS -> emitReadBits(args)
                 IntrinsicType.INTEROP_WRITE_BITS -> emitWriteBits(args)
@@ -238,6 +251,7 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
                     reportNonLoweredIntrinsic(intrinsicType)
                 IntrinsicType.INIT_INSTANCE,
                 IntrinsicType.OBJC_INIT_BY,
+                IntrinsicType.COROUTINE_LAUNCHPAD,
                 IntrinsicType.OBJC_GET_SELECTOR,
                 IntrinsicType.IMMUTABLE_BLOB ->
                     reportSpecialIntrinsic(intrinsicType)
@@ -418,20 +432,16 @@ internal class IntrinsicGenerator(private val environment: IntrinsicGeneratorEnv
         }
     }
 
-    private fun FunctionGenerationContext.emitGetReceiverOrSuper(args: List<LLVMValueRef>): LLVMValueRef {
+    private fun FunctionGenerationContext.emitObjCCreateSuperStruct(args: List<LLVMValueRef>): LLVMValueRef {
         assert(args.size == 2)
         val receiver = args[0]
         val superClass = args[1]
 
-        val superClassIsNull = icmpEq(superClass, kNullInt8Ptr)
-
-        return ifThenElse(superClassIsNull, receiver) {
-            val structType = structType(kInt8Ptr, kInt8Ptr)
-            val ptr = alloca(structType)
-            store(receiver, LLVMBuildGEP(builder, ptr, cValuesOf(kImmZero, kImmZero), 2, "")!!)
-            store(superClass, LLVMBuildGEP(builder, ptr, cValuesOf(kImmZero, kImmOne), 2, "")!!)
-            bitcast(int8TypePtr, ptr)
-        }
+        val structType = structType(kInt8Ptr, kInt8Ptr)
+        val ptr = alloca(structType)
+        store(receiver, LLVMBuildGEP(builder, ptr, cValuesOf(kImmZero, kImmZero), 2, "")!!)
+        store(superClass, LLVMBuildGEP(builder, ptr, cValuesOf(kImmZero, kImmOne), 2, "")!!)
+        return bitcast(int8TypePtr, ptr)
     }
 
     // TODO: Find better place for these guys.

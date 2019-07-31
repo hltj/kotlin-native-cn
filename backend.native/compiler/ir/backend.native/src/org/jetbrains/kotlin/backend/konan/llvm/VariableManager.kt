@@ -24,7 +24,7 @@ internal class VariableManager(val functionGenerationContext: FunctionGeneration
 
     inner class SlotRecord(val address: LLVMValueRef, val refSlot: Boolean, val isVar: Boolean) : Record {
         override fun load() : LLVMValueRef = functionGenerationContext.loadSlot(address, isVar)
-        override fun store(value: LLVMValueRef) = functionGenerationContext.storeAny(value, address)
+        override fun store(value: LLVMValueRef) = functionGenerationContext.storeAny(value, address, true)
         override fun address() : LLVMValueRef = this.address
         override fun toString() = (if (refSlot) "refslot" else "slot") + " for ${address}"
     }
@@ -48,6 +48,7 @@ internal class VariableManager(val functionGenerationContext: FunctionGeneration
 
     // Clears inner state of variable manager.
     fun clear() {
+        skipSlots = 0
         variables.clear()
         contextVariablesToIndex.clear()
     }
@@ -72,23 +73,24 @@ internal class VariableManager(val functionGenerationContext: FunctionGeneration
         val type = functionGenerationContext.getLLVMType(valueDeclaration.type)
         val slot = functionGenerationContext.alloca(type, valueDeclaration.name.asString(), variableLocation)
         if (value != null)
-            functionGenerationContext.storeAny(value, slot)
+            functionGenerationContext.storeAny(value, slot, true)
         variables.add(SlotRecord(slot, functionGenerationContext.isObjectType(type), isVar))
         contextVariablesToIndex[valueDeclaration] = index
         return index
     }
 
-    internal var skip = 0
+    internal var skipSlots = 0
     internal fun createParameter(valueDeclaration: IrValueDeclaration, variableLocation: VariableDebugLocation?) : Int {
         assert(!contextVariablesToIndex.contains(valueDeclaration))
         val index = variables.size
         val type = functionGenerationContext.getLLVMType(valueDeclaration.type)
-        val slot = functionGenerationContext.alloca(type, "p-${valueDeclaration.name.asString()}", variableLocation)
+        val slot = functionGenerationContext.alloca(
+                type, "p-${valueDeclaration.name.asString()}", variableLocation)
         val isObject = functionGenerationContext.isObjectType(type)
         variables.add(ParameterRecord(slot, isObject))
         contextVariablesToIndex[valueDeclaration] = index
         if (isObject)
-            skip++
+            skipSlots++
         return index
     }
 
@@ -103,7 +105,7 @@ internal class VariableManager(val functionGenerationContext: FunctionGeneration
         val index = variables.size
         val slot = functionGenerationContext.alloca(type, variableLocation = null)
         if (value != null)
-            functionGenerationContext.storeAny(value, slot)
+            functionGenerationContext.storeAny(value, slot, true)
         variables.add(SlotRecord(slot, functionGenerationContext.isObjectType(type), true))
         return index
     }

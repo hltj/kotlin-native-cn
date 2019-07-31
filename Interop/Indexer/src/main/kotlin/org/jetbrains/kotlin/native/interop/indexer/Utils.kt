@@ -82,15 +82,28 @@ internal fun parseTranslationUnit(
 ): CXTranslationUnit {
 
     memScoped {
-        val result = clang_parseTranslationUnit(
+        val resultVar = alloc<CXTranslationUnitVar>()
+
+        val errorCode = clang_parseTranslationUnit2(
                 index,
                 sourceFile.absolutePath,
                 compilerArgs.toNativeStringArray(memScope), compilerArgs.size,
                 null, 0,
-                options
-        )!!
+                options,
+                resultVar.ptr
+        )
 
-        return result
+        if (errorCode != CXErrorCode.CXError_Success) {
+            val copiedSourceFile = sourceFile.copyTo(createTempFile(suffix = sourceFile.name), overwrite = true)
+
+            error("""
+                clang_parseTranslationUnit2 failed with $errorCode;
+                sourceFile = ${copiedSourceFile.absolutePath}
+                arguments = ${compilerArgs.joinToString(" ")}
+                """.trimIndent())
+        }
+
+        return resultVar.value!!
     }
 }
 
@@ -228,30 +241,46 @@ internal fun Compilation.createTempSource(): File {
     return result
 }
 
+fun Compilation.copy(
+        includes: List<String> = this.includes,
+        additionalPreambleLines: List<String> = this.additionalPreambleLines,
+        compilerArgs: List<String> = this.compilerArgs,
+        language: Language = this.language
+): Compilation = CompilationImpl(
+        includes = includes,
+        additionalPreambleLines = additionalPreambleLines,
+        compilerArgs = compilerArgs,
+        language = language
+)
+
+data class CompilationImpl(
+        override val includes: List<String>,
+        override val additionalPreambleLines: List<String>,
+        override val compilerArgs: List<String>,
+        override val language: Language
+) : Compilation
+
 /**
  * Precompiles the headers of this library.
  *
  * @return the library which includes the precompiled header instead of original ones.
  */
-internal fun NativeLibrary.precompileHeaders(): NativeLibrary {
-    val precompiledHeader = createTempFile(suffix = ".pch").apply { this.deleteOnExit() }
-
-    withIndex { index ->
-        val options = CXTranslationUnit_ForSerialization
-        val translationUnit = this.parse(index, options)
-        try {
-            translationUnit.ensureNoCompileErrors()
-            clang_saveTranslationUnit(translationUnit, precompiledHeader.absolutePath, 0)
-        } finally {
-            clang_disposeTranslationUnit(translationUnit)
-        }
+fun Compilation.precompileHeaders(): CompilationWithPCH = withIndex { index ->
+    val options = CXTranslationUnit_ForSerialization
+    val translationUnit = this.parse(index, options)
+    try {
+        translationUnit.ensureNoCompileErrors()
+        withPrecompiledHeader(translationUnit)
+    } finally {
+        clang_disposeTranslationUnit(translationUnit)
     }
+}
 
-    return this.copy(
-            includes = emptyList(),
-            additionalPreambleLines = emptyList(),
-            compilerArgs = this.compilerArgs + listOf("-include-pch", precompiledHeader.absolutePath)
-    )
+internal fun Compilation.withPrecompiledHeader(translationUnit: CXTranslationUnit): CompilationWithPCH {
+    val precompiledHeader = createTempFile(suffix = ".pch").apply { this.deleteOnExit() }
+    clang_saveTranslationUnit(translationUnit, precompiledHeader.absolutePath, 0)
+
+    return CompilationWithPCH(this.compilerArgs, precompiledHeader.absolutePath, this.language)
 }
 
 internal fun NativeLibrary.includesDeclaration(cursor: CValue<CXCursor>): Boolean {
@@ -262,7 +291,7 @@ internal fun NativeLibrary.includesDeclaration(cursor: CValue<CXCursor>): Boolea
     }
 }
 
-private fun CXTranslationUnit.getErrorLineNumbers(): Sequence<Int> =
+internal fun CXTranslationUnit.getErrorLineNumbers(): Sequence<Int> =
         getDiagnostics().filter {
             it.isError()
         }.map {
@@ -276,10 +305,9 @@ private fun CXTranslationUnit.getErrorLineNumbers(): Sequence<Int> =
 /**
  * For each list of lines, checks if the code fragment composed from these lines is compilable against given library.
  */
-fun List<List<String>>.mapFragmentIsCompilable(originalLibrary: NativeLibrary): List<Boolean> {
-    val library = originalLibrary
+fun List<List<String>>.mapFragmentIsCompilable(originalLibrary: CompilationWithPCH): List<Boolean> {
+    val library: CompilationWithPCH = originalLibrary
             .copy(compilerArgs = originalLibrary.compilerArgs + "-ferror-limit=0")
-            .precompileHeaders()
 
     val indicesOfNonCompilable = mutableSetOf<Int>()
 
@@ -415,34 +443,36 @@ internal class ModulesMap(
         val translationUnit: CXTranslationUnit
 ) : Closeable {
 
+    private val modularCompilation: ModularCompilation
     private val index: CXIndex
     private val translationUnitWithModules: CXTranslationUnit
 
-    init {
-        index = clang_createIndex(0, 0)!!
-        try {
-            translationUnitWithModules = object : Compilation by compilation {
-                override val compilerArgs = compilation.compilerArgs + "-fmodules"
-            }.parse(index)
+    private val arena = Arena()
 
-            try {
-                translationUnitWithModules.ensureNoCompileErrors()
-            } catch (e: Throwable) {
-                clang_disposeTranslationUnit(translationUnitWithModules)
-                throw e
-            }
-
-        } catch (e: Throwable) {
-            clang_disposeIndex(index)
-            throw e
-        }
+    private inline fun <T> T.toBeDisposedWith(crossinline block: (T) -> Unit): T = apply {
+        arena.defer { block(this) }
     }
 
     override fun close() {
+        arena.clear()
+    }
+
+    init {
         try {
-            clang_disposeTranslationUnit(translationUnitWithModules)
-        } finally {
-            clang_disposeIndex(index)
+            modularCompilation = ModularCompilation(compilation)
+                    .toBeDisposedWith { it.dispose() }
+
+            index = clang_createIndex(0, 0)!!
+                    .toBeDisposedWith { clang_disposeIndex(it) }
+
+            translationUnitWithModules = modularCompilation.parse(index)
+                    .toBeDisposedWith { clang_disposeTranslationUnit(it) }
+
+            translationUnitWithModules.ensureNoCompileErrors()
+
+        } catch (e: Throwable) {
+            this.close()
+            throw e
         }
     }
 
@@ -712,4 +742,14 @@ tailrec fun Type.unwrapTypedefs(): Type = if (this is Typedef) {
 fun Type.canonicalIsPointerToChar(): Boolean {
     val unwrappedType = this.unwrapTypedefs()
     return unwrappedType is PointerType && unwrappedType.pointeeType.unwrapTypedefs() == CharType
+}
+
+internal interface Disposable {
+    fun dispose()
+}
+
+internal inline fun <T : Disposable, R> T.use(block: (T) -> R): R = try {
+    block(this)
+} finally {
+    this.dispose()
 }

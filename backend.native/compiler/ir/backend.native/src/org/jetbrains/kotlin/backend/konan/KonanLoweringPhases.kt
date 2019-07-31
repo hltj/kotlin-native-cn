@@ -3,7 +3,6 @@ package org.jetbrains.kotlin.backend.konan
 import org.jetbrains.kotlin.backend.common.*
 import org.jetbrains.kotlin.backend.common.lower.*
 import org.jetbrains.kotlin.backend.common.phaser.*
-import org.jetbrains.kotlin.backend.konan.ir.ModuleIndex
 import org.jetbrains.kotlin.backend.konan.lower.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectDeclarationsRemoving
 import org.jetbrains.kotlin.backend.konan.lower.FinallyBlocksLowering
@@ -36,7 +35,7 @@ internal fun makeKonanFileOpPhase(
 ) = namedIrFilePhase(
         name, description, prerequisite, nlevels = 0,
         lower = object : SameTypeCompilerPhase<Context, IrFile> {
-            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState, context: Context, input: IrFile): IrFile {
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<IrFile>, context: Context, input: IrFile): IrFile {
                 op(context, input)
                 return input
             }
@@ -51,7 +50,7 @@ internal fun makeKonanModuleOpPhase(
 ) = namedIrModulePhase(
         name, description, prerequisite, nlevels = 0,
         lower = object : SameTypeCompilerPhase<Context, IrModuleFragment> {
-            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState, context: Context, input: IrModuleFragment): IrModuleFragment {
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<IrModuleFragment>, context: Context, input: IrModuleFragment): IrModuleFragment {
                 op(context, input)
                 return input
             }
@@ -72,7 +71,7 @@ internal val lowerBeforeInlinePhase = makeKonanModuleLoweringPhase(
 
 internal val inlinePhase = namedIrModulePhase(
         lower = object : SameTypeCompilerPhase<Context, IrModuleFragment> {
-            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState, context: Context, input: IrModuleFragment): IrModuleFragment {
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<IrModuleFragment>, context: Context, input: IrModuleFragment): IrModuleFragment {
                 FunctionInlining(context).inline(input)
                 return input
             }
@@ -118,12 +117,6 @@ internal val validateIrModulePhase = makeKonanModuleOpPhase(
         description = "Validate generated module"
 )
 
-internal val moduleIndexForCodegenPhase = makeKonanModuleOpPhase(
-        { context, irModule -> context.ir.moduleIndexForCodegen = ModuleIndex(irModule) },
-        name = "ModuleIndexForCodeGen",
-        description = "Generate module index for codegen"
-)
-
 /* IrFile phases */
 
 internal val lateinitPhase = makeKonanFileLoweringPhase(
@@ -162,7 +155,8 @@ internal val sharedVariablesPhase = makeKonanFileLoweringPhase(
 internal val localFunctionsPhase = makeKonanFileOpPhase(
         op = { context, irFile ->
             LocalDelegatedPropertiesLowering().lower(irFile)
-            LocalDeclarationsLowering(context).runOnFilePostfix(irFile)
+            LocalDeclarationsLowering(context).lower(irFile)
+            LocalClassPopupLowering(context).lower(irFile)
         },
         name = "LocalFunctions",
         description = "Local function lowering",
@@ -267,7 +261,7 @@ internal val compileTimeEvaluatePhase = makeKonanFileLoweringPhase(
 )
 
 internal val coroutinesPhase = makeKonanFileLoweringPhase(
-        ::SuspendFunctionsLowering,
+        ::NativeSuspendFunctionsLowering,
         name = "Coroutines",
         description = "Coroutines lowering",
         prerequisite = setOf(localFunctionsPhase, finallyBlocksPhase)

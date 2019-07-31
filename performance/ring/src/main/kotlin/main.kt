@@ -20,7 +20,7 @@ import octoTest
 import org.jetbrains.benchmarksLauncher.*
 import org.jetbrains.kliopt.*
 
-class RingLauncher(numWarmIterations: Int, numberOfAttempts: Int, prefix: String): Launcher(numWarmIterations, numberOfAttempts, prefix) {
+class RingLauncher(numWarmIterations: Int, numberOfAttempts: Int, prefix: String) : Launcher(numWarmIterations, numberOfAttempts, prefix) {
     val abstractMethodBenchmark = AbstractMethodBenchmark()
     val classArrayBenchmark = ClassArrayBenchmark()
     val classBaselineBenchmark = ClassBaselineBenchmark()
@@ -45,6 +45,9 @@ class RingLauncher(numWarmIterations: Int, numberOfAttempts: Int, prefix: String
     val stringBenchmark = StringBenchmark()
     val switchBenchmark = SwitchBenchmark()
     val withIndiciesBenchmark = WithIndiciesBenchmark()
+    val callsBenchmark = CallsBenchmark()
+    val coordinatesSolverBenchmark = CoordinatesSolverBenchmark()
+    val graphSolverBenchmark = GraphSolverBenchmark()
 
     override val benchmarks = BenchmarksCollection(
             mutableMapOf(
@@ -215,13 +218,25 @@ class RingLauncher(numWarmIterations: Int, numberOfAttempts: Int, prefix: String
                     "Switch.testSealedWhenSwitch" to switchBenchmark::testSealedWhenSwitch,
                     "WithIndicies.withIndicies" to withIndiciesBenchmark::withIndicies,
                     "WithIndicies.withIndiciesManual" to withIndiciesBenchmark::withIndiciesManual,
-                    "OctoTest" to ::octoTest
+                    "OctoTest" to ::octoTest,
+                    "Calls.finalMethod" to callsBenchmark::finalMethodCall,
+                    "Calls.openMethodMonomorphic" to callsBenchmark::classOpenMethodCall_MonomorphicCallsite,
+                    "Calls.openMethodBimorphic" to callsBenchmark::classOpenMethodCall_BimorphicCallsite,
+                    "Calls.openMethodTrimorphic" to callsBenchmark::classOpenMethodCall_TrimorphicCallsite,
+                    "Calls.interfaceMethodMonomorphic" to callsBenchmark::interfaceMethodCall_MonomorphicCallsite,
+                    "Calls.interfaceMethodBimorphic" to callsBenchmark::interfaceMethodCall_BimorphicCallsite,
+                    "Calls.interfaceMethodTrimorphic" to callsBenchmark::interfaceMethodCall_TrimorphicCallsite,
+                    "Calls.returnBoxUnboxFolding" to callsBenchmark::returnBoxUnboxFolding,
+                    "Calls.parameterBoxUnboxFolding" to callsBenchmark::parameterBoxUnboxFolding,
+                    "CoordinatesSolver.solve" to coordinatesSolverBenchmark::solve,
+                    "GraphSolver.solve" to graphSolverBenchmark::solve
             )
     )
 }
 
 fun main(args: Array<String>) {
     BenchmarksRunner.runBenchmarks(args, { parser: ArgParser ->
-        RingLauncher(parser.get<Int>("warmup")!!, parser.get<Int>("repeat")!!, parser.get<String>("prefix")!!).launch(parser.getAll<String>("filter"))
+        RingLauncher(parser.get<Int>("warmup")!!, parser.get<Int>("repeat")!!, parser.get<String>("prefix")!!)
+                .launch(parser.getAll<String>("filter"), parser.getAll<String>("filterRegex"))
     })
 }

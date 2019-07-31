@@ -25,6 +25,8 @@ import org.gradle.process.CommandLineArgumentProvider
 import org.jetbrains.kotlin.gradle.plugin.konan.*
 import org.jetbrains.kotlin.gradle.plugin.model.KonanModelArtifact
 import org.jetbrains.kotlin.gradle.plugin.model.KonanModelArtifactImpl
+import org.jetbrains.kotlin.konan.CURRENT
+import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.library.defaultResolver
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.konan.target.Distribution
@@ -120,8 +122,9 @@ abstract class KonanCompileTask: KonanBuildingTask(), KonanCompileSpec {
 
         addFileArgs("-native-library", nativeLibraries)
         addArg("-produce", produce.name.toLowerCase())
-
-        addListArg("-linker-options", linkerOpts)
+        linkerOpts.forEach {
+            addArg("-linker-option", it)
+        }
 
         addArgIfNotNull("-target", konanTarget.visibleName)
         addArgIfNotNull("-language-version", languageVersion)
@@ -232,9 +235,9 @@ abstract class KonanCompileTask: KonanBuildingTask(), KonanCompileSpec {
     override fun toModelArtifact(): KonanModelArtifact {
         val repos = libraries.repos
         val resolver = defaultResolver(
-                repos.map { it.absolutePath },
-                konanTarget,
-                Distribution(konanHomeOverride = project.konanHome)
+            repos.map { it.absolutePath },
+            konanTarget,
+            Distribution(konanHomeOverride = project.konanHome)
         )
 
         return KonanModelArtifactImpl(
@@ -266,7 +269,7 @@ open class KonanCompileProgramTask: KonanCompileTask() {
     // Create tasks to run supported executables.
     override fun init(config: KonanBuildingConfig<*>, destinationDir: File, artifactName: String, target: KonanTarget) {
         super.init(config, destinationDir, artifactName, target)
-        if (!isCrossCompile) {
+        if (!isCrossCompile && !project.hasProperty("konanNoRun")) {
             runTask = project.tasks.create("run${artifactName.capitalize()}", Exec::class.java).apply {
                 group = "run"
                 dependsOn(this@KonanCompileProgramTask)

@@ -92,7 +92,7 @@ void Kotlin_Array_set(KRef thiz, KInt index, KConstRef value) {
     ThrowArrayIndexOutOfBoundsException();
   }
   mutabilityCheck(thiz);
-  UpdateRef(ArrayAddressOfElementAt(array, index), value);
+  UpdateHeapRef(ArrayAddressOfElementAt(array, index), value);
 }
 
 KInt Kotlin_Array_getArrayLength(KConstRef thiz) {
@@ -107,7 +107,7 @@ void Kotlin_Array_fillImpl(KRef thiz, KInt fromIndex, KInt toIndex, KRef value) 
   }
   mutabilityCheck(thiz);
   for (KInt index = fromIndex; index < toIndex; ++index) {
-    UpdateRef(ArrayAddressOfElementAt(array, index), value);
+    UpdateHeapRef(ArrayAddressOfElementAt(array, index), value);
   }
 }
 
@@ -123,12 +123,12 @@ void Kotlin_Array_copyImpl(KConstRef thiz, KInt fromIndex,
   mutabilityCheck(destination);
   if (fromIndex >= toIndex) {
     for (int index = 0; index < count; index++) {
-      UpdateRef(ArrayAddressOfElementAt(destinationArray, toIndex + index),
+      UpdateHeapRef(ArrayAddressOfElementAt(destinationArray, toIndex + index),
                       *ArrayAddressOfElementAt(array, fromIndex + index));
     }
   } else {
     for (int index = count - 1; index >= 0; index--) {
-      UpdateRef(ArrayAddressOfElementAt(destinationArray, toIndex + index),
+      UpdateHeapRef(ArrayAddressOfElementAt(destinationArray, toIndex + index),
                       *ArrayAddressOfElementAt(array, fromIndex + index));
     }
   }
@@ -443,8 +443,7 @@ OBJ_GETTER(Kotlin_CharArray_copyOf, KConstRef thiz, KInt newSize) {
   if (newSize < 0) {
     ThrowIllegalArgumentException();
   }
-  ArrayHeader* result = AllocArrayInstance(
-      array->type_info(), newSize, OBJ_RESULT)->array();
+  ArrayHeader* result = AllocArrayInstance(array->type_info(), newSize, OBJ_RESULT)->array();
   KInt toCopy = array->count_ < newSize ?  array->count_ : newSize;
   memcpy(
       PrimitiveArrayAddressOfElementAt<KChar>(result, 0),
@@ -606,8 +605,7 @@ OBJ_GETTER(Kotlin_ImmutableBlob_toByteArray, KConstRef thiz, KInt startIndex, KI
       ThrowArrayIndexOutOfBoundsException();
   }
   KInt count = endIndex - startIndex;
-  ArrayHeader* result = AllocArrayInstance(
-      theByteArrayTypeInfo, count, OBJ_RESULT)->array();
+  ArrayHeader* result = AllocArrayInstance(theByteArrayTypeInfo, count, OBJ_RESULT)->array();
   memcpy(PrimitiveArrayAddressOfElementAt<KByte>(result, 0),
          PrimitiveArrayAddressOfElementAt<KByte>(array, startIndex),
          count);

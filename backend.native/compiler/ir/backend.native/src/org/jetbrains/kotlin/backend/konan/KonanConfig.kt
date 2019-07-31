@@ -9,22 +9,22 @@ import com.intellij.openapi.project.Project
 import org.jetbrains.kotlin.cli.common.CLIConfigurationKeys
 import org.jetbrains.kotlin.cli.common.config.kotlinSourceRoots
 import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
-import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity.STRONG_WARNING
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity.*
+import org.jetbrains.kotlin.cli.common.messages.GroupingMessageCollector
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.descriptors.ModuleDescriptor
-import org.jetbrains.kotlin.konan.TempFiles
+import org.jetbrains.kotlin.konan.*
 import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.library.KonanLibrary
 import org.jetbrains.kotlin.konan.library.defaultResolver
 import org.jetbrains.kotlin.konan.library.libraryResolver
 import org.jetbrains.kotlin.konan.properties.loadProperties
 import org.jetbrains.kotlin.konan.target.*
-import org.jetbrains.kotlin.konan.KonanAbiVersion
-import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.library.resolver.TopologicalLibraryOrder
 import org.jetbrains.kotlin.konan.library.toUnresolvedLibraries
-import org.jetbrains.kotlin.konan.parseKonanVersion
+import org.jetbrains.kotlin.konan.util.Logger
+import kotlin.system.exitProcess
 
 class KonanConfig(val project: Project, val configuration: CompilerConfiguration) {
 
@@ -36,6 +36,7 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
     internal val platformManager = PlatformManager(distribution)
     internal val targetManager = platformManager.targetManager(configuration.get(KonanConfigKeys.TARGET))
     internal val target = targetManager.target
+    internal val phaseConfig = configuration.get(CLIConfigurationKeys.PHASE_CONFIG)!!
 
     val linkOnly: Boolean =
             configuration.kotlinSourceRoots.isEmpty() && libraryNames.isNotEmpty() && produce.isNativeBinary
@@ -81,7 +82,18 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
     private val unresolvedLibraries = libraryNames.toUnresolvedLibraries
 
     private val repositories = configuration.getList(KonanConfigKeys.REPOSITORIES)
-    private fun resolverLogger(msg: String) = configuration.report(STRONG_WARNING, msg)
+    private val resolverLogger =
+        object : Logger {
+            private val collector = configuration.getNotNull(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY)
+            override fun warning(message: String)= collector.report(STRONG_WARNING, message)
+            override fun error(message: String) = collector.report(ERROR, message)
+            override fun log(message: String) = collector.report(LOGGING, message)
+            override fun fatal(message: String): Nothing {
+                collector.report(ERROR, message)
+                (collector as? GroupingMessageCollector)?.flush()
+                exitProcess(1)
+            }
+        }
 
     private val compatibleCompilerVersions: List<KonanVersion> =
         configuration.getList(KonanConfigKeys.COMPATIBLE_COMPILER_VERSIONS).map { it.parseKonanVersion() }
@@ -91,8 +103,8 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
         libraryNames.filter { it.contains(File.separator) },
         target,
         distribution,
-        ::resolverLogger,
-        compatibleCompilerVersions = compatibleCompilerVersions 
+        compatibleCompilerVersions + KonanVersion.CURRENT,
+        resolverLogger
     ).libraryResolver()
 
     internal val resolvedLibraries by lazy {

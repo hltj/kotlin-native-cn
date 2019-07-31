@@ -9,19 +9,18 @@ import com.intellij.openapi.Disposable
 import org.jetbrains.annotations.NotNull
 import org.jetbrains.annotations.Nullable
 import org.jetbrains.kotlin.backend.konan.*
-import org.jetbrains.kotlin.cli.common.CLICompiler
-import org.jetbrains.kotlin.cli.common.CLITool
-import org.jetbrains.kotlin.cli.common.CommonCompilerPerformanceManager
-import org.jetbrains.kotlin.cli.common.ExitCode
+import org.jetbrains.kotlin.cli.common.*
 import org.jetbrains.kotlin.cli.common.config.addKotlinSourceRoot
 import org.jetbrains.kotlin.cli.common.config.kotlinSourceRoots
 import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity.*
+import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.cli.jvm.compiler.EnvironmentConfigFiles
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
 import org.jetbrains.kotlin.cli.jvm.plugins.PluginCliParser
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.Services
+import org.jetbrains.kotlin.konan.CURRENT
 import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
@@ -56,6 +55,8 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
         val environment = KotlinCoreEnvironment.createForProduction(rootDisposable,
             configuration, EnvironmentConfigFiles.NATIVE_CONFIG_FILES)
         val project = environment.project
+        val messageCollector = configuration.get(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY) ?: MessageCollector.NONE
+        configuration.put(CLIConfigurationKeys.PHASE_CONFIG, createPhaseConfig(toplevelPhase, arguments, messageCollector))
         val konanConfig = KonanConfig(project, configuration)
 
         val enoughArguments = arguments.freeArgs.isNotEmpty() || arguments.isUsefulWithoutFreeArgs
@@ -120,8 +121,8 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(NOMAIN, arguments.nomain)
                 put(LIBRARY_FILES,
                         arguments.libraries.toNonNullList())
-
-                put(LINKER_ARGS, arguments.linkerArguments.toNonNullList())
+                put(LINKER_ARGS, arguments.linkerArguments.toNonNullList() +
+                        arguments.singleLinkerArguments.toNonNullList())
                 arguments.moduleName ?. let{ put(MODULE_NAME, it) }
                 arguments.target ?.let{ put(TARGET, it) }
 
@@ -180,6 +181,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 when {
                     arguments.generateWorkerTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.WORKER)
                     arguments.generateTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.MAIN_THREAD)
+                    arguments.generateNoExitTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.MAIN_THREAD_NO_EXIT)
                     else -> put(GENERATE_TEST_RUNNER, TestRunnerKind.NONE)
                 }
                 // We need to download dependencies only if we use them ( = there are files to compile).
@@ -192,9 +194,11 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                     put(FRIEND_MODULES, arguments.friendModules!!.split(File.pathSeparator).filterNot(String::isEmpty))
 
                 put(EXPORTED_LIBRARIES, selectExportedLibraries(configuration, arguments, outputKind))
+                put(FRAMEWORK_IMPORT_HEADERS, arguments.frameworkImportHeaders.toNonNullList())
 
                 put(BITCODE_EMBEDDING_MODE, selectBitcodeEmbeddingMode(this, arguments, outputKind))
                 put(DEBUG_INFO_VERSION, arguments.debugInfoFormatVersion.toInt())
+                put(OBJC_GENERICS, arguments.objcGenerics)
             }
         }
     }
@@ -208,13 +212,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
     companion object {
         @JvmStatic fun main(args: Array<String>) {
             profile("Total compiler main()") {
-                val options = args.flatMap {
-                    if (it.startsWith('@')) {
-                        File(it.substring(1)).readStrings()
-                    }
-                    else listOf(it)
-                }
-                CLITool.doMain(K2Native(), options.toTypedArray())
+                CLITool.doMain(K2Native(), args)
             }
         }
     }
@@ -283,8 +281,10 @@ private fun selectExportedLibraries(
 ): List<String> {
     val exportedLibraries = arguments.exportedLibraries?.toList().orEmpty()
 
-    return if (exportedLibraries.isNotEmpty() && outputKind != CompilerOutputKind.FRAMEWORK) {
-        configuration.report(STRONG_WARNING, "-Xexport-library is only supported when producing frameworks, " +
+    return if (exportedLibraries.isNotEmpty() && outputKind != CompilerOutputKind.FRAMEWORK &&
+            outputKind != CompilerOutputKind.STATIC && outputKind != CompilerOutputKind.DYNAMIC) {
+        configuration.report(STRONG_WARNING,
+                "-Xexport-library is only supported when producing frameworks or native libraries, " +
                 "but the compiler is producing ${outputKind.name.toLowerCase()}")
 
         emptyList()

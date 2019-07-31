@@ -5,6 +5,7 @@
 
 import groovy.json.JsonOutput
 import org.jetbrains.kotlin.*
+import org.jetbrains.kotlin.konan.target.Family
 import org.jetbrains.kotlin.konan.target.KonanTarget
 
 import java.nio.file.Paths
@@ -48,7 +49,7 @@ repositories {
 
 dependencies {
     cli_bc project(path: ':backend.native', configuration: 'cli_bc')
-    update_tests (group: 'org',  name: 'Kotlin_1330_CompilerAllPlugins', version: testKotlinVersion) {
+    update_tests (group: 'org',  name: 'Kotlin_1340_Compiler', version: testKotlinVersion) {
         artifact {
             name = 'internal/kotlin-test-data'
             type = 'zip'
@@ -177,31 +178,29 @@ task sanity {
     dependsOn(tasksOf { it instanceof RunStdlibTest })
 }
 
-// Collect results in one json.
+// Collect reports in one json.
 task resultsTask() {
     doLast {
-        Map<String, Map<String, TestResult>> results = [:]
+        List<KonanTestGroupReport> reports = []
         def statistics = new Statistics()
         tasks.withType(RunExternalTestGroup).matching { it.state.executed }.each {
-            results.put(it.name, it.results)
-            statistics.add(it.statistics)
+            reports += new KonanTestGroupReport(it.name, it.testGroupReporter.suiteReports)
+            statistics.add(it.testGroupReporter.statistics)
         }
         
         tasks.withType(RunStdlibTest).matching {it.state.executed }.each {
             statistics.add(it.statistics)
         }
 
-        def output = ["statistics": statistics, "tests": results]
-        def json = JsonOutput.toJson(output)
-        def reportFile = new File(testOutputExternal, "results.json")
-        testOutputExternal.mkdirs()
-        reportFile.write(JsonOutput.prettyPrint(json))
-        println("DONE.\n\n" +
-                "TOTAL: $statistics.total\n" +
-                "PASSED: $statistics.passed\n" +
-                "FAILED: $statistics.failed\n" +
-                "ERROR: $statistics.error\n" +
-                "SKIPPED: $statistics.skipped")
+        ExternalReportUtilsKt.saveReport("$testOutputExternal/reports.json", statistics, reports)
+        use(KonanTestSuiteReportKt) {
+            project.logger.quiet("DONE.\n\n" +
+                    "TOTAL: $statistics.total\n" +
+                    "PASSED: $statistics.passed\n" +
+                    "FAILED: $statistics.failed\n" +
+                    "ERROR: $statistics.error\n" +
+                    "SKIPPED: $statistics.skipped")
+        }
     }
 }
 
@@ -270,6 +269,18 @@ task daily() {
 
 task slackReport(type:Reporter) {
     reportHome = rootProject.file("test.output").absoluteFile
+}
+
+task slackReportNightly(type:NightlyReporter) {
+    externalMacosReport = "external_macos_results/reports.json"
+    externalLinuxReport = "external_linux_results/reports.json"
+    externalWindowsReport = "external_windows_results/reports.json"
+}
+
+task localDelegatedPropertyLink(type: LinkKonanTest) {
+    goldValue = "OK\n"
+    source = "lower/local_delegated_property_link/main.kt"
+    lib = "lower/local_delegated_property_link/lib.kt"
 }
 
 task sum (type:RunKonanTest) {
@@ -569,12 +580,24 @@ task unchecked_cast3(type: RunKonanTest) {
     source = "codegen/basics/unchecked_cast3.kt"
 }
 
+task unchecked_cast4(type: RunKonanTest) {
+    expectedFail = (project.testTarget == 'wasm32') // Uses exceptions.
+    goldValue = "Ok\n"
+    source = "codegen/basics/unchecked_cast4.kt"
+}
+
 task null_check(type: RunKonanTest) {
     source = "codegen/basics/null_check.kt"
 }
 
 task array_to_any(type: RunKonanTest) {
     source = "codegen/basics/array_to_any.kt"
+}
+
+task runtime_basic_init(type: RunStandaloneKonanTest) {
+    source = "runtime/basic/init.kt"
+    flags = ['-g']
+    expectedExitStatus = 0
 }
 
 task runtime_basic_exit(type: RunStandaloneKonanTest) {
@@ -757,7 +780,7 @@ task worker9(type: RunKonanTest) {
 
 task worker10(type: RunKonanTest) {
     disabled = (project.testTarget == 'wasm32') // Workers need pthreads.
-    goldValue = "OK\n"
+    goldValue = "OK\ntrue\ntrue\n"
     source = "runtime/workers/worker10.kt"
 }
 
@@ -1303,12 +1326,6 @@ task delegatedProperty_map(type: RunKonanTest) {
     source = "codegen/delegatedProperty/map.kt"
 }
 
-task delegatedProperty_localLinkTest(type: LinkKonanTest) {
-    goldValue = goldValue = "x\n42\n"
-    source = "codegen/delegatedProperty/localUse.kt"
-    lib = "codegen/delegatedProperty/localLib.kt"
-}
-
 task propertyCallableReference_valClass(type: RunKonanTest) {
     goldValue = "42\n117\n"
     source = "codegen/propertyCallableReference/valClass.kt"
@@ -1598,6 +1615,12 @@ task array2(type: RunKonanTest) {
 task array3(type: RunKonanTest) {
     goldValue = "1 2 3 7 8 9 -128 -1 \n1 2 3 7 8 9 -128 -1 \n"
     source = "runtime/collections/array3.kt"
+}
+
+task array4(type: RunKonanTest) {
+    disabled = (project.testTarget == 'wasm32') // Uses exceptions.
+    goldValue = "OK\n"
+    source = "runtime/collections/array4.kt"
 }
 
 task typed_array0(type: RunKonanTest) {
@@ -2060,7 +2083,7 @@ task extend_exception(type: RunKonanTest) {
 }
 
 task check_stacktrace_format(type: RunStandaloneKonanTest) {
-    disabled = !isAppleTarget(project)
+    disabled = true // !isAppleTarget(project)
     flags = ['-g']
     source = "runtime/exceptions/check_stacktrace_format.kt"
 }
@@ -2225,6 +2248,21 @@ task range0(type: RunKonanTest) {
 task args0(type: RunStandaloneKonanTest) {
     arguments = ["AAA", "BB", "C"]
     goldValue = "AAA\nBB\nC\n"
+    source = "runtime/basic/args0.kt"
+}
+
+task devirtualization_lateinitInterface(type: RunStandaloneKonanTest) {
+    goldValue = "42\n"
+    source = "codegen/devirtualization/lateinitInterface.kt"
+}
+
+task multiargs(type: RunStandaloneKonanTest) {
+    arguments = ["AAA", "BB", "C"]
+    multiRuns = true
+    multiArguments = [["1", "2", "3"], ["---"], ["Hello", "world"]]
+    goldValue = "AAA\nBB\nC\n1\n2\n3\n" +
+            "AAA\nBB\nC\n---\n" +
+            "AAA\nBB\nC\nHello\nworld\n"
     source = "runtime/basic/args0.kt"
 }
 
@@ -2860,6 +2898,107 @@ task testing_library_usage(type: RunStandaloneKonanTest) {
     arguments = ['--ktest_logger=SILENT']
 }
 
+class Filter {
+    List<String> positive
+    List<String> negative
+    List<String> expectedTests
+
+    Filter(List<String> positive, List<String> negative, List<String> expectedTests) {
+        this.positive = positive
+        this.negative = negative
+        this.expectedTests = expectedTests
+    }
+
+    List<String> args() {
+        List<String> result = []
+        if (positive != null && !positive.isEmpty()) {
+            result += "--ktest_gradle_filter=${asListOfPatterns(positive)}"
+        }
+        if (negative != null && !negative.isEmpty()) {
+            result += "--ktest_negative_gradle_filter=${asListOfPatterns(negative)}"
+        }
+        return result
+    }
+
+    static private String asListOfPatterns(List<String> input) {
+        return input.collect { "kotlin.test.tests.$it" }.join(",")
+    }
+}
+
+task testing_filters(type: RunStandaloneKonanTest) {
+    source = "testing/filters.kt"
+    flags = ['-tr', '-ea']
+    def filters = [
+        new Filter(["A.foo1", "B", "FiltersKt.foo1"], [], ["A.foo1", "B.foo1", "B.foo2", "B.bar", "FiltersKt.foo1"]),
+        new Filter([], ["A.foo1", "B", "FiltersKt.foo1"], ["A.foo2", "A.bar", "FiltersKt.foo2", "FiltersKt.bar"]),
+        new Filter(["A", "FiltersKt"], ["A.foo1", "FiltersKt.foo1"], ["A.foo2", "A.bar", "FiltersKt.foo2", "FiltersKt.bar"]),
+        new Filter(["A.foo*", "B.*"], [], ["A.foo1", "A.foo2", "B.foo1", "B.foo2", "B.bar"]),
+        new Filter([], ["A.foo*", "B.*"], ["A.bar", "FiltersKt.foo1", "FiltersKt.foo2", "FiltersKt.bar"]),
+        new Filter(["*.foo*"], ["B"], ["A.foo1", "A.foo2", "FiltersKt.foo1", "FiltersKt.foo2"]),
+        new Filter(["A"], ["*.foo*"], ["A.bar"])
+    ]
+    multiRuns = true
+    multiArguments = filters.collect { it.args() + '--ktest_logger=SIMPLE' }
+    outputChecker = { String output ->
+        // The first chunk is empty - drop it.
+        def outputs = output.split("Starting testing\n").drop(1)
+        if (outputs.size() != filters.size()) {
+            println("Incorrect number of test runs. Expected: ${filters.size()}, actual: ${outputs.size()}")
+            return false
+        }
+
+        // Check the correct set of tests was executed in each run.
+        for (int i = 0; i < outputs.size(); i++) {
+            def actualMessages = outputs[i].split('\n').findAll { it.startsWith("Passed: ") }
+            def expectedMessages = filters[i].expectedTests.collect { String test ->
+                def method = test.substring(test.lastIndexOf('.') + 1)
+                def suite = test.substring(0, test.lastIndexOf('.'))
+                "Passed: $method (kotlin.test.tests.$suite)".toString()
+            }
+
+            if (actualMessages.size() != expectedMessages.size()) {
+                println("Incorrect number of tests executed for filters[$i]. Expected: ${expectedMessages.size()}. Actual: ${actualMessages.size()}")
+                return false
+            }
+
+            for (message in expectedMessages) {
+                if (!actualMessages.contains(message)) {
+                    println("Test run output for filters[$i] doesn't contain the expected message '$message'")
+                    return false
+                }
+            }
+        }
+        return true
+    }
+}
+
+// Check that stacktraces and ignored suite are correctly reported in the TC logger.
+task testing_stacktrace(type: RunStandaloneKonanTest) {
+    source = "testing/stacktrace.kt"
+    flags = ['-tr', '-ea']
+    arguments = ["--ktest_logger=TEAMCITY", "--ktest_no_exit_code"]
+    expectedFail = (project.testTarget == 'wasm32') // Uses exceptions.
+    // This test prints TeamCity service messages about failed test causing false negative failure at CI.
+    // So we need to suppress printing these messages to stdout.
+    printOutput = false
+    outputChecker = { String output ->
+        def ignoredOutput = """\
+            |##teamcity[testSuiteStarted name='kotlin.test.tests.Ignored' locationHint='ktest:suite://kotlin.test.tests.Ignored']
+            |##teamcity[testIgnored name='foo']
+            |##teamcity[testSuiteFinished name='kotlin.test.tests.Ignored']""".stripMargin()
+        def failedOutput = """\
+            |##teamcity[testSuiteStarted name='kotlin.test.tests.Failed' locationHint='ktest:suite://kotlin.test.tests.Failed']
+            |##teamcity[testStarted name='bar' locationHint='ktest:test://kotlin.test.tests.Failed.bar']
+            |##teamcity[testFailed name='bar' message='Bar' details='kotlin.Exception: Bar|n""".stripMargin()
+
+        def shownInnerException = output.readLines()
+                .find { it.startsWith("##teamcity[testFailed name='bar'") }
+                ?.contains("Caused by: kotlin.Exception: Baz") ?: false
+
+        return output.contains(ignoredOutput) && output.contains(failedOutput) && shownInnerException
+    }
+}
+
 // Just check that the driver is able to produce runnable binaries.
 task driver0(type: RunDriverKonanTest) {
     goldValue = "Hello, world!\n"
@@ -2877,6 +3016,27 @@ task inline_defaultArgs_linkTest(type: LinkKonanTest) {
     goldValue = "122\n47\n"
     source = "codegen/inline/defaultArgs_linkTest_main.kt"
     lib = "codegen/inline/defaultArgs_linkTest_lib.kt"
+}
+
+def generateWithSpaceDefFile() {
+    def mapOption = "--Map \"${buildDir}/cutom map.map\""
+    if (isAppleTarget(project)) {
+        mapOption = "-map \"${buildDir}/cutom map.map\""
+    } else if (isWindowsTarget(project)) {
+        mapOption = "\"-Wl,--Map,${buildDir}/cutom map.map\""
+    }
+
+    def file = new File("${buildDir}/withSpaces.def")
+    file.write """
+headers = stdio.h "${projectDir}/interop/basics/custom headers/custom.h"
+linkerOpts = $mapOption
+---
+
+int customCompare(const char* str1, const char* str2) {
+    return custom_strcmp(str1, str2);
+}
+"""
+    return file.absolutePath
 }
 
 kotlinNativeInterop {
@@ -3035,6 +3195,31 @@ task interop_callbacksAndVarargs(type: RunInteropKonanTest) {
     interop = 'ccallbacksAndVarargs'
 }
 
+// TODO: merge with new tests infrastructure.
+// Now after clean without calling dist task get error 'Classpath of the tool is empty: cinterop'
+/*task interop_withSpaces() {
+    if (project.testTarget != 'wasm32') {
+        if (!project.ext.useCustomDist) {
+            dependsOn ':dist'
+        }
+        dependsOn 'build'
+        konanArtifacts {
+            interop('withSpacesInterop') {
+                defFile generateWithSpaceDefFile()
+            }
+            program("withSpaces") {
+                srcDir "interop/basics/withSpaces.kt"
+                libraries {
+                    artifact 'withSpacesInterop'
+                }
+            }
+        }
+        doLast {
+            assert file("${buildDir}/cutom map.map").exists()
+        }
+    }
+}*/
+
 task interop_echo_server(type: RunInteropKonanTest) {
     disabled = isWasmTarget(project) || isWindowsTarget(project)
     run = false
@@ -3051,13 +3236,14 @@ task interop_opengl_teapot(type: RunStandaloneKonanTest) {
 
 task interop_objc_smoke(type: RunInteropKonanTest) {
     disabled = !isAppleTarget(project)
-    goldValue = "84\nFoo\nHello, World!\nKotlin says: Hello, everybody!\nHello from Kotlin\n2, 1\n" +
+    goldValue = "84\nFoo\nDeallocated\n" +
+            "Hello, World!\nKotlin says: Hello, everybody!\nHello from Kotlin\n2, 1\n" +
             "true\ntrue\n" +
             "Global string\nAnother global string\nnull\nglobal object\n" +
             "5\n" +
             "String macro\n" +
             "CFString macro\n" +
-            "Deallocated\nDeallocated\nDeallocated\n"
+            "Deallocated\nDeallocated\n"
 
     if (isAppleTarget(project)) {
         source = "interop/objc/smoke.kt"
@@ -3111,18 +3297,20 @@ task produce_dynamic(type: DynamicKonanTest) {
     cSource = "$projectDir/produce_dynamic/simple/main.c"
     goldValue = "Hello, dynamic!\n" +
                 "Base.foo\n" +
-                "Base.fooParam: a 1\n" +
-                "Child.fooParam: b 2\n" +
-                "Child.fooParam: c 3\n" +
+                "Base.fooParam: a 1 q\n" +
+                "Child.fooParam: b 2 null\n" +
+                "Child.fooParam: c 3 null\n" +
                 "Impl1.I: d 4 Impl1\n" +
                 "Impl2.I: e 5 Impl2\n" +
-                "String is Kotlin/Native\n" +
+                "String is Kotlin/Native nullable is Hi null is OK\n" +
                 "RO property is 42\n" +
                 "RW property is 239\n" +
                 "enum100 = 100\n" +
                 "object = 42\n" +
                 "singleton = I am single\n" +
-                "topLevel = 777 3\n"
+                "mutable = foo\n" +
+                "topLevel = 777 3\n" +
+                "Error handler: kotlin.Error: Expected error\n"
 }
 
 task library_mismatch(type: RunStandaloneKonanTest) {
@@ -3178,6 +3366,24 @@ if (isAppleTarget(project)) {
         swiftSources = ['framework/values/values.swift']
     }
 
+    task testValuesGenericsFramework(type: FrameworkTest) {
+        frameworkName = 'ValuesGenerics'
+        konanArtifacts {
+            framework(frameworkName, targets: [ target ]) {
+                srcDir 'framework/values'
+                srcDir 'framework/values_generics'
+                baseDir "$testOutputFramework/$frameworkName"
+
+                if (!useCustomDist) {
+                    dependsOn ":${target}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                }
+
+                extraOpts "-Xembed-bitcode-marker", "-Xobjc-generics"
+            }
+        }
+        swiftSources = ['framework/values_generics/values.swift']
+    }
+
     task testStdlibFramework(type: FrameworkTest) {
         frameworkName = 'Stdlib'
         fullBitcode = true
@@ -3212,12 +3418,76 @@ task runKonanRegexTests(type: RunKonanTest) {
     runnerLogger = RunKonanTest.Logger.GTEST
 }
 
+task coverage_basic_program(type: RunStandaloneKonanTest) {
+
+    disabled = true
+
+    description = "Test that `-Xcoverage` generates correct __llvm_coverage information"
+
+    def dir = buildDir.absolutePath
+    createOutputDirectory()
+    
+    flags = ["-Xcoverage-file=$dir/program.profraw", "-Xcoverage", "-entry", "coverage.basic.program.main"]
+    source = "$projectDir/coverage/basic/program/main.kt"
+
+    doLast {
+        execLlvm("llvm-profdata") {
+            args "merge"
+            args "$dir/program.profraw"
+            args "-o", "$dir/program.profdata"
+        }
+        // Should fail in case of corrupted __llvm_coverage.
+        execLlvm("llvm-cov") {
+            def program = buildExePath()
+            def suffix = target.family.exeSuffix
+            args "report"
+            args "$program.$suffix"
+            args "-instr-profile", "$dir/program.profdata"
+        }
+    }
+}
+
+task coverage_basic_library(type: RunStandaloneKonanTest) {
+
+    disabled = true
+
+    description = "Test that `-Xlibrary-to-cover` generates correct __llvm_coverage information"
+
+    def dir = buildDir.absolutePath
+    createOutputDirectory()
+
+    doFirst {
+        def konancScript = isWindows() ? "konanc.bat" : "konanc"
+        def konanc = "$dist/bin/$konancScript"
+        "$konanc $projectDir/coverage/basic/library/library.kt -p library -o $dir/lib_to_cover".execute().waitFor()
+    }
+    
+    flags = ["-Xcoverage-file=$dir/program.profraw", "-l", "$dir/lib_to_cover", "-Xlibrary-to-cover=$dir/lib_to_cover.klib", "-entry", "coverage.basic.library.main"]
+    source = "$projectDir/coverage/basic/library/main.kt"
+
+    doLast {
+        execLlvm("llvm-profdata") {
+            args "merge"
+            args "$dir/program.profraw"
+            args "-o", "$dir/program.profdata"
+        }
+        // Should fail in case of corrupted __llvm_coverage.
+        execLlvm("llvm-cov") {
+            def program = buildExePath()
+            def suffix = target.family.exeSuffix
+            args "report"
+            args "$program.$suffix"
+            args "-instr-profile", "$dir/program.profdata"
+        }
+    }
+}
+
 task buildKonanStdlibTests(type: BuildKonanTest) {
     outputSourceSetName = "testOutputStdlib"
-    flags = [ "-Xmulti-platform", "-friend-modules",  project.rootProject.file("${project.properties['konan.home']}/klib/common/stdlib") ]
+    flags = [ "-Xmulti-platform", '-Xuse-experimental=kotlin.ExperimentalStdlibApi', "-friend-modules",  project.rootProject.file("${project.properties['konan.home']}/klib/common/stdlib") ]
     def testSources = externalStdlibTestsDir.absolutePath
     compileList = [ "$testSources/stdlib/test", "$testSources/stdlib/common",
-                    "stdlib_external/utils.kt", "stdlib_external/jsCollectionFactoriesActuals.kt" ]
+                    "stdlib_external/utils.kt", "stdlib_external/text/StringEncodingTestNative.kt", "stdlib_external/jsCollectionFactoriesActuals.kt" ]
     excludeList = [ "$testSources/stdlib/test/internalAnnotations.kt" ]
 }
 

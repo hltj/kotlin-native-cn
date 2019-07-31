@@ -11,7 +11,7 @@
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.6/umd/popper.min.js">
     </script>
-    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.2.1/js/bootstrap.min.js">
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js">
     </script>
 </head>
 <body>
@@ -68,13 +68,17 @@
                 </div>
                 <input id="highligted_build" type="text" class="form-control" placeholder="" aria-label="build" aria-describedby="basic-addon1">
             </div>
+            <button type="button" class="btn btn-primary" style="font-size:25px; font-weight:bold" id="plusBtn">+</button>
+            <button type="button" class="btn btn-primary" style="font-size:25px; font-weight:bold" id="minusBtn">-</button>
+            <button type="button" class="btn btn-primary" style="font-size:25px; font-weight:bold" id="prevBtn"><-</button>
+            <button type="button" class="btn btn-primary" style="font-size:25px; font-weight:bold" id="nextBtn">-></button>
         </div>
     </div>
 </div>
 <div class="container-fluid">
     <div class="row">
         <div class="col">
-            <h4>Execution time</h4>
+            <h4>Normalized execution time</h4>
             <div id="exec_chart" class="chart"></div>
         </div>
     </div>
@@ -88,7 +92,7 @@
     <p style="margin-top: 40px">
     <div class="row">
         <div class="col">
-            <h4>Code size</h4>
+            <h4>Normalized code size</h4>
             <div id="codesize_chart" class="chart"></div>
         </div>
     </div>

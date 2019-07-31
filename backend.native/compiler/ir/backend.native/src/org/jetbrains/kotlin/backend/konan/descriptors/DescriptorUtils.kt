@@ -5,12 +5,17 @@
 
 package org.jetbrains.kotlin.backend.konan.descriptors
 
-import org.jetbrains.kotlin.backend.common.ir.ir2stringWhole
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
-import org.jetbrains.kotlin.backend.konan.isInlined
+import org.jetbrains.kotlin.backend.konan.ir.*
+import org.jetbrains.kotlin.backend.konan.isInlinedNative
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.ir.symbols.IrFunctionSymbol
+import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.types.isUnit
+import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
+import org.jetbrains.kotlin.ir.util.isReal
+import org.jetbrains.kotlin.ir.util.isSuspend
+import org.jetbrains.kotlin.ir.util.overrides
 import org.jetbrains.kotlin.types.SimpleType
 
 /**
@@ -93,29 +98,26 @@ internal val arrayTypes = setOf(
 
 
 internal val IrClass.isArray: Boolean
-    get() = this.fqNameSafe.asString() in arrayTypes
+    get() = this.fqNameForIrSerialization.asString() in arrayTypes
 
-
-internal val IrClass.isInterface: Boolean
-    get() = (this.kind == ClassKind.INTERFACE)
 
 fun IrClass.isAbstract() = this.modality == Modality.SEALED || this.modality == Modality.ABSTRACT
 
 internal fun IrFunction.hasValueTypeAt(index: Int): Boolean {
     when (index) {
-        0 -> return !isSuspend && returnType.let { (it.isInlined() || it.isUnit()) }
-        1 -> return dispatchReceiverParameter.let { it != null && it.type.isInlined() }
-        2 -> return extensionReceiverParameter.let { it != null && it.type.isInlined() }
-        else -> return this.valueParameters[index - 3].type.isInlined()
+        0 -> return !isSuspend && returnType.let { (it.isInlinedNative() || it.isUnit()) }
+        1 -> return dispatchReceiverParameter.let { it != null && it.type.isInlinedNative() }
+        2 -> return extensionReceiverParameter.let { it != null && it.type.isInlinedNative() }
+        else -> return this.valueParameters[index - 3].type.isInlinedNative()
     }
 }
 
 internal fun IrFunction.hasReferenceAt(index: Int): Boolean {
     when (index) {
-        0 -> return isSuspend || returnType.let { !it.isInlined() && !it.isUnit() }
-        1 -> return dispatchReceiverParameter.let { it != null && !it.type.isInlined() }
-        2 -> return extensionReceiverParameter.let { it != null && !it.type.isInlined() }
-        else -> return !this.valueParameters[index - 3].type.isInlined()
+        0 -> return isSuspend || returnType.let { !it.isInlinedNative() && !it.isUnit() }
+        1 -> return dispatchReceiverParameter.let { it != null && !it.type.isInlinedNative() }
+        2 -> return extensionReceiverParameter.let { it != null && !it.type.isInlinedNative() }
+        else -> return !this.valueParameters[index - 3].type.isInlinedNative()
     }
 }
 
@@ -219,7 +221,7 @@ internal tailrec fun IrDeclaration.findPackage(): IrPackageFragment {
             ?: (parent as IrDeclaration).findPackage()
 }
 
-fun IrFunction.isComparisonFunction(map: Map<SimpleType, IrSimpleFunction>): Boolean =
+fun IrFunctionSymbol.isComparisonFunction(map: Map<SimpleType, IrSimpleFunctionSymbol>): Boolean =
         this in map.values
 
 val IrDeclaration.isPropertyAccessor get() =

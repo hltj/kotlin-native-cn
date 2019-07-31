@@ -6,11 +6,20 @@
 package org.jetbrains.kotlin.backend.konan.objcexport
 
 import org.jetbrains.kotlin.backend.common.descriptors.allParameters
+import org.jetbrains.kotlin.backend.konan.ir.allParameters
 import org.jetbrains.kotlin.descriptors.FunctionDescriptor
 import org.jetbrains.kotlin.descriptors.ParameterDescriptor
+import org.jetbrains.kotlin.ir.declarations.IrFunction
+import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 
 internal sealed class TypeBridge
 internal object ReferenceBridge : TypeBridge()
+
+internal data class BlockPointerBridge(
+        val numberOfParameters: Int,
+        val returnsVoid: Boolean
+) : TypeBridge()
+
 internal data class ValueTypeBridge(val objCValueType: ObjCValueType) : TypeBridge()
 
 internal sealed class MethodBridgeParameter
@@ -85,9 +94,9 @@ internal fun MethodBridge.valueParametersAssociated(
 }
 
 internal fun MethodBridge.parametersAssociated(
-        descriptor: FunctionDescriptor
-): List<Pair<MethodBridgeParameter, ParameterDescriptor?>> {
-    val kotlinParameters = descriptor.allParameters.iterator()
+        irFunction: IrFunction
+): List<Pair<MethodBridgeParameter, IrValueParameter?>> {
+    val kotlinParameters = irFunction.allParameters.iterator()
 
     return this.paramBridges.map {
         when (it) {
