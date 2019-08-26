@@ -35,7 +35,7 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value="-include-binary", deprecatedName = "-includeBinary", shortName = "-ib", valueDescription = "<path>", description = "Pack external binary within the klib")
     var includeBinaries: Array<String>? = null
 
-    @Argument(value = "-library", shortName = "-l", valueDescription = "<path>", description = "Link with the library")
+    @Argument(value = "-library", shortName = "-l", valueDescription = "<path>", description = "Link with the library", delimiter = "")
     var libraries: Array<String>? = null
 
     @Argument(value = "-library-version", shortName = "-lv", valueDescription = "<version>", description = "Set library version")
@@ -53,7 +53,8 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value="-module-name", deprecatedName = "-module_name", valueDescription = "<name>", description = "Specify a name for the compilation module")
     var moduleName: String? = null
 
-    @Argument(value = "-native-library", deprecatedName = "-nativelibrary", shortName = "-nl", valueDescription = "<path>", description = "Include the native bitcode library")
+    @Argument(value = "-native-library", deprecatedName = "-nativelibrary", shortName = "-nl",
+            valueDescription = "<path>", description = "Include the native bitcode library", delimiter = "")
     var nativeLibraries: Array<String>? = null
 
     @Argument(value = "-nodefaultlibs", description = "Don't link the libraries from dist/klib automatically")
@@ -120,7 +121,8 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
             value = "-Xexport-library",
             valueDescription = "<path>",
             description = "Path to the library to be included into produced framework API\n" +
-                    "Must be the path of a library passed with '-library'"
+                    "Must be the path of a library passed with '-library'",
+            delimiter = ""
     )
     var exportedLibraries: Array<String>? = null
 
@@ -161,11 +163,8 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = "-Xverify-bitcode", deprecatedName = "--verify_bitcode", description = "Verify llvm bitcode after each method")
     var verifyBitCode: Boolean = false
 
-    @Argument(value = "-Xverify-descriptors", deprecatedName = "--verify_descriptors", description = "Verify descriptor tree")
-    var verifyDescriptors: Boolean = false
-
-    @Argument(value = "-Xverify-ir", deprecatedName = "--verify_ir", description = "Verify IR")
-    var verifyIr: Boolean = false
+    @Argument(value = "-Xverify-compiler", description = "Verify compiler")
+    var verifyCompiler: String? = null
 
     @Argument(
             value = "-friend-modules",
@@ -176,9 +175,6 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
 
     @Argument(value = "-Xdebug-info-version", description = "generate debug info of given version (1, 2)")
     var debugInfoFormatVersion: String = "1" /* command line parser doesn't accept kotlin.Int type */
-
-    @Argument(value = "-Xobjc-generics", description = "Enable experimental generics support for framework header")
-    var objcGenerics: Boolean = false
 
     @Argument(value = "-Xobjc-generics", description = "Enable experimental generics support for framework header")
     var objcGenerics: Boolean = false

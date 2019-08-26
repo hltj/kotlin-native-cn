@@ -5,13 +5,17 @@
 
 @file:JvmName("MPPTools")
 
+package org.jetbrains.kotlin
+
 import groovy.lang.Closure
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.tasks.TaskState
 import org.gradle.api.execution.TaskExecutionListener
+import org.gradle.api.tasks.AbstractExecTask
 import org.jetbrains.kotlin.gradle.plugin.KotlinTargetPreset
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import org.jetbrains.kotlin.gradle.tasks.KotlinNativeLink
 import org.jetbrains.report.*
 import org.jetbrains.report.json.*
 import java.nio.file.Paths
@@ -26,16 +30,6 @@ import java.util.Base64
 /*
  * This file includes short-cuts that may potentially be implemented in Kotlin MPP Gradle plugin in the future.
  */
-
-// Short-cuts for detecting the host OS.
-@get:JvmName("isMacos")
-val isMacos by lazy { hostOs == "Mac OS X" }
-
-@get:JvmName("isWindows")
-val isWindows by lazy { hostOs.startsWith("Windows") }
-
-@get:JvmName("isLinux")
-val isLinux by lazy { hostOs == "Linux" }
 
 // Short-cuts for mostly used paths.
 @get:JvmName("mingwPath")
@@ -57,9 +51,9 @@ fun defaultHostPreset(
         throw Exception("Preset whitelist must not be empty in Kotlin/Native ${subproject.displayName}.")
 
     val presetCandidate = when {
-        isMacos -> subproject.kotlin.presets.macosX64
-        isLinux -> subproject.kotlin.presets.linuxX64
-        isWindows -> subproject.kotlin.presets.mingwX64
+        PlatformInfo.isMac() -> subproject.kotlin.presets.macosX64
+        PlatformInfo.isLinux() -> subproject.kotlin.presets.linuxX64
+        PlatformInfo.isWindows() -> subproject.kotlin.presets.mingwX64
         else -> null
     }
 
@@ -70,14 +64,11 @@ fun defaultHostPreset(
 }
 
 fun getNativeProgramExtension(): String = when {
-    isMacos -> ".kexe"
-    isLinux -> ".kexe"
-    isWindows -> ".exe"
+    PlatformInfo.isMac() -> ".kexe"
+    PlatformInfo.isLinux() -> ".kexe"
+    PlatformInfo.isWindows() -> ".exe"
     else -> error("Unknown host")
 }
-
-fun getKotlinNativeExecutable(target: KotlinNativeTarget, buildType: String) =
-        target.binaries.getExecutable("benchmark", buildType).outputFile.getAbsolutePath()
 
 fun getFileSize(filePath: String): Long? {
     val file = File(filePath)
@@ -161,10 +152,19 @@ fun sendUploadRequest(url: String, fileName: String, username: String? = null, p
 fun createRunTask(
         subproject: Project,
         name: String,
-        target: KotlinNativeTarget,
+        linkTask: KotlinNativeLink,
+        outputFileName: String
+): Task {
+    return subproject.tasks.create(name, RunKotlinNativeTask::class.java, linkTask, outputFileName)
+}
+
+@JvmOverloads
+fun createBenchmarksRunTask(
+        subproject: Project,
+        name: String,
         configureClosure: Closure<Any>? = null
 ): Task {
-    val task = subproject.tasks.create(name, RunKotlinNativeTask::class.java, target)
+    val task = subproject.tasks.create(name, RunBenchmarksExecutableTask::class.java)
     task.configure(configureClosure ?: task.emptyConfigureClosure())
     return task
 }
@@ -174,7 +174,7 @@ fun getJvmCompileTime(programName: String): BenchmarkResult =
 
 @JvmOverloads
 fun getNativeCompileTime(programName: String,
-                         tasks: List<String> = listOf("compileKotlinNative", "linkBenchmarkReleaseExecutableNative")): BenchmarkResult =
+                         tasks: List<String> = listOf("linkBenchmarkReleaseExecutableNative")): BenchmarkResult =
         TaskTimerListener.getBenchmarkResult(programName, tasks)
 
 fun getCompileBenchmarkTime(programName: String, tasksNames: Iterable<String>, repeats: Int, exitCodes: Map<String, Int>) =
@@ -207,7 +207,7 @@ class TaskTimerListener: TaskExecutionListener {
         fun getTime(taskName: String) = tasksTimes[taskName] ?: 0.0
     }
 
-    private var startTime = System.currentTimeMillis()
+    private var startTime = System.nanoTime()
 
     override fun beforeExecute(task: Task) {
         startTime = System.nanoTime()
