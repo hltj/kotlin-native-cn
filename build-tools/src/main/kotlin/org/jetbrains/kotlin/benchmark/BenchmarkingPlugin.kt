@@ -137,7 +137,7 @@ open class BenchmarkingPlugin: Plugin<Project> {
 
             project.configurations.getByName(nativeMain.implementationConfigurationName).apply {
                 // Exclude dependencies already included into K/N distribution (aka endorsed libraries).
-                exclude(mapOf("module" to "kliopt"))
+                exclude(mapOf("module" to "kotlinx.cli"))
             }
 
             repositories.maven {
@@ -173,7 +173,7 @@ open class BenchmarkingPlugin: Plugin<Project> {
 
     private fun Project.configureNativeTarget(hostPreset: KotlinNativeTargetPreset) {
         kotlin.targetFromPreset(hostPreset, NATIVE_TARGET_NAME) {
-            compilations.getByName("main").kotlinOptions.freeCompilerArgs = project.compilerArgs
+            compilations.getByName("main").kotlinOptions.freeCompilerArgs = project.compilerArgs + listOf("-l", "kotlinx-cli")
             binaries.executable(NATIVE_EXECUTABLE_NAME, listOf(RELEASE)) {
                 if (HostManager.hostIsMingw) {
                     linkerOpts.add("-L${mingwPath}/lib")

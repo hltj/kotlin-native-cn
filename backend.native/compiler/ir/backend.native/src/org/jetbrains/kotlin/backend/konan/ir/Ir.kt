@@ -225,7 +225,11 @@ internal class KonanSymbols(
 
     override val ThrowTypeCastException = internalFunction("ThrowTypeCastException")
 
+    val throwClassCastException = internalFunction("ThrowClassCastException")
+
     val throwInvalidReceiverTypeException = internalFunction("ThrowInvalidReceiverTypeException")
+    val throwIllegalStateException = internalFunction("ThrowIllegalStateException")
+    val throwIllegalStateExceptionWithMessage = internalFunction("ThrowIllegalStateExceptionWithMessage")
 
     override val ThrowUninitializedPropertyAccessException = internalFunction("ThrowUninitializedPropertyAccessException")
 
@@ -303,14 +307,6 @@ internal class KonanSymbols(
 
     val valueOfForEnum = internalFunction("valueOfForEnum")
 
-    val enumValues = symbolTable.referenceSimpleFunction(
-             builtInsPackage("kotlin").getContributedFunctions(
-                     Name.identifier("enumValues"), NoLookupLocation.FROM_BACKEND).single())
-
-    val enumValueOf = symbolTable.referenceSimpleFunction(
-            builtInsPackage("kotlin").getContributedFunctions(
-                    Name.identifier("enumValueOf"), NoLookupLocation.FROM_BACKEND).single())
-
     val createUninitializedInstance = internalFunction("createUninitializedInstance")
 
     val initInstance = internalFunction("initInstance")
@@ -335,11 +331,7 @@ internal class KonanSymbols(
 
     val coroutineLaunchpad = internalFunction("coroutineLaunchpad")
 
-    val konanSuspendCoroutineUninterceptedOrReturn = internalFunction("suspendCoroutineUninterceptedOrReturn")
-
-    val konanCoroutineContextGetter = internalFunction("getCoroutineContext")
-
-    override val suspendCoroutineUninterceptedOrReturn = konanSuspendCoroutineUninterceptedOrReturn
+    override val suspendCoroutineUninterceptedOrReturn = internalFunction("suspendCoroutineUninterceptedOrReturn")
 
     private val coroutinesIntrinsicsPackage = context.builtIns.builtInsModule.getPackage(
         context.config.configuration.languageVersionSettings.coroutinesIntrinsicsPackageFqName()).memberScope
@@ -347,16 +339,13 @@ internal class KonanSymbols(
     private val coroutinesPackage = context.builtIns.builtInsModule.getPackage(
             context.config.configuration.languageVersionSettings.coroutinesPackageFqName()).memberScope
 
-    val continuationClassDescriptor = coroutinesPackage
-            .getContributedClassifier(Name.identifier("Continuation"), NoLookupLocation.FROM_BACKEND) as ClassDescriptor
+    override val coroutineContextGetter = symbolTable.referenceSimpleFunction(
+            coroutinesPackage
+                    .getContributedVariables(Name.identifier("coroutineContext"), NoLookupLocation.FROM_BACKEND)
+                    .single()
+                    .getter!!)
 
-    private val coroutineContextGetterDescriptor = coroutinesPackage
-            .getContributedVariables(Name.identifier("coroutineContext"), NoLookupLocation.FROM_BACKEND)
-            .single()
-            .getter!!
-
-    override val coroutineContextGetter = symbolTable.referenceSimpleFunction(coroutineContextGetterDescriptor)
-    override val coroutineGetContext = coroutineContextGetter
+    override val coroutineGetContext = internalFunction("getCoroutineContext")
 
     override val coroutineImpl get() = TODO()
 
