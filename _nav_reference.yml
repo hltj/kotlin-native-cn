@@ -24,7 +24,7 @@
 
 - md: IOS_SYMBOLICATION.md
   url: ios_symbolication.html
-  title: "Symbolicating iOS crash reports"
+  title: "符号化 iOS 崩溃报告"
 
 - md: COCOAPODS.md
   url: cocoapods.html
