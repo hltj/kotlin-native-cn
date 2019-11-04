@@ -7,6 +7,7 @@ package org.jetbrains.kotlin.backend.konan
 import llvm.*
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.llvm.Llvm
+import org.jetbrains.kotlin.backend.konan.llvm.objc.linkObjC
 import org.jetbrains.kotlin.konan.CURRENT
 import org.jetbrains.kotlin.library.KotlinAbiVersion
 import org.jetbrains.kotlin.konan.KonanVersion
@@ -59,11 +60,9 @@ private fun linkAllDependencies(context: Context, generatedBitcodeFiles: List<St
     val launcherNativeLibraries = config.launcherNativeLibraries
             .takeIf { config.produce == CompilerOutputKind.PROGRAM }.orEmpty()
 
-    val objCNativeLibraries = config.objCNativeLibraries
-            .takeIf { config.produce.isFinalBinary && config.target.family.isAppleFamily }.orEmpty()
+    linkObjC(context)
 
-    val nativeLibraries = config.nativeLibraries + runtimeNativeLibraries +
-            launcherNativeLibraries + objCNativeLibraries
+    val nativeLibraries = config.nativeLibraries + runtimeNativeLibraries + launcherNativeLibraries
 
     val bitcodeLibraries = context.llvm.bitcodeToLink.map { it.bitcodePaths }.flatten().filter { it.isBitcode }
     val additionalBitcodeFilesToLink = context.llvm.additionalProducedBitcodeFiles
@@ -73,19 +72,6 @@ private fun linkAllDependencies(context: Context, generatedBitcodeFiles: List<St
     bitcodeFiles.forEach {
         parseAndLinkBitcodeFile(llvmModule, it)
     }
-}
-
-private fun shouldOptimizeWithLlvmApi(context: Context) =
-        (context.config.target.family != Family.ZEPHYR && context.config.target.family != Family.WASM)
-
-private fun shoudRunClosedWorldCleanUp(context: Context) =
-        // GlobalDCE will kill coverage-related globals.
-        !context.coverage.enabled
-
-private fun runLlvmPipeline(context: Context) = when {
-    shouldOptimizeWithLlvmApi(context) -> runLlvmOptimizationPipeline(context)
-    shoudRunClosedWorldCleanUp(context) -> runClosedWorldCleanup(context)
-    else -> {}
 }
 
 private fun insertAliasToEntryPoint(context: Context) {
@@ -125,7 +111,7 @@ internal fun produceOutput(context: Context) {
                 embedAppleLinkerOptionsToBitcode(context.llvm, context.config)
             }
             linkAllDependencies(context, generatedBitcodeFiles)
-            runLlvmPipeline(context)
+            runLlvmOptimizationPipeline(context)
             // Insert `_main` after pipeline so we won't worry about optimizations
             // corrupting entry point.
             insertAliasToEntryPoint(context)

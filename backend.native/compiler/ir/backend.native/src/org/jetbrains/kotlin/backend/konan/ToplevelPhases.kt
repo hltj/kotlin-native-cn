@@ -282,6 +282,7 @@ internal val allLoweringsPhase = namedIrModulePhase(
                         name = "IrLowerByFile",
                         description = "IR Lowering by file",
                         lower = lateinitPhase then
+                                forLoopsPhase then
                                 stringConcatenationPhase then
                                 enumConstructorsPhase then
                                 initializersPhase then
@@ -290,7 +291,6 @@ internal val allLoweringsPhase = namedIrModulePhase(
                                 tailrecPhase then
                                 defaultParameterExtentPhase then
                                 innerClassPhase then
-                                forLoopsPhase then
                                 dataClassesPhase then
                                 builtinOperatorPhase then
                                 finallyBlocksPhase then
@@ -378,12 +378,13 @@ internal val entryPointPhase = SameTypeNamedPhaseWrapper(
 internal val bitcodePhase = namedIrModulePhase(
         name = "Bitcode",
         description = "LLVM Bitcode generation",
-        lower = buildDFGPhase then
+        lower = contextLLVMSetupPhase then
+                buildDFGPhase then
                 serializeDFGPhase then
                 deserializeDFGPhase then
                 devirtualizationPhase then
                 dcePhase then
-                contextLLVMSetupPhase then
+                createLLVMDeclarationsPhase then
                 ghaPhase then
                 RTTIPhase then
                 generateDebugInfoHeaderPhase then
@@ -418,6 +419,7 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                                 verifyBitcodePhase then
                                 printBitcodePhase then
                                 produceOutputPhase then
+                                disposeLLVMPhase then
                                 unitSink()
                 ) then
                 linkPhase

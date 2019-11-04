@@ -38,7 +38,6 @@ typedef struct DILocation         *DILocationRef;
 typedef struct DILocalVariable    *DILocalVariableRef;
 typedef struct DIExpression       *DIExpressionRef;
 
-DIBuilderRef DICreateBuilder(LLVMModuleRef module);
 void DIFinalize(DIBuilderRef builder);
 
 DICompileUnitRef DICreateCompilationUnit(DIBuilderRef builder, unsigned int lang, const char *File, const char* dir, const char * producer, int isOptimized, const char * flags, unsigned int rv);

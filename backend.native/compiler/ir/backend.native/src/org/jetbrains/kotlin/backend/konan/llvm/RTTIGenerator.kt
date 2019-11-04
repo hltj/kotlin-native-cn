@@ -6,7 +6,6 @@
 package org.jetbrains.kotlin.backend.konan.llvm
 
 import llvm.*
-import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.*
@@ -69,7 +68,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
     inner class MethodTableRecord(val nameSignature: LocalHash, methodEntryPoint: ConstPointer?) :
             Struct(runtime.methodTableRecordType, nameSignature, methodEntryPoint)
 
-    inner class InterfaceTableRecord(id: Int32, vtableSize: Int32, vtable: ConstPointer) :
+    inner class InterfaceTableRecord(id: Int32, vtableSize: Int32, vtable: ConstPointer?) :
             Struct(runtime.interfaceTableRecordType, id, vtableSize, vtable)
 
     private inner class TypeInfo(
@@ -84,7 +83,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
             methods: ConstValue,
             methodsCount: Int,
             interfaceTableSize: Int,
-            interfaceTable: ConstPointer?,
+            interfaceTable: ConstValue,
             packageName: String?,
             relativeName: String?,
             flags: Int,
@@ -149,30 +148,30 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
     private val arrayClasses = mapOf(
             "kotlin.Array"              to kObjHeaderPtr,
-            "kotlin.ByteArray"          to LLVMInt8Type()!!,
-            "kotlin.CharArray"          to LLVMInt16Type()!!,
-            "kotlin.ShortArray"         to LLVMInt16Type()!!,
-            "kotlin.IntArray"           to LLVMInt32Type()!!,
-            "kotlin.LongArray"          to LLVMInt64Type()!!,
-            "kotlin.FloatArray"         to LLVMFloatType()!!,
-            "kotlin.DoubleArray"        to LLVMDoubleType()!!,
-            "kotlin.BooleanArray"       to LLVMInt8Type()!!,
-            "kotlin.String"             to LLVMInt16Type()!!,
-            "kotlin.native.ImmutableBlob" to LLVMInt8Type()!!,
+            "kotlin.ByteArray"          to int8Type,
+            "kotlin.CharArray"          to int16Type,
+            "kotlin.ShortArray"         to int16Type,
+            "kotlin.IntArray"           to int32Type,
+            "kotlin.LongArray"          to int64Type,
+            "kotlin.FloatArray"         to floatType,
+            "kotlin.DoubleArray"        to doubleType,
+            "kotlin.BooleanArray"       to int8Type,
+            "kotlin.String"             to int16Type,
+            "kotlin.native.ImmutableBlob" to int8Type,
             "kotlin.native.internal.NativePtrArray" to kInt8Ptr
     )
 
     // Keep in sync with Konan_RuntimeType.
     private val runtimeTypeMap = mapOf(
             kObjHeaderPtr to 1,
-            LLVMInt8Type()!! to 2,
-            LLVMInt16Type()!! to 3,
-            LLVMInt32Type()!! to 4,
-            LLVMInt64Type()!! to 5,
-            LLVMFloatType()!! to 6,
-            LLVMDoubleType()!! to 7,
+            int8Type to 2,
+            int16Type to 3,
+            int32Type to 4,
+            int64Type to 5,
+            floatType to 6,
+            doubleType to 7,
             kInt8Ptr to 8,
-            LLVMInt1Type()!! to 9
+            int1Type to 9
     )
 
     private fun getInstanceSize(classType: LLVMTypeRef?, className: FqName) : Int {
@@ -220,7 +219,15 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         val methodsPtr = staticData.placeGlobalConstArray("kmethods:$className",
                 runtime.methodTableRecordType, methods)
 
-        val (interfaceTable, interfaceTableSize) = interfaceTable(irClass)
+        val needInterfaceTable = context.ghaEnabled() && !irClass.isInterface
+                && !irClass.isAbstract() && !irClass.isObjCClass()
+        val (interfaceTable, interfaceTableSize) = if (needInterfaceTable) {
+            interfaceTableRecords(irClass)
+        } else {
+            Pair(emptyList(), -1)
+        }
+        val interfaceTablePtr = staticData.placeGlobalConstArray("kifacetable:$className",
+                runtime.interfaceTableRecordType, interfaceTable)
 
         val reflectionInfo = getReflectionInfo(irClass)
         val typeInfoGlobal = llvmDeclarations.typeInfoGlobal
@@ -236,7 +243,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                 objOffsetsPtr, objOffsetsCount,
                 interfacesPtr, interfaces.size,
                 methodsPtr, methods.size,
-                interfaceTableSize, interfaceTable,
+                interfaceTableSize, interfaceTablePtr,
                 reflectionInfo.packageName,
                 reflectionInfo.relativeName,
                 flagsFromClass(irClass),
@@ -301,12 +308,17 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         }.sortedBy { it.nameSignature.value }
     }
 
-    private fun interfaceTable(irClass: IrClass): Pair<ConstPointer?, Int> {
-        val needInterfaceTable = context.ghaEnabled() && !irClass.isInterface
-                && !irClass.isAbstract() && !irClass.isObjCClass()
-        if (!needInterfaceTable) return Pair(null, 0)
+    fun interfaceTableRecords(irClass: IrClass): Pair<List<InterfaceTableRecord>, Int> {
         // The details are in ClassLayoutBuilder.
-        val interfaceLayouts = irClass.implementedInterfaces.map { context.getLayoutBuilder(it) }
+        val interfaces = irClass.implementedInterfaces
+        val (interfaceTableSkeleton, interfaceTableSize) = interfaceTableSkeleton(interfaces)
+
+        val interfaceTableEntries = interfaceTableRecords(irClass, interfaceTableSkeleton)
+        return Pair(interfaceTableEntries, interfaceTableSize)
+    }
+
+    private fun interfaceTableSkeleton(interfaces: List<IrClass>): Pair<Array<out ClassLayoutBuilder?>, Int> {
+        val interfaceLayouts = interfaces.map { context.getLayoutBuilder(it) }
         val interfaceColors = interfaceLayouts.map { it.hierarchyInfo.interfaceColor }
 
         // Find the optimal size. It must be a power of 2.
@@ -339,10 +351,18 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                 it[interfaceLayout.hierarchyInfo.interfaceId % size] = interfaceLayout
         }
 
+        val interfaceTableSize = if (conservative) -size else (size - 1)
+        return Pair(interfaceTableSkeleton, interfaceTableSize)
+    }
+
+    private fun interfaceTableRecords(
+            irClass: IrClass,
+            interfaceTableSkeleton: Array<out ClassLayoutBuilder?>
+    ): List<InterfaceTableRecord> {
         val methodTableEntries = context.getLayoutBuilder(irClass).methodTableEntries
         val className = irClass.fqNameForIrSerialization
 
-        val interfaceTableEntries = interfaceTableSkeleton.map { iface ->
+        return interfaceTableSkeleton.map { iface ->
             val interfaceId = iface?.hierarchyInfo?.interfaceId ?: 0
             InterfaceTableRecord(
                     Int32(interfaceId),
@@ -366,11 +386,6 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                     }
             )
         }
-        return Pair(
-                staticData.placeGlobalConstArray("kifacetable:$className",
-                        runtime.interfaceTableRecordType, interfaceTableEntries),
-                if (conservative) -size else (size - 1)
-        )
     }
 
     private fun mapRuntimeType(type: LLVMTypeRef): Int =
@@ -451,9 +466,9 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         val superClass = context.ir.symbols.any.owner
 
         assert(superClass.implementedInterfaces.isEmpty())
-        val interfaces = listOf(irClass.typeInfoPtr)
+        val interfaces = (listOf(irClass) + irClass.implementedInterfaces)
         val interfacesPtr = staticData.placeGlobalConstArray("",
-                pointerType(runtime.typeInfoType), interfaces)
+                pointerType(runtime.typeInfoType), interfaces.map { it.typeInfoPtr })
 
         assert(superClass.declarations.all { it !is IrProperty && it !is IrField })
 
@@ -489,19 +504,24 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         else
             ClassGlobalHierarchyInfo(-1, -1, 0, 0)
 
-        val interfaceTable = if (!context.ghaEnabled()) null else {
-            val layoutBuilder = context.getLayoutBuilder(irClass)
-            val vtableEntries = layoutBuilder.interfaceTableEntries.map { methodImpls[it]!!.bitcast(int8TypePtr) }
-            val interfaceVTable = staticData.placeGlobalArray("", kInt8Ptr, vtableEntries)
-            staticData.placeGlobalConstArray("",
-                    runtime.interfaceTableRecordType, listOf(
-                    InterfaceTableRecord(
-                            Int32(layoutBuilder.hierarchyInfo.interfaceId),
-                            Int32(layoutBuilder.interfaceTableEntries.size),
-                            interfaceVTable.pointer.getElementPtr(0)
-                    )
-            ))
+        // TODO: interfaces (e.g. FunctionN and Function) should have different colors.
+        val (interfaceTableSkeleton, interfaceTableSize) =
+                if (context.ghaEnabled()) interfaceTableSkeleton(interfaces) else Pair(emptyArray(), -1)
+
+        val interfaceTable = interfaceTableSkeleton.map { layoutBuilder ->
+            if (layoutBuilder == null) {
+                InterfaceTableRecord(Int32(0), Int32(0), null)
+            } else {
+                val vtableEntries = layoutBuilder.interfaceTableEntries.map { methodImpls[it]!!.bitcast(int8TypePtr) }
+                val interfaceVTable = staticData.placeGlobalArray("", kInt8Ptr, vtableEntries)
+                InterfaceTableRecord(
+                        Int32(layoutBuilder.hierarchyInfo.interfaceId),
+                        Int32(layoutBuilder.interfaceTableEntries.size),
+                        interfaceVTable.pointer.getElementPtr(0)
+                )
+            }
         }
+        val interfaceTablePtr = staticData.placeGlobalConstArray("", runtime.interfaceTableRecordType, interfaceTable)
 
         val typeInfoWithVtable = Struct(TypeInfo(
                 selfPtr = result,
@@ -511,8 +531,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                 objOffsets = objOffsetsPtr, objOffsetsCount = objOffsetsCount,
                 interfaces = interfacesPtr, interfacesCount = interfaces.size,
                 methods = methodsPtr, methodsCount = methods.size,
-                // 0 is a perfectly valid itable size (since 0 is in form of (2^k - 1).
-                interfaceTableSize = 0, interfaceTable = interfaceTable,
+                interfaceTableSize = interfaceTableSize, interfaceTable = interfaceTablePtr,
                 packageName = reflectionInfo.packageName,
                 relativeName = reflectionInfo.relativeName,
                 flags = flagsFromClass(irClass) or (if (immutable) TF_IMMUTABLE else 0),
