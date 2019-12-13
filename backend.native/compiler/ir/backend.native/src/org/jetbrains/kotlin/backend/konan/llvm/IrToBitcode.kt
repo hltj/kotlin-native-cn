@@ -7,7 +7,6 @@ package org.jetbrains.kotlin.backend.konan.llvm
 
 import kotlinx.cinterop.*
 import llvm.*
-import org.jetbrains.kotlin.backend.common.descriptors.allParameters
 import org.jetbrains.kotlin.backend.common.ir.ir2string
 import org.jetbrains.kotlin.backend.common.lower.inline.InlinerExpressionLocationHint
 import org.jetbrains.kotlin.backend.konan.*
@@ -15,7 +14,6 @@ import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.llvm.coverage.LLVMCoverageInstrumentation
 import org.jetbrains.kotlin.backend.konan.optimizations.DataFlowIR
-import org.jetbrains.kotlin.builtins.KotlinBuiltIns
 import org.jetbrains.kotlin.builtins.UnsignedType
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.ir.IrElement
@@ -30,36 +28,47 @@ import org.jetbrains.kotlin.ir.visitors.IrElementVisitorVoid
 import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
 import org.jetbrains.kotlin.ir.visitors.acceptVoid
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
+import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.resolve.descriptorUtil.classId
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
 
-internal enum class FieldStorage {
+internal enum class FieldStorageKind {
     MAIN_THREAD,
     SHARED,
     THREAD_LOCAL
 }
 
-// TODO: maybe unannotated singleton objects shall be accessed from main thread only as well?
-val IrClass.objectIsShared get() =
-    !annotations.hasAnnotation(KonanFqNames.threadLocal)
+internal enum class ObjectStorageKind {
+    PERMANENT,
+    THREAD_LOCAL,
+    SHARED
+}
 
-internal val IrField.storageClass: FieldStorage get() {
+// TODO: maybe unannotated singleton objects shall be accessed from main thread only as well?
+internal val IrField.storageKind: FieldStorageKind get() {
     // TODO: Is this correct?
     val annotations = correspondingPropertySymbol?.owner?.annotations ?: annotations
     return when {
-        annotations.hasAnnotation(KonanFqNames.threadLocal) -> FieldStorage.THREAD_LOCAL
-        !isFinal -> FieldStorage.MAIN_THREAD
-        annotations.hasAnnotation(KonanFqNames.sharedImmutable) -> FieldStorage.SHARED
+        annotations.hasAnnotation(KonanFqNames.threadLocal) -> FieldStorageKind.THREAD_LOCAL
+        !isFinal -> FieldStorageKind.MAIN_THREAD
+        annotations.hasAnnotation(KonanFqNames.sharedImmutable) -> FieldStorageKind.SHARED
         // TODO: simplify, once IR types are fully there.
         (type.classifierOrNull?.owner as? IrAnnotationContainer)
-                ?.annotations?.hasAnnotation(KonanFqNames.frozen) == true -> FieldStorage.SHARED
-        else -> FieldStorage.MAIN_THREAD
+                ?.annotations?.hasAnnotation(KonanFqNames.frozen) == true -> FieldStorageKind.SHARED
+        else -> FieldStorageKind.MAIN_THREAD
     }
 }
 
+internal fun IrClass.storageKind(context: Context): ObjectStorageKind = when {
+    this.annotations.hasAnnotation(KonanFqNames.threadLocal) &&
+            context.config.threadsAreAllowed -> ObjectStorageKind.THREAD_LOCAL
+    this.hasConstStateAndNoSideEffects(context) -> ObjectStorageKind.PERMANENT
+    else -> ObjectStorageKind.SHARED
+}
+
 val IrField.isMainOnlyNonPrimitive get() = when  {
-        KotlinBuiltIns.isPrimitiveType(descriptor.type) -> false
-        else -> storageClass == FieldStorage.MAIN_THREAD
+        descriptor.type.computePrimitiveBinaryTypeOrNull() != null -> false
+        else -> storageKind == FieldStorageKind.MAIN_THREAD
     }
 
 internal fun verifyModule(llvmModule: LLVMModuleRef, current: String = "") {
@@ -208,7 +217,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         override fun evaluateCall(function: IrFunction, args: List<LLVMValueRef>, resultLifetime: Lifetime, superClass: IrClass?) =
                 evaluateSimpleFunctionCall(function, args, resultLifetime, superClass)
 
-        override fun evaluateExplicitArgs(expression: IrMemberAccessExpression): List<LLVMValueRef> =
+        override fun evaluateExplicitArgs(expression: IrFunctionAccessExpression): List<LLVMValueRef> =
                 this@CodeGeneratorVisitor.evaluateExplicitArgs(expression)
 
         override fun evaluateExpression(value: IrExpression): LLVMValueRef =
@@ -384,10 +393,10 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                     context.llvm.fileInitializers
                             .forEach {
                                 if (it.initializer?.expression !is IrConst<*>?) {
-                                    if (it.storageClass != FieldStorage.THREAD_LOCAL) {
+                                    if (it.storageKind != FieldStorageKind.THREAD_LOCAL) {
                                         val initialization = evaluateExpression(it.initializer!!.expression)
                                         val address = context.llvmDeclarations.forStaticField(it).storage
-                                        if (it.storageClass == FieldStorage.SHARED)
+                                        if (it.storageKind == FieldStorageKind.SHARED)
                                             freeze(initialization, currentCodeContext.exceptionHandler)
                                         storeAny(initialization, address, false)
                                     }
@@ -400,7 +409,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                     context.llvm.fileInitializers
                             .forEach {
                                 if (it.initializer?.expression !is IrConst<*>?) {
-                                   if (it.storageClass == FieldStorage.THREAD_LOCAL) {
+                                   if (it.storageKind == FieldStorageKind.THREAD_LOCAL) {
                                        val initialization = evaluateExpression(it.initializer!!.expression)
                                        val address = context.llvmDeclarations.forStaticField(it).storage
                                        storeAny(initialization, address, false)
@@ -413,7 +422,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                 appendingTo(bbLocalDeinit) {
                     context.llvm.fileInitializers.forEach {
                         // Only if a subject for memory management.
-                        if (it.type.binaryTypeIsReference() && it.storageClass == FieldStorage.THREAD_LOCAL) {
+                        if (it.type.binaryTypeIsReference() && it.storageKind == FieldStorageKind.THREAD_LOCAL) {
                             val address = context.llvmDeclarations.forStaticField(it).storage
                             storeHeapRef(codegen.kNullObjHeaderPtr, address)
                         }
@@ -426,7 +435,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                     context.llvm.fileInitializers
                             // Only if a subject for memory management.
                             .forEach {
-                                if (it.type.binaryTypeIsReference() && it.storageClass != FieldStorage.THREAD_LOCAL) {
+                                if (it.type.binaryTypeIsReference() && it.storageKind != FieldStorageKind.THREAD_LOCAL) {
                                     val address = context.llvmDeclarations.forStaticField(it).storage
                                     storeHeapRef(codegen.kNullObjHeaderPtr, address)
                                 }
@@ -738,9 +747,22 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                 it.acceptVoid(this)
             }
         }
+
+        if (declaration.kind.isSingleton && !declaration.isUnit()) {
+            val value = context.llvmDeclarations.forSingleton(declaration).instanceFieldRef
+            LLVMSetInitializer(value, if (declaration.storageKind(context) == ObjectStorageKind.PERMANENT)
+                context.llvm.staticData.createConstKotlinObject(declaration,
+                        *computeFields(declaration)).llvm else codegen.kNullObjHeaderPtr)
+        }
     }
 
-    //-------------------------------------------------------------------------//
+    private fun computeFields(declaration: IrClass): Array<ConstValue> {
+        val fields = context.getLayoutBuilder(declaration).fields
+        return Array(fields.size) { index ->
+            val initializer = fields[index].initializer!!.expression as IrConst<*>
+            constValue(evaluateConst(initializer))
+        }
+    }
 
     override fun visitProperty(declaration: IrProperty) {
         declaration.getter?.acceptVoid(this)
@@ -1272,6 +1294,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             IrTypeOperator.NOT_INSTANCEOF            -> evaluateNotInstanceOf(value)
             IrTypeOperator.SAM_CONVERSION            -> TODO(ir2string(value))
             IrTypeOperator.IMPLICIT_DYNAMIC_CAST     -> TODO(ir2string(value))
+            IrTypeOperator.REINTERPRET_CAST          -> TODO(ir2string(value))
         }
     }
 
@@ -1477,22 +1500,26 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     //-------------------------------------------------------------------------//
 
     private fun evaluateGetField(value: IrGetField): LLVMValueRef {
-        context.log{"evaluateGetField               : ${ir2string(value)}"}
-        if (!value.symbol.owner.isStatic) {
+        context.log { "evaluateGetField               : ${ir2string(value)}" }
+        return if (!value.symbol.owner.isStatic) {
             val thisPtr = evaluateExpression(value.receiver!!)
-            return functionGenerationContext.loadSlot(
-                    fieldPtrOfClass(thisPtr, value.symbol.owner), value.descriptor.isVar())
+            functionGenerationContext.loadSlot(
+                    fieldPtrOfClass(thisPtr, value.symbol.owner), !value.symbol.owner.isFinal)
         } else {
             assert(value.receiver == null)
-            return if (value.symbol.owner.correspondingProperty?.isConst == true) {
-                 evaluateConst(value.symbol.owner.initializer?.expression as IrConst<*>)
+            if (value.symbol.owner.correspondingPropertySymbol?.owner?.isConst == true) {
+                evaluateConst(value.symbol.owner.initializer?.expression as IrConst<*>)
             } else {
                 if (context.config.threadsAreAllowed && value.symbol.owner.isMainOnlyNonPrimitive) {
                     functionGenerationContext.checkMainThread(currentCodeContext.exceptionHandler)
                 }
                 val ptr = context.llvmDeclarations.forStaticField(value.symbol.owner).storage
-                functionGenerationContext.loadSlot(ptr, value.descriptor.isVar())
+                functionGenerationContext.loadSlot(ptr, !value.symbol.owner.isFinal)
             }
+        }.also {
+            if (value.type.classifierOrNull?.isClassWithFqName(vectorType) == true)
+                LLVMSetAlignment(it, 8)
+
         }
     }
 
@@ -1506,7 +1533,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     private fun evaluateSetField(value: IrSetField): LLVMValueRef {
         context.log{"evaluateSetField               : ${ir2string(value)}"}
         val valueToAssign = evaluateExpression(value.value)
-        if (!value.symbol.owner.isStatic) {
+        val store = if (!value.symbol.owner.isStatic) {
             val thisPtr = evaluateExpression(value.receiver!!)
             assert(thisPtr.type == codegen.kObjHeaderPtr) {
                 LLVMPrintTypeToString(thisPtr.type)?.toKString().toString()
@@ -1522,14 +1549,19 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             val globalValue = context.llvmDeclarations.forStaticField(value.symbol.owner).storage
             if (context.config.threadsAreAllowed && value.symbol.owner.isMainOnlyNonPrimitive)
                 functionGenerationContext.checkMainThread(currentCodeContext.exceptionHandler)
-            if (value.symbol.owner.storageClass == FieldStorage.SHARED)
+            if (value.symbol.owner.storageKind == FieldStorageKind.SHARED)
                 functionGenerationContext.freeze(valueToAssign, currentCodeContext.exceptionHandler)
             functionGenerationContext.storeAny(valueToAssign, globalValue, false)
+        }
+        if (store != null && value.value.type.classifierOrNull?.isClassWithFqName(vectorType) == true) {
+            LLVMSetAlignment(store, 8)
         }
 
         assert (value.type.isUnit())
         return codegen.theUnitInstanceRef.llvm
     }
+
+    private val vectorType = FqName("kotlin.native.Vector128").toUnsafe()
 
     //-------------------------------------------------------------------------//
     private fun fieldPtrOfClass(thisPtr: LLVMValueRef, value: IrField): LLVMValueRef {
@@ -1941,12 +1973,12 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
      * Returns results in the same order as LLVM function expects, assuming that all explicit arguments
      * exactly correspond to a tail of LLVM parameters.
      */
-    private fun evaluateExplicitArgs(expression: IrMemberAccessExpression): List<LLVMValueRef> {
-        val evaluatedArgs = expression.getArguments().map { (param, argExpr) ->
+    private fun evaluateExplicitArgs(expression: IrFunctionAccessExpression): List<LLVMValueRef> {
+        val evaluatedArgs = expression.getArgumentsWithIr().map { (param, argExpr) ->
             param to evaluateExpression(argExpr)
         }.toMap()
 
-        val allValueParameters = expression.descriptor.allParameters
+        val allValueParameters = expression.symbol.owner.allParameters
 
         return allValueParameters.dropWhile { it !in evaluatedArgs }.map {
             evaluatedArgs[it]!!
@@ -2051,7 +2083,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                                            else args
         return when {
             function.isTypedIntrinsic -> intrinsicGenerator.evaluateCall(callee, args)
-            function.symbol in context.irBuiltIns.irBuiltInsSymbols -> evaluateOperatorCall(callee, argsWithContinuationIfNeeded)
+            function.isBuiltInOperator -> evaluateOperatorCall(callee, argsWithContinuationIfNeeded)
             else -> evaluateSimpleFunctionCall(function, argsWithContinuationIfNeeded, resultLifetime, callee.superQualifierSymbol?.owner)
         }
     }
@@ -2087,14 +2119,13 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             val thisValue = when {
                 constructedClass.isArray -> {
                     assert(args.isNotEmpty() && args[0].type == int32Type)
-                    functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), args[0],
+                    functionGenerationContext.allocArray(constructedClass, args[0],
                             resultLifetime(callee), currentCodeContext.exceptionHandler)
                 }
-
                 constructedClass == context.ir.symbols.string.owner -> {
                     // TODO: consider returning the empty string literal instead.
                     assert(args.isEmpty())
-                    functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), count = kImmZero,
+                    functionGenerationContext.allocArray(constructedClass, count = kImmZero,
                             lifetime = resultLifetime(callee), exceptionHandler = currentCodeContext.exceptionHandler)
                 }
 
@@ -2133,7 +2164,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         assert(irClass.isExternalObjCClass())
 
         val annotation = irClass.annotations.findAnnotation(externalObjCClassFqName)!!
-        val protocolGetterName = annotation.getStringValue("protocolGetter")
+        val protocolGetterName = annotation.getAnnotationStringValue("protocolGetter")
         val protocolGetter = context.llvm.externalFunction(
                 protocolGetterName,
                 functionType(int8TypePtr, false),

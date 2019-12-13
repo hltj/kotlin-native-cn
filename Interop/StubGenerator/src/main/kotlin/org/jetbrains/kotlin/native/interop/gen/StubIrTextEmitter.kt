@@ -29,18 +29,8 @@ class StubIrTextEmitter(
     private val pkgName: String
         get() = context.configuration.pkgName
 
-    private val jvmFileClassName = if (pkgName.isEmpty()) {
-        context.libName
-    } else {
-        pkgName.substringAfterLast('.')
-    }
-
     private val StubContainer.isTopLevelContainer: Boolean
         get() = this == builderResult.stubs
-
-    companion object {
-        private val VALID_PACKAGE_NAME_REGEX = "[a-zA-Z0-9_.]+".toRegex()
-    }
 
     /**
      * The output currently used by the generator.
@@ -97,7 +87,7 @@ class StubIrTextEmitter(
 
     private fun emitKotlinFileHeader() {
         if (context.platform == KotlinPlatform.JVM) {
-            out("@file:JvmName(${jvmFileClassName.quoteAsKotlinLiteral()})")
+            out("@file:JvmName(${context.jvmFileClassName.quoteAsKotlinLiteral()})")
         }
         if (context.platform == KotlinPlatform.NATIVE) {
             out("@file:kotlinx.cinterop.InteropStubs")
@@ -124,14 +114,7 @@ class StubIrTextEmitter(
 
         out("@file:Suppress(${suppress.joinToString { it.quoteAsKotlinLiteral() }})")
         if (pkgName != "") {
-            val packageName = pkgName.split(".").joinToString("."){
-                if(it.matches(VALID_PACKAGE_NAME_REGEX)){
-                    it
-                }else{
-                    "`$it`"
-                }
-            }
-            out("package $packageName")
+            out("package ${context.validPackageName}")
             out("")
         }
         if (context.platform == KotlinPlatform.NATIVE) {
@@ -148,28 +131,7 @@ class StubIrTextEmitter(
 
         out("// NOTE THIS FILE IS AUTO-GENERATED")
     }
-    fun emit(ktFile: Appendable, cFile: Appendable, entryPoint: String?) {
-
-        withOutput(cFile) {
-            context.libraryForCStubs.preambleLines.forEach {
-                out(it)
-            }
-            out("")
-
-            out("// NOTE THIS FILE IS AUTO-GENERATED")
-            out("")
-
-            nativeBridges.nativeLines.forEach(out)
-
-            if (entryPoint != null) {
-                out("extern int Konan_main(int argc, char** argv);")
-                out("")
-                out("__attribute__((__used__))")
-                out("int $entryPoint(int argc, char** argv)  {")
-                out("  return Konan_main(argc, argv);")
-                out("}")
-            }
-        }
+    fun emit(ktFile: Appendable) {
 
         // Stubs generation may affect imports list so do it before header generation.
         val stubLines = generateKotlinFragmentBy {
@@ -399,6 +361,7 @@ class StubIrTextEmitter(
                     MemberStubModality.OVERRIDE -> "override "
                     MemberStubModality.OPEN -> "open "
                     MemberStubModality.FINAL -> "final "
+                    MemberStubModality.ABSTRACT -> "abstract "
                 }
 
     private fun renderVisibilityModifier(visibilityModifier: VisibilityModifier) = when (visibilityModifier) {
@@ -483,6 +446,11 @@ class StubIrTextEmitter(
                 if (stubType.nullable) append(")?")
             }
             is TypeParameterType -> "${stubType.name}$nullable"
+            is AbbreviatedType -> {
+                val classifier = kotlinFile.reference(stubType.abbreviatedClassifier)
+                val typeArguments = renderTypeArguments(stubType.typeArguments)
+                "$classifier$typeArguments$nullable"
+            }
         }
     }
 

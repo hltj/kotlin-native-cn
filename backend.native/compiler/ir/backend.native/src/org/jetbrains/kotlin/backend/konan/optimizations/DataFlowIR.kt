@@ -5,12 +5,12 @@
 
 package org.jetbrains.kotlin.backend.konan.optimizations
 
+import org.jetbrains.kotlin.backend.common.ir.ir2stringWhole
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.isAbstract
 import org.jetbrains.kotlin.backend.konan.descriptors.target
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.llvm.*
-import org.jetbrains.kotlin.backend.konan.llvm.KonanMangler.functionName
 import org.jetbrains.kotlin.backend.konan.llvm.KonanMangler.symbolName
 import org.jetbrains.kotlin.backend.konan.lower.DECLARATION_ORIGIN_BRIDGE_METHOD
 import org.jetbrains.kotlin.backend.konan.lower.bridgeTarget
@@ -30,8 +30,7 @@ import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
 import org.jetbrains.kotlin.load.java.BuiltinMethodsWithSpecialGenericSignature
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.resolve.constants.ConstantValue
-import org.jetbrains.kotlin.resolve.constants.IntValue
+import org.jetbrains.kotlin.backend.konan.descriptors.isBuiltInOperator
 
 internal object DataFlowIR {
 
@@ -219,7 +218,9 @@ internal object DataFlowIR {
     sealed class Node {
         class Parameter(val index: Int) : Node()
 
-        class Const(val type: Type) : Node()
+        open class Const(val type: Type) : Node()
+
+        class SimpleConst<T : Any>(type: Type, val value: T) : Const(type)
 
         object Null : Node()
 
@@ -257,9 +258,9 @@ internal object DataFlowIR {
 
         class FieldWrite(val receiver: Edge?, val field: Field, val value: Edge, val type: Type) : Node()
 
-        class ArrayRead(val array: Edge, val index: Edge, val type: Type, val irCallSite: IrCall?) : Node()
+        class ArrayRead(val callee: FunctionSymbol, val array: Edge, val index: Edge, val type: Type, val irCallSite: IrCall?) : Node()
 
-        class ArrayWrite(val array: Edge, val index: Edge, val value: Edge, val type: Type) : Node()
+        class ArrayWrite(val callee: FunctionSymbol, val array: Edge, val index: Edge, val value: Edge, val type: Type) : Node()
 
         class Variable(values: List<Edge>, val type: Type, val kind: VariableKind) : Node() {
             val values = mutableListOf<Edge>().also { it += values }
@@ -487,7 +488,10 @@ internal object DataFlowIR {
                 }
 
                 override fun visitField(declaration: IrField) {
-                    declaration.initializer?.let { mapFunction(declaration) }
+                    if (declaration.parent is IrFile)
+                        declaration.initializer?.let {
+                            mapFunction(declaration)
+                        }
                 }
 
                 override fun visitClass(declaration: IrClass) {
@@ -508,7 +512,6 @@ internal object DataFlowIR {
             val isFinal = irClass.isFinal()
             val isAbstract = irClass.isAbstract()
             val name = irClass.fqNameForIrSerialization.asString()
-
             classMap[irClass]?.let { return it }
 
             val placeToClassTable = true
@@ -599,7 +602,7 @@ internal object DataFlowIR {
                 attributes = attributes or FunctionAttributes.EXPLICITLY_EXPORTED
             }
             val symbol = when {
-                it.isExternal || (it.symbol in context.irBuiltIns.irBuiltInsSymbols) -> {
+                it.isExternal || it.isBuiltInOperator -> {
                     val escapesAnnotation = it.annotations.findAnnotation(FQ_NAME_ESCAPES)
                     val pointsToAnnotation = it.annotations.findAnnotation(FQ_NAME_POINTS_TO)
                     @Suppress("UNCHECKED_CAST")

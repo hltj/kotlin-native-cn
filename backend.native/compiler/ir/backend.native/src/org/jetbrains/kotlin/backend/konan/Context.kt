@@ -7,8 +7,6 @@ package org.jetbrains.kotlin.backend.konan
 
 import llvm.*
 import org.jetbrains.kotlin.backend.common.DumpIrTreeWithDescriptorsVisitor
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedTypeParameterDescriptor
 import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.ir.KonanIr
 import org.jetbrains.kotlin.library.SerializedMetadata
@@ -46,9 +44,10 @@ import java.lang.System.out
 import kotlin.LazyThreadSafetyMode.PUBLICATION
 import kotlin.reflect.KProperty
 import org.jetbrains.kotlin.backend.common.ir.copyTo
-import org.jetbrains.kotlin.backend.common.serialization.KotlinMangler
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
 import org.jetbrains.kotlin.backend.konan.llvm.coverage.CoverageManager
+import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.ir.descriptors.WrappedTypeParameterDescriptor
 import org.jetbrains.kotlin.ir.symbols.impl.IrTypeParameterSymbolImpl
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.konan.library.KonanLibraryLayout
@@ -141,7 +140,9 @@ internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler 
                 isTailrec = false,
                 isSuspend = function.isSuspend,
                 returnType = returnType,
-                isExpect = false
+                isExpect = false,
+                isFakeOverride = false,
+                isOperator = false
         ).apply {
             descriptor.bind(this)
             parent = function.parent
@@ -191,6 +192,7 @@ internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler 
 }
 
 internal class Context(config: KonanConfig) : KonanBackendContext(config) {
+    override val lateinitNullableFields = mutableMapOf<IrField, IrField>()
     lateinit var frontendServices: FrontendServices
     lateinit var environment: KotlinCoreEnvironment
     lateinit var bindingContext: BindingContext
@@ -483,6 +485,8 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
             producingCache = config.produce.isCache,
             librariesToCache = config.librariesToCache
     )
+
+    val declaredLocalArrays: MutableMap<String, LLVMTypeRef> = HashMap()
 }
 
 private fun MemberScope.getContributedClassifier(name: String) =

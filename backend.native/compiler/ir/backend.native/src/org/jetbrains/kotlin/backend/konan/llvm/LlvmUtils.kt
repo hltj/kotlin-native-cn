@@ -110,6 +110,7 @@ internal val int64Type get() = LLVMInt64TypeInContext(llvmContext)!!
 internal val int8TypePtr get() = pointerType(int8Type)
 internal val floatType get() = LLVMFloatTypeInContext(llvmContext)!!
 internal val doubleType get() = LLVMDoubleTypeInContext(llvmContext)!!
+internal val vector128Type get() = LLVMVectorType(floatType, 4)!!
 
 internal val voidType get() = LLVMVoidTypeInContext(llvmContext)!!
 
@@ -201,6 +202,11 @@ internal fun structType(types: List<LLVMTypeRef>): LLVMTypeRef =
 internal fun ContextUtils.numParameters(functionType: LLVMTypeRef) : Int {
     // Note that type is usually function pointer, so we have to dereference it.
     return LLVMCountParamTypes(LLVMGetElementType(functionType))
+}
+
+fun extractConstUnsignedInt(value: LLVMValueRef): Long {
+    assert(LLVMIsConstant(value) != 0)
+    return LLVMConstIntGetZExtValue(value)
 }
 
 internal fun ContextUtils.isObjectReturn(functionType: LLVMTypeRef) : Boolean {
@@ -383,5 +389,12 @@ internal fun LLVMValueRef.setUnaligned() = apply { LLVMSetAlignment(this, 1) }
 
 fun LLVMTypeRef.isFloatingPoint(): Boolean = when (llvm.LLVMGetTypeKind(this)) {
     LLVMTypeKind.LLVMFloatTypeKind, LLVMTypeKind.LLVMDoubleTypeKind -> true
+    else -> false
+}
+
+fun LLVMTypeRef.isVectorElementType(): Boolean = when (llvm.LLVMGetTypeKind(this)) {
+    LLVMTypeKind.LLVMIntegerTypeKind,
+    LLVMTypeKind.LLVMFloatTypeKind,
+    LLVMTypeKind.LLVMDoubleTypeKind -> true
     else -> false
 }

@@ -1,12 +1,14 @@
 package org.jetbrains.kotlin.backend.konan
 
 import org.jetbrains.kotlin.backend.common.*
+import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.phaser.*
 import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
 import org.jetbrains.kotlin.backend.common.serialization.metadata.KlibMetadataMonolithicSerializer
 import org.jetbrains.kotlin.backend.konan.descriptors.isForwardDeclarationModule
 import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
+import org.jetbrains.kotlin.backend.konan.ir.IrProviderForInteropStubs
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
@@ -19,6 +21,7 @@ import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.descriptors.konan.isKonanStdlib
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
+import org.jetbrains.kotlin.ir.util.DeclarationStubGenerator
 import org.jetbrains.kotlin.ir.util.SymbolTable
 import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.addFile
@@ -139,6 +142,21 @@ internal val psiToIrPhase = konanUnitPhase(
                     Psi2IrConfiguration(false))
             val generatorContext = translator.createGeneratorContext(moduleDescriptor, bindingContext, symbolTable)
 
+            translator.addPostprocessingStep { module ->
+                val extensions = IrGenerationExtension.getInstances(config.project)
+                val pluginContext = IrPluginContext(
+                    generatorContext.moduleDescriptor,
+                    generatorContext.bindingContext,
+                    generatorContext.languageVersionSettings,
+                    generatorContext.symbolTable,
+                    generatorContext.typeTranslator,
+                    generatorContext.irBuiltIns
+                )
+                extensions.forEach { extension ->
+                    extension.generate(module, pluginContext)
+                }
+            }
+
             val forwardDeclarationsModuleDescriptor = moduleDescriptor.allDependencyModules.firstOrNull { it.isForwardDeclarationModule }
 
             val modulesWithoutDCE = moduleDescriptor.allDependencyModules
@@ -179,9 +197,15 @@ internal val psiToIrPhase = konanUnitPhase(
 
             val functionIrClassFactory = BuiltInFictitiousFunctionIrClassFactory(
                     symbolTable, generatorContext.irBuiltIns, reflectionTypes)
+            val irProviderForInteropStubs = IrProviderForInteropStubs()
             val symbols = KonanSymbols(this, symbolTable, symbolTable.lazyWrapper, functionIrClassFactory)
-            val module = translator.generateModuleFragment(generatorContext, environment.getSourceFiles(),
-                    deserializer, listOf(functionIrClassFactory))
+            val stubGenerator = DeclarationStubGenerator(
+                    moduleDescriptor, symbolTable,
+                    config.configuration.languageVersionSettings
+            )
+            val irProviders = listOf(irProviderForInteropStubs, functionIrClassFactory, deserializer, stubGenerator)
+            stubGenerator.setIrProviders(irProviders)
+            val module = translator.generateModuleFragment(generatorContext, environment.getSourceFiles(), irProviders)
 
             if (this.stdlibModule in modulesWithoutDCE) {
                 functionIrClassFactory.buildAllClasses()
@@ -208,19 +232,6 @@ internal val destroySymbolTablePhase = konanUnitPhase(
         name = "DestroySymbolTable",
         description = "Destroy SymbolTable",
         prerequisite = setOf(createSymbolTablePhase)
-)
-
-internal val irGeneratorPluginsPhase = konanUnitPhase(
-        op = {
-            val extensions = IrGenerationExtension.getInstances(config.project)
-            extensions.forEach { extension ->
-                irModule!!.files.forEach {
-                    irFile -> extension.generate(irFile, this, bindingContext)
-                }
-            }
-        },
-        name = "IrGeneratorPlugins",
-        description = "Plugged-in ir generators"
 )
 
 // TODO: We copy default value expressions from expects to actuals before IR serialization,
@@ -258,13 +269,6 @@ internal val linkerPhase = konanUnitPhase(
         op = { Linker(this).link(compilerOutput) },
         name = "Linker",
         description = "Linker"
-)
-
-internal val linkPhase = namedUnitPhase(
-        name = "Link",
-        description = "Link stage",
-        lower = objectFilesPhase then
-                linkerPhase
 )
 
 internal val allLoweringsPhase = namedIrModulePhase(
@@ -389,6 +393,7 @@ internal val bitcodePhase = namedIrModulePhase(
                 RTTIPhase then
                 generateDebugInfoHeaderPhase then
                 escapeAnalysisPhase then
+                localEscapeAnalysisPhase then
                 codegenPhase then
                 finalizeDebugInfoPhase then
                 cStubsPhase
@@ -404,7 +409,6 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                 buildCExportsPhase then
                 psiToIrPhase then
                 destroySymbolTablePhase then
-                irGeneratorPluginsPhase then
                 copyDefaultValuesToActualPhase then
                 serializerPhase then
                 namedUnitPhase(
@@ -418,11 +422,14 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                                 bitcodePhase then
                                 verifyBitcodePhase then
                                 printBitcodePhase then
+                                linkBitcodeDependenciesPhase then
+                                bitcodeOptimizationPhase then
                                 produceOutputPhase then
                                 disposeLLVMPhase then
                                 unitSink()
                 ) then
-                linkPhase
+                objectFilesPhase then
+                linkerPhase
 )
 
 internal fun PhaseConfig.disableIf(phase: AnyNamedPhase, condition: Boolean) {
@@ -445,10 +452,14 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         disableIf(dependenciesLowerPhase, config.produce == CompilerOutputKind.LIBRARY)
         disableUnless(entryPointPhase, config.produce == CompilerOutputKind.PROGRAM)
         disableIf(bitcodePhase, config.produce == CompilerOutputKind.LIBRARY)
-        disableUnless(linkPhase, config.produce.involvesLinkStage)
+        disableUnless(bitcodeOptimizationPhase, config.produce.involvesLinkStage)
+        disableUnless(linkBitcodeDependenciesPhase, config.produce.involvesLinkStage)
+        disableUnless(objectFilesPhase, config.produce.involvesLinkStage)
+        disableUnless(linkerPhase, config.produce.involvesLinkStage)
         disableIf(testProcessorPhase, getNotNull(KonanConfigKeys.GENERATE_TEST_RUNNER) == TestRunnerKind.NONE)
         disableUnless(buildDFGPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(devirtualizationPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
+        disableUnless(localEscapeAnalysisPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(dcePhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(ghaPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(verifyBitcodePhase, config.needCompilerVerification || getBoolean(KonanConfigKeys.VERIFY_BITCODE))

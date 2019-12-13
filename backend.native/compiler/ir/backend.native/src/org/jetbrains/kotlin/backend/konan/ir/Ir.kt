@@ -45,7 +45,7 @@ internal class KonanSymbols(
         private val symbolTable: SymbolTable,
         lazySymbolTable: ReferenceSymbolTable,
         val functionIrClassFactory: BuiltInFictitiousFunctionIrClassFactory
-): Symbols<Context>(context, lazySymbolTable) {
+): Symbols<Context>(context, symbolTable) {
 
     val entryPoint = findMainEntryPoint(context)?.let { symbolTable.referenceSimpleFunction(it) }
 
@@ -59,6 +59,8 @@ internal class KonanSymbols(
     val nativePointed = symbolTable.referenceClass(context.interopBuiltIns.nativePointed)
     val nativePtrType = nativePtr.typeWith(arguments = emptyList())
     val nonNullNativePtr = symbolTable.referenceClass(context.nonNullNativePtr)
+
+    val immutableBlobOf = symbolTable.referenceSimpleFunction(context.immutableBlobOf)
 
     private fun unsignedClass(unsignedType: UnsignedType): IrClassSymbol = classById(unsignedType.classId)
 
@@ -130,6 +132,8 @@ internal class KonanSymbols(
     val interopCValueRead = symbolTable.referenceSimpleFunction(context.interopBuiltIns.cValueRead)
     val interopAllocType = symbolTable.referenceSimpleFunction(context.interopBuiltIns.allocType)
 
+    val interopTypeOf = symbolTable.referenceSimpleFunction(context.interopBuiltIns.typeOf)
+
     val interopCPointerGetRawValue = symbolTable.referenceSimpleFunction(context.interopBuiltIns.cPointerGetRawValue)
 
     val interopAllocObjCObject = symbolTable.referenceSimpleFunction(context.interopBuiltIns.allocObjCObject)
@@ -168,6 +172,12 @@ internal class KonanSymbols(
     val interopObjCObjectRawValueGetter =
             symbolTable.referenceSimpleFunction(context.interopBuiltIns.objCObjectRawPtr)
 
+    val interopNativePointedRawPtrGetter =
+            symbolTable.referenceSimpleFunction(context.interopBuiltIns.nativePointedRawPtrGetter)
+
+    val interopCPointerRawValue =
+            symbolTable.referenceProperty(context.interopBuiltIns.cPointerRawValue)
+
     val interopInterpretObjCPointer =
             symbolTable.referenceSimpleFunction(context.interopBuiltIns.interpretObjCPointer)
 
@@ -201,7 +211,11 @@ internal class KonanSymbols(
             ) as ClassDescriptor
     )
 
-    val executeImpl = symbolTable.referenceSimpleFunction(context.interopBuiltIns.executeImplFunction)
+    val executeImpl = symbolTable.referenceSimpleFunction(
+            builtIns.builtInsModule.getPackage(FqName("kotlin.native.concurrent")).memberScope
+                    .getContributedFunctions(Name.identifier("executeImpl"), NoLookupLocation.FROM_BACKEND)
+                    .single()
+    )
 
     val areEqualByValue = context.getKonanInternalFunctions("areEqualByValue").map {
         symbolTable.referenceSimpleFunction(it)
@@ -218,6 +232,8 @@ internal class KonanSymbols(
             .single().let { symbolTable.referenceSimpleFunction(it) }
 
     val throwArithmeticException = internalFunction("ThrowArithmeticException")
+
+    val throwIndexOutOfBoundsException = internalFunction("ThrowIndexOutOfBoundsException")
 
     override val ThrowNullPointerException = internalFunction("ThrowNullPointerException")
 
