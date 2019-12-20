@@ -3675,6 +3675,8 @@ dynamicTest("produce_dynamic") {
                 "singleton = I am single\n" +
                 "mutable = foo\n" +
                 "topLevel = 777 3\n" +
+                "IsInstance1 = PASS\n" +
+                "IsInstance2 = PASS\n" +
                 "getVector128 = (1, 2, 3, 4)\n" +
                 "Error handler: kotlin.Error: Expected error\n"
 }
@@ -3961,6 +3963,21 @@ if (UtilsKt.testTargetSupportsCodeCoverage(project)) {
         }
     }
 
+    task coverage_jumps(type: CoverageTest) {
+        binaryName = "CoverageJumps"
+        numberOfCoveredFunctions = 7
+        numberOfCoveredLines = 66
+
+        konanArtifacts {
+            program(binaryName, targets: [ target ]) {
+                srcDir 'coverage/basic/jumps'
+                baseDir "$testOutputCoverage/$binaryName"
+                entryPoint "coverage.basic.jumps.main"
+                extraOpts "-Xcoverage", "-Xcoverage-file=$profrawFile"
+            }
+        }
+    }
+
     task coverage_smoke0(type: CoverageTest) {
         binaryName = "CoverageSmoke0"
         numberOfCoveredFunctions = 2
@@ -4108,7 +4125,7 @@ dependencies {
 if (PlatformInfo.getTarget(project) == KonanTarget.IOS_ARM64.INSTANCE) {
     project.tasks
             .matching { it instanceof KonanTestExecutable }
-            .all {
+            .forEach {
                 ExecutorServiceKt.configureXcodeBuild((KonanTestExecutable) it)
             }
     // Exclude tasks that can not be run on device
@@ -4119,5 +4136,5 @@ if (PlatformInfo.getTarget(project) == KonanTarget.IOS_ARM64.INSTANCE) {
                     it instanceof KonanDynamicTest ||
                     it instanceof KonanLinkTest
             }
-            .all { it.enabled = false }
+            .forEach { it.enabled = false }
 }
