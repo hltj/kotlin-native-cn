@@ -317,8 +317,8 @@ def createTestTasks(File testRoot, Class<Task> taskType, Closure taskConfigurati
 
 void dependsOnPlatformLibs(Task t) {
     if (!useCustomDist) {
-        def testTarget = project.testTarget
-        if (testTarget != null && testTarget != project.hostName) {
+        def testTarget = project.target
+        if (testTarget != project.platformManager.Companion.host) {
             t.dependsOn(":${testTarget}PlatformLibs")
         } else {
             t.dependsOn(':distPlatformLibs')
@@ -802,9 +802,10 @@ task hello4(type: KonanLocalTest) {
     source = "runtime/basic/hello4.kt"
 }
 
-task enumEquals(type: KonanLocalTest) {
+standaloneTest('enumEquals') {
     goldValue = "true\nfalse\nfalse\n"
     source = "runtime/basic/enum_equals.kt"
+    flags = ['-XXLanguage:-ProhibitComparisonOfIncompatibleEnums', '-e', 'runtime.basic.enum_equals.main']
 }
 
 standaloneTest("entry0") {
@@ -850,7 +851,7 @@ standaloneTest("readline1") {
 }
 
 task tostring0(type: KonanLocalTest) {
-    goldValue = "127\n-1\n239\nA\nЁ\nト\n1122334455\n112233445566778899\n3.14159265358\n1.0E27\n1.0E-300\ntrue\nfalse\n"
+    goldValue = "127\n-1\n239\nA\nЁ\nト\n1122334455\n112233445566778899\n3.14159265358\n1.0E27\n1.0E7\n1.0E-300\ntrue\nfalse\n"
     source = "runtime/basic/tostring0.kt"
 }
 
@@ -1123,9 +1124,10 @@ task enum_reorderedArguments(type: KonanLocalTest) {
     source = "codegen/enum/reorderedArguments.kt"
 }
 
-task switchLowering(type: KonanLocalTest) {
+standaloneTest('switchLowering') {
     goldValue = "EnumA.A\nok\nok\nok\nok\nok\n"
     source = "codegen/enum/switchLowering.kt"
+    flags = ['-XXLanguage:-ProhibitComparisonOfIncompatibleEnums', '-e', 'codegen.enum.switchLowering.main']
 }
 
 task enum_lambdaInDefault(type: KonanLocalTest) {
@@ -1787,6 +1789,11 @@ task BitSet(type: KonanLocalTest) {
     expectedFail = (project.testTarget == 'wasm32') // Uses exceptions.
     expectedExitStatus = 0
     source = "runtime/collections/BitSet.kt"
+}
+
+task stack_array(type: KonanLocalTest) {
+    goldValue = "true\n3\n"
+    source = "runtime/collections/stack_array.kt"
 }
 
 task array0(type: KonanLocalTest) {
@@ -2792,7 +2799,7 @@ task vararg_of_literals(type: KonanLocalTest) {
     source = "lower/vararg_of_literals.kt"
 }
 
-task tailrec(type: KonanLocalTest) {
+standaloneTest('tailrec') {
     goldValue = "12\n100000000\n" +
             "8\n" +
             "1\n" +
@@ -2802,6 +2809,7 @@ task tailrec(type: KonanLocalTest) {
             "default\n" +
             "42\n"
     source = "lower/tailrec.kt"
+    flags = ['-XXLanguage:-ProhibitTailrecOnVirtualMember', '-e', 'lower.tailrec.main']
 }
 
 task inline1(type: KonanLocalTest) {
@@ -3739,9 +3747,6 @@ task library_ir_provider_mismatch(type: KonanDriverTest) {
     goldValue = isWindows() ? messages.replaceAll('\\/', '\\\\') : messages
 }
 
-def target = ext.platformManager.targetByName(project.testTarget ?: 'host')
-def targetName = target.name
-
 if (isAppleTarget(project)) {
     task testValuesFramework(type: FrameworkTest) {
         final String frameworkName = 'Values'
@@ -3774,12 +3779,12 @@ if (isAppleTarget(project)) {
         }
 
         konanArtifacts {
-            framework(frameworkName, targets: [ targetName ]) {
+            framework(frameworkName, targets: [target.name]) {
                 srcDir 'framework/values'
                 baseDir dir
 
                 if (!useCustomDist) {
-                    dependsOn ":${targetName}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
                 }
 
                 extraOpts "-Xembed-bitcode-marker"
@@ -3804,7 +3809,7 @@ if (isAppleTarget(project)) {
                     dependsOn ":${target}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
                 }
 
-                extraOpts "-Xembed-bitcode-marker", "-Xobjc-generics"
+                extraOpts "-Xembed-bitcode-marker"
                 extraOpts project.globalTestArgs
             }
         }
@@ -3817,12 +3822,12 @@ if (isAppleTarget(project)) {
         frameworkNames = [frameworkName]
         if (cacheTesting == null) fullBitcode = true
         konanArtifacts {
-            framework(frameworkName, targets: [ targetName ]) {
+            framework(frameworkName, targets: [target.name]) {
                 srcDir 'framework/stdlib'
                 baseDir "$testOutputFramework/$testName"
 
                 if (!useCustomDist) {
-                    dependsOn ":${targetName}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
                 }
 
                 extraOpts "-Xembed-bitcode"
@@ -3843,26 +3848,26 @@ if (isAppleTarget(project)) {
         final String dir = "$testOutputFramework/$testName"
 
         konanArtifacts {
-            framework(firstFrameworkName, targets: [ targetName ]) {
+            framework(firstFrameworkName, targets: [target.name]) {
                 srcDir 'framework/multiple/framework1'
                 srcDir 'framework/multiple/shared'
                 baseDir dir
 
                 if (!useCustomDist) {
-                    dependsOn ":${targetName}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
                 }
 
                 extraOpts "-Xembed-bitcode"
                 extraOpts project.globalTestArgs
             }
 
-            framework(secondFrameworkName, targets: [ targetName ]) {
+            framework(secondFrameworkName, targets: [target.name]) {
                 srcDir 'framework/multiple/framework2'
                 srcDir 'framework/multiple/shared'
                 baseDir dir
 
                 if (!useCustomDist) {
-                    dependsOn ":${targetName}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
                 }
 
                 extraOpts "-Xembed-bitcode"
@@ -3898,7 +3903,7 @@ KotlinNativeTestKt.createTest(project, 'harmonyRegexTest', KonanGTest) { task ->
     def sources = UtilsKt.getFilesToCompile(project, ["harmony_regex"], [])
 
     konanArtifacts {
-        program('harmonyRegexTest', targets: [targetName]) {
+        program('harmonyRegexTest', targets: [target.name]) {
             srcFiles sources
             baseDir "$testOutputStdlib/harmonyRegexTest"
             extraOpts '-tr'
@@ -3909,7 +3914,7 @@ KotlinNativeTestKt.createTest(project, 'harmonyRegexTest', KonanGTest) { task ->
     task.finalizedBy("resultsTask")
 }
 
-if (UtilsKt.testTargetSupportsCodeCoverage(project)) {
+if (UtilsKt.getTestTargetSupportsCodeCoverage(project)) {
     task coverage_basic_program(type: CoverageTest) {
 
         binaryName = "CoverageBasic"
@@ -3933,7 +3938,7 @@ if (UtilsKt.testTargetSupportsCodeCoverage(project)) {
         numberOfCoveredLines = 1
 
         konanArtifacts {
-            library("lib_to_cover", targets: [targetName]) {
+            library("lib_to_cover", targets: [target.name]) {
                 srcFiles 'coverage/basic/library/library.kt'
             }
             program(binaryName, targets: [ target ]) {
@@ -4020,7 +4025,7 @@ KotlinNativeTestKt.createTest(project, 'stdlibTest', KonanGTest) { task ->
             [ 'build/stdlib_external/stdlib/test/internalAnnotations.kt' ])
 
     konanArtifacts {
-        program('stdlibTest', targets: [ targetName ]) {
+        program('stdlibTest', targets: [target.name]) {
             srcFiles sources
             baseDir "$testOutputStdlib/stdlibTest"
             enableMultiplatform true
@@ -4058,7 +4063,7 @@ task buildKonanTests { t ->
     def sources = UtilsKt.getFilesToCompile(project, compileList, excludeList)
 
     konanArtifacts {
-        program('localTest', targets: [ targetName ]) {
+        program('localTest', targets: [target.name]) {
             srcFiles sources
             baseDir testOutputLocal
             extraOpts '-tr'
@@ -4068,7 +4073,7 @@ task buildKonanTests { t ->
 
     // Set build dependencies.
     dependsOn compileKonanLocalTest
-    UtilsKt.dependsOnDist(project, "compileKonanLocalTest${targetName.capitalize()}")
+    UtilsKt.dependsOnDist(project, "compileKonanLocalTest${target.name.capitalize()}")
 
     // Local tests build into a single binary should depend on this task
     project.tasks

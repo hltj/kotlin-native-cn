@@ -236,11 +236,17 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = "-Xcoverage-file", valueDescription = "<path>", description = "Save coverage information to the given file")
     var coverageFile: String? = null
 
-    @Argument(value = "-Xobjc-generics", description = "Enable experimental generics support for framework header")
-    var objcGenerics: Boolean = false
+    @Argument(value = "-Xno-objc-generics", description = "Disable generics support for framework header")
+    var noObjcGenerics: Boolean = false
 
     @Argument(value="-Xoverride-clang-options", valueDescription = "<arg1,arg2,...>", description = "Explicit list of Clang options")
     var clangOptions: Array<String>? = null
+
+    @Argument(value="-Xallocator", valueDescription = "std | mimalloc", description = "Allocator used in runtime")
+    var allocator: String = "std"
+
+    @Argument(value = "-Xmetadata-klib", description = "Produce a klib that only contains the declarations metadata")
+    var metadataKlib: Boolean = false
 
     override fun configureAnalysisFlags(collector: MessageCollector): MutableMap<AnalysisFlag<*>, Any> =
             super.configureAnalysisFlags(collector).also {

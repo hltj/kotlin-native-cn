@@ -17,10 +17,12 @@ import org.jetbrains.kotlin.backend.konan.serialization.*
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
+import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
 import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.descriptors.konan.isKonanStdlib
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
+import org.jetbrains.kotlin.ir.symbols.IrSymbol
 import org.jetbrains.kotlin.ir.util.DeclarationStubGenerator
 import org.jetbrains.kotlin.ir.util.SymbolTable
 import org.jetbrains.kotlin.ir.util.addChild
@@ -135,6 +137,7 @@ internal val buildCExportsPhase = konanUnitPhase(
 internal val psiToIrPhase = konanUnitPhase(
         op = {
             // Translate AST to high level IR.
+            val mppKlibs = config.configuration.get(CommonConfigurationKeys.KLIB_MPP)?:false
 
             val symbolTable = symbolTable!!
 
@@ -165,7 +168,6 @@ internal val psiToIrPhase = konanUnitPhase(
             // Note: using [llvmModuleSpecification] since this phase produces IR for generating single LLVM module.
 
             val exportedDependencies = (getExportedDependencies() + modulesWithoutDCE).distinct()
-
             val deserializer = KonanIrLinker(
                     moduleDescriptor,
                     this as LoggingContext,
@@ -195,6 +197,8 @@ internal val psiToIrPhase = konanUnitPhase(
                 dependenciesCount = dependencies.size
             }
 
+            deserializer.initializeExpectActualLinker()
+
             val functionIrClassFactory = BuiltInFictitiousFunctionIrClassFactory(
                     symbolTable, generatorContext.irBuiltIns, reflectionTypes)
             val irProviderForInteropStubs = IrProviderForInteropStubs()
@@ -205,7 +209,20 @@ internal val psiToIrPhase = konanUnitPhase(
             )
             val irProviders = listOf(irProviderForInteropStubs, functionIrClassFactory, deserializer, stubGenerator)
             stubGenerator.setIrProviders(irProviders)
-            val module = translator.generateModuleFragment(generatorContext, environment.getSourceFiles(), irProviders)
+
+            expectDescriptorToSymbol = mutableMapOf<DeclarationDescriptor, IrSymbol>()
+            val module = translator.generateModuleFragment(
+                generatorContext,
+                environment.getSourceFiles(),
+                irProviders,
+                // TODO: This is a hack to allow platform libs to build in reasonable time.
+                // referenceExpectsForUsedActuals() appears to be quadratic in time because of
+                // how ExpectedActualResolver is implemented.
+                // Need to fix ExpectActualResolver to either cache expects or somehow reduce the member scope searches.
+                if (mppKlibs) expectDescriptorToSymbol else null
+            )
+
+            deserializer.finalizeExpectActualLinker()
 
             if (this.stdlibModule in modulesWithoutDCE) {
                 functionIrClassFactory.buildAllClasses()
@@ -247,12 +264,19 @@ internal val copyDefaultValuesToActualPhase = konanUnitPhase(
 
 internal val serializerPhase = konanUnitPhase(
         op = {
+            val mppKlibs = config.configuration.get(CommonConfigurationKeys.KLIB_MPP)?:false
             val descriptorTable = DescriptorTable.createDefault()
-            serializedIr = KonanIrModuleSerializer(this, irModule!!.irBuiltins, descriptorTable).serializedIrModule(irModule!!)
+
+            serializedIr = irModule?.let { ir ->
+                KonanIrModuleSerializer(
+                    this, ir.irBuiltins, descriptorTable, expectDescriptorToSymbol, skipExpects = !mppKlibs
+                ).serializedIrModule(ir)
+            }
+
             val serializer = KlibMetadataMonolithicSerializer(
                 this.config.configuration.languageVersionSettings,
-                config.configuration.get(CommonConfigurationKeys.METADATA_VERSION
-            )!!, descriptorTable)
+                config.configuration.get(CommonConfigurationKeys.METADATA_VERSION)!!,
+                descriptorTable, !mppKlibs)
             serializedMetadata = serializer.serializeModule(moduleDescriptor)
         },
         name = "Serializer",
@@ -399,6 +423,22 @@ internal val bitcodePhase = namedIrModulePhase(
                 cStubsPhase
 )
 
+private val backendCodegen = namedUnitPhase(
+        name = "Backend codegen",
+        description = "Backend code generation",
+        lower = takeFromContext<Context, Unit, IrModuleFragment> { it.irModule!! } then
+                allLoweringsPhase then // Lower current module first.
+                dependenciesLowerPhase then // Then lower all libraries in topological order.
+                                            // With that we guarantee that inline functions are unlowered while being inlined.
+                entryPointPhase then
+                bitcodePhase then
+                verifyBitcodePhase then
+                printBitcodePhase then
+                linkBitcodeDependenciesPhase then
+                bitcodeOptimizationPhase then
+                unitSink()
+)
+
 // Have to hide Context as type parameter in order to expose toplevelPhase outside of this module.
 val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
         name = "Compiler",
@@ -414,16 +454,7 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                 namedUnitPhase(
                         name = "Backend",
                         description = "All backend",
-                        lower = takeFromContext<Context, Unit, IrModuleFragment> { it.irModule!! } then
-                                allLoweringsPhase then // Lower current module first.
-                                dependenciesLowerPhase then // Then lower all libraries in topological order.
-                                                            // With that we guarantee that inline functions are unlowered while being inlined.
-                                entryPointPhase then
-                                bitcodePhase then
-                                verifyBitcodePhase then
-                                printBitcodePhase then
-                                linkBitcodeDependenciesPhase then
-                                bitcodeOptimizationPhase then
+                        lower = backendCodegen then
                                 produceOutputPhase then
                                 disposeLLVMPhase then
                                 unitSink()
@@ -463,5 +494,11 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         disableUnless(dcePhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(ghaPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(verifyBitcodePhase, config.needCompilerVerification || getBoolean(KonanConfigKeys.VERIFY_BITCODE))
+
+        val isDescriptorsOnlyLibrary = config.metadataKlib == true
+        disableIf(psiToIrPhase, isDescriptorsOnlyLibrary)
+        disableIf(destroySymbolTablePhase, isDescriptorsOnlyLibrary)
+        disableIf(copyDefaultValuesToActualPhase, isDescriptorsOnlyLibrary)
+        disableIf(backendCodegen, isDescriptorsOnlyLibrary)
     }
 }

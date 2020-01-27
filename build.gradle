@@ -24,6 +24,7 @@ import org.jetbrains.kotlin.KotlinBuildPusher
 import org.jetbrains.kotlin.CollisionDetector
 import org.jetbrains.kotlin.CollisionTransformer
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import org.apache.tools.ant.filters.ReplaceTokens
 
 buildscript {
     apply from: "gradle/kotlinGradlePlugin.gradle"
@@ -65,6 +66,12 @@ ext {
     experimentalEnabled = project.hasProperty("org.jetbrains.kotlin.native.experimentalTargets")
     platformManager = new PlatformManager(DistributionKt.buildDistribution(projectDir.absolutePath),
             ext.experimentalEnabled)
+
+    cacheableTargets = [
+            KonanTarget.MACOS_X64.INSTANCE,
+            KonanTarget.IOS_X64.INSTANCE
+    ]
+    cacheableTargetNames = cacheableTargets.collect { it.visibleName }
 
     kotlinCompilerModule="org.jetbrains.kotlin:kotlin-compiler:${kotlinVersion}"
     kotlinStdLibModule="org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}"
@@ -257,7 +264,6 @@ task distSources {
 }
 
 task detectJarCollision(type: CollisionDetector) {
-    ignoredFiles.addAll(["META-INF/MANIFEST.MF", "META-INF/services/**"])
     configurations = [project.configurations.distPack]
     resolvingRules["META-INF/kotlin-util-klib.kotlin_module"] = "kotlin-compiler"
     resolvingRules["META-INF/kotlin-util-io.kotlin_module"] = "kotlin-compiler"
@@ -292,7 +298,7 @@ task detectJarCollision(type: CollisionDetector) {
                                                     "frontend.common", "frontend.java", "cli-common", "ir.tree",
                                                     "ir.psi2ir", "ir.backend.common", "backend.jvm", "backend.js",
                                                     "backend.wasm", "ir.serialization.common", "ir.serialization.js",
-                                                    "ir.serialization.jvm",
+                                                    "ir.serialization.jvm", "jvm",
                                                     "backend-common", "backend", "plugin-api", "light-classes", "cli",
                                                     "cli-js", "incremental-compilation-impl", "js.ast", "js.serializer",
                                                     "js.parser", "js.frontend", "js.translator", "js.dce", "metadata",
@@ -354,8 +360,16 @@ task distCompiler(type: Copy) {
             exclude('**/*.bat')
         }
     }
+
     from(project.file('konan')) {
         into('konan')
+        exclude('**/*.properties')
+    }
+
+    from(project.file('konan')) {
+        into('konan')
+        include('**/*.properties')
+        filter(ReplaceTokens, tokens: [compilerVersion: konanVersionFull.toString()])
     }
     if (experimentalEnabled) {
         file('konan/experimentalTargetsEnabled').text = ""
@@ -445,6 +459,9 @@ targetList.each { target ->
 
     task("${target}PlatformLibs") {
         dependsOn ":platformLibs:${target}Install"
+        if (target in cacheableTargetNames) {
+            dependsOn(":platformLibs:${target}Cache")
+        }
     }
 
     task("${target}CrossDist") {
@@ -464,6 +481,7 @@ targetList.each { target ->
 
 task distPlatformLibs {
     dependsOn ':platformLibs:hostInstall'
+    dependsOn ':platformLibs:hostCache'
 }
 
 task dist {
@@ -487,6 +505,10 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
         exclude 'klib/testLibrary'
         into baseName
     }
+    from(project.rootDir) {
+        include 'licenses/**'
+        into baseName
+    }
     if (isWindows()) {
         zip64 true
     } else {
@@ -504,9 +526,20 @@ task bundleRestricted(type: Tar) {
         exclude 'dependencies'
         exclude 'klib/testLibrary'
         platformManager.targetValues.each { target ->
-            if (PlatformInfo.isAppleTarget(target))
+            if (PlatformInfo.isAppleTarget(target)) {
                 exclude "klib/platform/${target.name}"
+                exclude {
+                    // Exclude platform libraries caches too.
+                    !it.isDirectory() && it.relativePath.startsWithAny("klib/cache/${target.name}-g") &&
+                            it.name != "libstdlib-cache.a"
+                }
+            }
         }
+        exclude '**/xcode_license.pdf'
+        into baseName
+    }
+    from(project.rootDir) {
+        include 'licenses/**'
         exclude '**/xcode_license.pdf'
         into baseName
     }
@@ -528,10 +561,6 @@ configure([bundle, bundleRestricted]) {
     }
     from(project.rootDir) {
         include 'RELEASE_NOTES.md'
-        into baseName
-    }
-    from(project.rootDir) {
-        include 'licenses/**'
         into baseName
     }
 

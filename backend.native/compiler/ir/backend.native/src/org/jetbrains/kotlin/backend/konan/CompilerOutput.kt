@@ -153,7 +153,7 @@ internal fun produceOutput(context: Context) {
                     context.config.includeBinaries,
                     neededLibraries,
                     context.serializedMetadata!!,
-                    context.serializedIr!!,
+                    context.serializedIr,
                     versions,
                     target,
                     output,
@@ -196,7 +196,7 @@ private fun embedAppleLinkerOptionsToBitcode(llvm: Llvm, config: KonanConfig) {
     }
 
     val optionsToEmbed = findEmbeddableOptions(config.platform.configurables.linkerKonanFlags) +
-            llvm.nativeDependenciesToLink.flatMap { findEmbeddableOptions(it.linkerOpts) }
+            llvm.allNativeDependencies.flatMap { findEmbeddableOptions(it.linkerOpts) }
 
     embedLlvmLinkOptions(llvm.llvmModule, optionsToEmbed)
 }
