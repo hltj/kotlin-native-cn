@@ -7,9 +7,11 @@ import org.jetbrains.kotlin.backend.common.phaser.*
 import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
 import org.jetbrains.kotlin.backend.common.serialization.metadata.KlibMetadataMonolithicSerializer
 import org.jetbrains.kotlin.backend.konan.descriptors.isForwardDeclarationModule
+import org.jetbrains.kotlin.backend.konan.descriptors.isFromInteropLibrary
 import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
 import org.jetbrains.kotlin.backend.konan.ir.interop.IrProviderForInteropStubs
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
+import org.jetbrains.kotlin.backend.konan.ir.interop.IrProviderForCEnumAndCStructStubs
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
@@ -17,8 +19,7 @@ import org.jetbrains.kotlin.backend.konan.serialization.*
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
-import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
-import org.jetbrains.kotlin.descriptors.ModuleDescriptor
+import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.konan.isKonanStdlib
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
@@ -201,14 +202,20 @@ internal val psiToIrPhase = konanUnitPhase(
 
             val functionIrClassFactory = BuiltInFictitiousFunctionIrClassFactory(
                     symbolTable, generatorContext.irBuiltIns, reflectionTypes)
-            // TODO: Add special handling for enums and structs.
-            val irProviderForInteropStubs = IrProviderForInteropStubs { false }
             val symbols = KonanSymbols(this, symbolTable, symbolTable.lazyWrapper, functionIrClassFactory)
             val stubGenerator = DeclarationStubGenerator(
                     moduleDescriptor, symbolTable,
                     config.configuration.languageVersionSettings
             )
-            val irProviders = listOf(irProviderForInteropStubs, functionIrClassFactory, deserializer, stubGenerator)
+            val irProviderForCEnumsAndCStructs = IrProviderForCEnumAndCStructStubs(generatorContext, interopBuiltIns, symbols)
+            val irProviderForInteropStubs = IrProviderForInteropStubs(irProviderForCEnumsAndCStructs::canHandleSymbol)
+            val irProviders = listOf(
+                    irProviderForCEnumsAndCStructs,
+                    irProviderForInteropStubs,
+                    functionIrClassFactory,
+                    deserializer,
+                    stubGenerator
+            )
             stubGenerator.setIrProviders(irProviders)
 
             expectDescriptorToSymbol = mutableMapOf<DeclarationDescriptor, IrSymbol>()
@@ -228,6 +235,9 @@ internal val psiToIrPhase = konanUnitPhase(
             if (this.stdlibModule in modulesWithoutDCE) {
                 functionIrClassFactory.buildAllClasses()
             }
+            modulesWithoutDCE
+                    .filter(ModuleDescriptor::isFromInteropLibrary)
+                    .forEach(irProviderForCEnumsAndCStructs::buildAllEnumsAndStructsFrom)
 
             irModule = module
             irModules = deserializer.modules.filterValues { llvmModuleSpecification.containsModule(it) }
@@ -236,6 +246,8 @@ internal val psiToIrPhase = konanUnitPhase(
             functionIrClassFactory.module =
                     (listOf(irModule!!) + deserializer.modules.values)
                             .single { it.descriptor.isKonanStdlib() }
+
+            irProviderForCEnumsAndCStructs.module = module
         },
         name = "Psi2Ir",
         description = "Psi to IR conversion",
@@ -306,7 +318,6 @@ internal val allLoweringsPhase = namedIrModulePhase(
                 inlinePhase then
                 provisionalFunctionExpressionPhase then
                 lowerAfterInlinePhase then
-                interopPart1Phase then
                 performByIrFile(
                         name = "IrLowerByFile",
                         description = "IR Lowering by file",
@@ -321,13 +332,14 @@ internal val allLoweringsPhase = namedIrModulePhase(
                                 defaultParameterExtentPhase then
                                 innerClassPhase then
                                 dataClassesPhase then
+                                singleAbstractMethodPhase then
                                 builtinOperatorPhase then
                                 finallyBlocksPhase then
                                 testProcessorPhase then
                                 enumClassPhase then
                                 delegationPhase then
                                 callableReferencePhase then
-                                interopPart2Phase then
+                                interopPhase then
                                 varargPhase then
                                 compileTimeEvaluatePhase then
                                 coroutinesPhase then

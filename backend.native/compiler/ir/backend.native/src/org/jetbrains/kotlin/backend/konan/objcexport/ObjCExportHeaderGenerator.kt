@@ -15,7 +15,6 @@ import org.jetbrains.kotlin.builtins.getReturnTypeFromFunctionType
 import org.jetbrains.kotlin.builtins.getValueParameterTypesFromFunctionType
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.name.ClassId
-import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.resolve.constants.ArrayValue
 import org.jetbrains.kotlin.resolve.constants.KClassValue
 import org.jetbrains.kotlin.resolve.deprecation.Deprecation
@@ -582,7 +581,6 @@ internal class ObjCExportTranslatorImpl(
                         }
                     }
                     MethodBridgeValueParameter.ErrorOutParameter -> "error"
-                    is MethodBridgeValueParameter.KotlinResultOutParameter -> "result"
                 }
 
                 val uniqueName = unifyName(candidateName, usedNames)
@@ -592,15 +590,6 @@ internal class ObjCExportTranslatorImpl(
                     is MethodBridgeValueParameter.Mapped -> mapType(p!!.type, bridge.bridge, objCExportScope)
                     MethodBridgeValueParameter.ErrorOutParameter ->
                         ObjCPointerType(ObjCNullableReferenceType(ObjCClassType("NSError")), nullable = true)
-
-                    is MethodBridgeValueParameter.KotlinResultOutParameter -> {
-                        val resultType = mapType(method.returnType!!, bridge.bridge, objCExportScope)
-                        // Note: non-nullable reference or pointer type is unusable here
-                        // when passing reference to local variable from Swift because it
-                        // would require a non-null initializer then.
-                        val pointeeType = resultType.makeNullableIfReferenceOrPointer()
-                        ObjCPointerType(pointeeType, nullable = true)
-                    }
                 }
 
                 parameters += ObjCParameter(uniqueName, p, type)
@@ -621,6 +610,14 @@ internal class ObjCExportTranslatorImpl(
         val attributes = mutableListOf<String>()
 
         attributes += swiftNameAttribute(swiftName)
+        if (baseMethodBridge.returnBridge is MethodBridge.ReturnValue.WithError.ZeroForError
+                && baseMethodBridge.returnBridge.successMayBeZero) {
+
+            // Method may return zero on success, but
+            // standard Objective-C convention doesn't suppose this happening.
+            // Add non-standard convention hint for Swift:
+            attributes += "swift_error(nonnull_error)" // Means "failure <=> (error != nil)".
+        }
 
         if (method is ConstructorDescriptor && !method.constructedClass.isArray) { // TODO: check methodBridge instead.
             attributes += "objc_designated_initializer"
@@ -643,29 +640,13 @@ internal class ObjCExportTranslatorImpl(
         }
     }
 
-    private val uncheckedExceptionClasses =
-            listOf("kotlin.Error", "kotlin.RuntimeException").map { ClassId.topLevel(FqName(it)) }
-
     private fun exportThrown(method: FunctionDescriptor) {
         if (!method.kind.isReal) return
         val throwsAnnotation = method.annotations.findAnnotation(KonanFqNames.throws) ?: return
 
-        if (!mapper.doesThrow(method)) {
-            warningCollector.reportWarning(method,
-                    "@${KonanFqNames.throws.shortName()} annotation should also be added to a base method")
-        }
-
         val arguments = (throwsAnnotation.allValueArguments.values.single() as ArrayValue).value
         for (argument in arguments) {
             val classDescriptor = TypeUtils.getClassDescriptor((argument as KClassValue).getArgumentType(method.module)) ?: continue
-
-            classDescriptor.getAllSuperClassifiers().firstOrNull { it.classId in uncheckedExceptionClasses }?.let {
-                warningCollector.reportWarning(method,
-                        "Method is declared to throw ${classDescriptor.fqNameSafe}, " +
-                                "but instances of ${it.fqNameSafe} and its subclasses aren't propagated " +
-                                "from Kotlin to Objective-C/Swift")
-            }
-
             generator?.requireClassOrInterface(classDescriptor)
         }
     }
@@ -675,11 +656,17 @@ internal class ObjCExportTranslatorImpl(
         MethodBridge.ReturnValue.HashCode -> ObjCPrimitiveType.NSUInteger
         is MethodBridge.ReturnValue.Mapped -> mapType(method.returnType!!, returnBridge.bridge, objCExportScope)
         MethodBridge.ReturnValue.WithError.Success -> ObjCPrimitiveType.BOOL
-        is MethodBridge.ReturnValue.WithError.RefOrNull -> {
-            val successReturnType = mapReturnType(returnBridge.successBridge, method, objCExportScope) as? ObjCNonNullReferenceType
-                    ?: error("Function is expected to have non-null return type: $method")
+        is MethodBridge.ReturnValue.WithError.ZeroForError -> {
+            val successReturnType = mapReturnType(returnBridge.successBridge, method, objCExportScope)
 
-            ObjCNullableReferenceType(successReturnType)
+            if (!returnBridge.successMayBeZero) {
+                check(successReturnType is ObjCNonNullReferenceType
+                        || (successReturnType is ObjCPointerType && !successReturnType.nullable)) {
+                    "Unexpected return type: $successReturnType in $method"
+                }
+            }
+
+            successReturnType.makeNullableIfReferenceOrPointer()
         }
 
         MethodBridge.ReturnValue.Instance.InitResult,

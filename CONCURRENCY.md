@@ -10,6 +10,7 @@
    * 对象子图冻结
    * 对象子图分离
    * 使用 C 语言全局变量的原始共享内存
+   * Atomic primitives and references
    * 用于阻塞操作的协程（本文档未涉及）
 
 
@@ -65,7 +66,9 @@ future.consume {
 ### 对象转移与冻结
 
    Kotlin/Native 运行时维护的一个重要的不变式是，对象要么归单个<!--
-  -->线程/worker 所有，要么不可变（*共享 XOR 可变*）。这确保了同一数据只有一个修改方，因此不需要锁定。为了实现这个不变式，我们使用了非外部引用的对象子图的概念。
+  -->线程/worker 所有，要么不可变（*共享 XOR 可变*）。这确保了同一数据只有一个修改方，
+  因此不需要锁定。为了实现这个不变式，我们使用了非外部<!--
+  -->引用的对象子图的概念。
   这是一个没有来自子图以外的外部引用的子图，（在 ARC 系统中）可由
   O(N) 复杂度进行算法检测，其中 N 是这种子图中元素的数量。
   这种子图通常是作为 lambda 表达式的结果而产生的（例如某些构建器），并且可能不<!--
@@ -89,8 +92,34 @@ future.consume {
   断开到 `COpaquePointer` 值的连接，该值可以存储在 `void*` 数据中，因此断开连接的对象子图<!--
   -->可以存储在 C 语言数据结构中，并且之后还能在任意线程或 worker 中通过 `DetachedObjectGraph<T>.attach()`
   加回。如果 worker 机制不足以完成特定任务，那么可以将对象子图分离与[原始共享内存](#shared)相结合，能够在<!--
-  -->并发线程之间进行旁路对象传输。
-
+  -->并发线程之间进行旁路对象传输。 Note, that object detachment
+  may require explicit leaving function holding object references and then performing cyclic garbage collection.
+  For example, code like:
+```$kotlin
+val graph = DetachedObjectGraph {
+    val map = mutableMapOf<String, String>()
+    for (entry in map.entries) {
+        // ...
+    }
+    map
+}
+```
+  will not work as expected and will throw runtime exception, as there are uncollected cycles in the detached graph, while:
+```$kotlin
+val graph = DetachedObjectGraph {
+    {
+     val map = mutableMapOf<String, String>()
+     for (entry in map.entries) {
+         // ...
+     }
+     map
+    }().also {
+      kotlin.native.internal.GC.collect()
+    }
+ }
+```
+ will work properly, as holding references will be released, and then cyclic garbage affecting reference counter is
+ collected.
 
 <a name="shared"></a>
 ### 原始共享内存
@@ -150,3 +179,33 @@ class SharedData(rawPtr: NativePtr) : CStructVar(rawPtr) {
    * 枚举总是冻结的
 
  结合起来，这些机制允许在多平台（MPP）项目中跨平台复用代码的自然竞态冻结编程。
+
+<a name="atomic_references"></a>
+### Atomic primitives and references
+
+ Kotlin/Native standard library provides primitives for safe working with concurrently mutable data, namely
+`AtomicInt`, `AtomicLong`, `AtomicNativePtr`, `AtomicReference` and `FreezableAtomicReference` in the package
+`kotlin.native.concurrent`.
+Atomic primitives allows concurrency-safe update operations, such as increment, decrement and compare-and-swap,
+along with value setters and getters. Atomic primitives are considered always frozen by the runtime, and
+while their fields can be updated with the regular `field.value += 1`, it is not concurrency safe.
+Value must be be changed using dedicated operations, so it is possible to perform concurrent-safe
+global counters and similar data structures.
+
+  Some algorithms require shared mutable references across the multiple workers, for example global mutable
+configuration could be implemented as an immutable instance of properties list atomically replaced with the
+new version on configuration update as the whole in a single transaction. This way no inconsistent configuration
+could be seen, and at the same time configuration could be updated as needed.
+To achieve such functionality Kotlin/Native runtime provides two related classes:
+`kotlin.native.concurrent.AtomicReference` and `kotlin.native.concurrent.FreezableAtomicReference`.
+Atomic reference holds reference to a frozen or immutable object, and its value could be updated by set
+or compare-and-swap operation. Thus, dedicated set of objects could be used to create mutable shared object graphs
+(of immutable objects). Cycles in the shared memory could be created using atomic references, and to collect them
+Kotlin/Native runtime has special concurrent cycle collector, concurrently analyzing cyclic data rooted in atomic references.
+When cycle of no longer used objects is detected, collector zeroes out reference stored in atomic reference and thus
+allows cycle to be collected.
+
+ If atomic reference value is attempted to be set to non-frozen value runtime exception is thrown.
+
+ Freezable atomic reference is similar to the regular atomic reference, but until frozen behaves like regular box
+for a reference. After freezing it behaves like an atomic reference, and can only hold a reference to a frozen object.

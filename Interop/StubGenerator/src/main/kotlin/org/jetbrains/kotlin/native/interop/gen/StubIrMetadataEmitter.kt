@@ -12,18 +12,20 @@ import org.jetbrains.kotlin.utils.addIfNotNull
 class StubIrMetadataEmitter(
         private val context: StubIrContext,
         private val builderResult: StubIrBuilderResult,
-        private val moduleName: String
+        private val moduleName: String,
+        private val scope: KotlinScope
 ) {
     fun emit(): KlibModuleMetadata {
         val annotations = emptyList<KmAnnotation>()
-        val fragments = emitModuleFragments()
+        val fragments = emitModuleFragments(scope)
         return KlibModuleMetadata(moduleName, fragments, annotations)
     }
 
-    private fun emitModuleFragments(): List<KmModuleFragment> =
+    private fun emitModuleFragments(scope: KotlinScope): List<KmModuleFragment> =
             ModuleMetadataEmitter(
                     context.configuration.pkgName,
-                    builderResult.stubs
+                    builderResult.stubs,
+                    scope
             ).emit().let { kmModuleFragment ->
                 // We need to create module fragment for each part of package name.
                 val pkgName = context.configuration.pkgName
@@ -43,7 +45,8 @@ class StubIrMetadataEmitter(
  */
 internal class ModuleMetadataEmitter(
         private val packageFqName: String,
-        private val module: SimpleStubContainer
+        private val module: SimpleStubContainer,
+        private val scope: KotlinScope
 ) {
 
     fun emit(): KmModuleFragment {
@@ -88,6 +91,16 @@ internal class ModuleMetadataEmitter(
             val typeParametersInterner: Interner<TypeParameterStub> = Interner()
     )
 
+    private fun isTopLevelContainer(container: StubContainer?): Boolean =
+            container == null
+
+    private fun getPropertyNameInScope(originalName: String, container: StubContainer?): String =
+        if (isTopLevelContainer(container)) {
+            getTopLevelPropertyDeclarationName(scope, originalName)
+        } else {
+            originalName
+        }
+
     private val visitor = object : StubIrVisitor<VisitingContext, Any> {
 
         override fun visitClass(element: ClassStub, data: VisitingContext): List<KmClass> {
@@ -114,6 +127,9 @@ internal class ModuleMetadataEmitter(
                     km.constructors += elements.constructors.toList()
                     km.companionObject = element.companion?.nestedName()
                     km.uniqId = data.uniqIds.uniqIdForClass(element)
+                    if (element is ClassStub.Enum) {
+                        element.entries.mapTo(km.klibEnumEntries) { mapEnumEntry(it, classVisitingContext) }
+                    }
                 }
             }
             // Metadata stores classes as flat list.
@@ -143,7 +159,8 @@ internal class ModuleMetadataEmitter(
 
         override fun visitProperty(element: PropertyStub, data: VisitingContext) =
                 with (MappingExtensions(data.typeParametersInterner)) {
-                    KmProperty(element.flags, element.name, element.getterFlags, element.setterFlags).also { km ->
+                    val name = getPropertyNameInScope(element.name, data.container)
+                    KmProperty(element.flags, name, element.getterFlags, element.setterFlags).also { km ->
                         element.annotations.mapTo(km.annotations) { it.map() }
                         km.uniqId = data.uniqIds.uniqIdForProperty(element)
                         km.returnType = element.type.map()
@@ -180,6 +197,16 @@ internal class ModuleMetadataEmitter(
         override fun visitSimpleStubContainer(simpleStubContainer: SimpleStubContainer, data: VisitingContext): List<Any> =
                 simpleStubContainer.children.map { it.accept(this, data) } +
                         simpleStubContainer.simpleContainers.flatMap { visitSimpleStubContainer(it, data) }
+
+        private fun mapEnumEntry(enumEntry: EnumEntryStub, data: VisitingContext): KlibEnumEntry =
+                with (MappingExtensions(data.typeParametersInterner)) {
+                    KlibEnumEntry(
+                            name = enumEntry.name,
+                            uniqId = data.uniqIds.uniqIdForEnumEntry(enumEntry, data.container as ClassStub.Enum),
+                            ordinal = enumEntry.ordinal,
+                            annotations = mutableListOf(enumEntry.constant.mapToConstantAnnotation())
+                    )
+                }
     }
 }
 
@@ -371,6 +398,26 @@ private class MappingExtensions(
                     ("replaceWith" to replaceWith(replaceWith)),
                     ("level" to deprecationLevel(DeprecationLevel.ERROR))
             )
+            is AnnotationStub.CEnumEntryAlias -> mapOfNotNull(
+                    ("entryName" to entryName).asAnnotationArgument()
+            )
+            is AnnotationStub.CEnumVarTypeSize -> mapOfNotNull(
+                    ("size" to KmAnnotationArgument.IntValue(size))
+            )
+            is AnnotationStub.CStruct.MemberAt -> mapOfNotNull(
+                    ("offset" to KmAnnotationArgument.LongValue(offset))
+            )
+            is AnnotationStub.CStruct.ArrayMemberAt -> mapOfNotNull(
+                    ("offset" to KmAnnotationArgument.LongValue(offset))
+            )
+            is AnnotationStub.CStruct.BitField -> mapOfNotNull(
+                    ("offset" to KmAnnotationArgument.LongValue(offset)),
+                    ("size" to KmAnnotationArgument.IntValue(size))
+            )
+            is AnnotationStub.CStruct.VarType -> mapOfNotNull(
+                    ("size" to KmAnnotationArgument.LongValue(size)),
+                    ("align" to KmAnnotationArgument.IntValue(align))
+            )
         }
         return KmAnnotation(classifier.fqNameSerialized, args)
     }
@@ -490,6 +537,12 @@ private class MappingExtensions(
             else -> error("Floating-point constant of value $value with unexpected size of $size.")
         }
     }
+
+    fun ConstantStub.mapToConstantAnnotation(): KmAnnotation =
+            KmAnnotation(
+                    determineConstantAnnotationClassifier().fqNameSerialized,
+                    mapOf("value" to mapToAnnotationArgument())
+            )
 
     private val TypeParameterType.id: Int
         get() = typeParameterDeclaration.id
