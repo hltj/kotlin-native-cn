@@ -30,6 +30,7 @@ include ':common'
 include ':backend.native:tests'
 include ':backend.native:debugger-tests'
 include ':utilities'
+include 'dependencyPacker'
 
 include ':performance'
 include ':performance:ring'
@@ -61,7 +62,7 @@ if (hasProperty("kotlinProjectPath")) {
             substitute module("org.jetbrains.kotlin:kotlin-util-io:$kotlinVersion") with project(':kotlin-util-io')
             substitute module("org.jetbrains.kotlin:kotlin-util-klib:$kotlinVersion") with project(':kotlin-util-klib')
             substitute module("org.jetbrains.kotlin:kotlin-util-klib-metadata:$kotlinVersion") with project(':kotlin-util-klib-metadata')
-            substitute module("org.jetbrains.kotlin:kotlin-native-utils:$kotlinVersion") with project(':kotlin-native:kotlin-native-utils')
+            substitute module("org.jetbrains.kotlin:kotlin-native-utils:$kotlinVersion") with project(':native:kotlin-native-utils')
             substitute module("org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion") with project(':kotlin-reflect')
             substitute module("org.jetbrains.kotlinx:kotlinx-metadata-klib") with project(':kotlinx-metadata-klib')
         }
@@ -73,3 +74,4 @@ includeBuild 'build-tools'
 includeBuild 'extracted/konan.metadata'
 includeBuild 'extracted/konan.serializer'
 includeBuild 'tools/kotlin-native-gradle-plugin'
+

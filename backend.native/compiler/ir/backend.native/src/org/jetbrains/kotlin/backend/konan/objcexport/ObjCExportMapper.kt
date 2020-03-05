@@ -72,7 +72,7 @@ internal fun ObjCExportMapper.getClassIfCategory(extensionReceiverType: KotlinTy
 
 // Note: partially duplicated in ObjCExportLazyImpl.translateTopLevels.
 internal fun ObjCExportMapper.shouldBeExposed(descriptor: CallableMemberDescriptor): Boolean =
-        descriptor.isEffectivelyPublicApi && !descriptor.isSuspend && !descriptor.isExpect &&
+        descriptor.isEffectivelyPublicApi && !descriptor.isExpect &&
                 !isHiddenByDeprecation(descriptor)
 
 internal fun ObjCExportMapper.shouldBeExposed(descriptor: ClassDescriptor): Boolean =
@@ -241,6 +241,8 @@ private fun ObjCExportMapper.bridgeReturnType(
 ): MethodBridge.ReturnValue {
     val returnType = descriptor.returnType!!
     return when {
+        descriptor.isSuspend -> MethodBridge.ReturnValue.Suspend
+
         descriptor is ConstructorDescriptor -> if (descriptor.constructedClass.isArray) {
             MethodBridge.ReturnValue.Instance.FactoryResult
         } else {
@@ -315,11 +317,27 @@ private fun ObjCExportMapper.bridgeMethodImpl(descriptor: FunctionDescriptor): M
     }
 
     val returnBridge = bridgeReturnType(descriptor, convertExceptionsToErrors)
-    if (convertExceptionsToErrors) {
-        valueParameters += MethodBridgeValueParameter.ErrorOutParameter
+
+    if (descriptor.isSuspend) {
+        valueParameters += MethodBridgeValueParameter.SuspendCompletion
+    } else if (convertExceptionsToErrors) {
+        // Add error out parameter before tail block parameters. The convention allows this.
+        // Placing it after would trigger https://bugs.swift.org/browse/SR-12201
+        // (see also https://github.com/JetBrains/kotlin-native/issues/3825).
+        val tailBlocksCount = valueParameters.reversed().takeWhile { it.isBlockPointer() }.count()
+        valueParameters.add(valueParameters.size - tailBlocksCount, MethodBridgeValueParameter.ErrorOutParameter)
     }
 
     return MethodBridge(returnBridge, receiver, valueParameters)
+}
+
+private fun MethodBridgeValueParameter.isBlockPointer(): Boolean = when (this) {
+    is MethodBridgeValueParameter.Mapped -> when (this.bridge) {
+        ReferenceBridge, is ValueTypeBridge -> false
+        is BlockPointerBridge -> true
+    }
+    MethodBridgeValueParameter.ErrorOutParameter -> false
+    MethodBridgeValueParameter.SuspendCompletion -> true
 }
 
 internal fun ObjCExportMapper.bridgePropertyType(descriptor: PropertyDescriptor): TypeBridge {

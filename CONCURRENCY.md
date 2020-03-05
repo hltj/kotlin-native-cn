@@ -178,7 +178,7 @@ class SharedData(rawPtr: NativePtr) : CStructVar(rawPtr) {
    （除非企图创建循环冻结结构）
    * 枚举总是冻结的
 
- 结合起来，这些机制允许在多平台（MPP）项目中跨平台复用代码的自然竞态冻结编程。
+ 结合起来，这些机制允许在多平台（MPP）项目中跨平台复用代码的自然无竞态编程。
 
 <a name="atomic_references"></a>
 ### Atomic primitives and references

@@ -71,7 +71,8 @@ internal class IrProviderForCEnumAndCStructStubs(
         }
 
     fun canHandleSymbol(symbol: IrSymbol): Boolean {
-        if (!symbol.descriptor.module.isFromInteropLibrary()) return false
+        if (!symbol.isPublicApi) return false
+        if (symbol.signature.run { !IdSignature.Flags.IS_NATIVE_INTEROP_LIBRARY.test() }) return false
         return symbol.findCEnumDescriptor(interopBuiltIns) != null
                 || symbol.findCStructDescriptor(interopBuiltIns) != null
     }
@@ -115,9 +116,13 @@ internal class IrProviderForCEnumAndCStructStubs(
     private fun irParentFor(descriptor: ClassDescriptor): IrDeclarationContainer {
         val packageFragmentDescriptor = descriptor.findPackage()
         return filesMap.getOrPut(packageFragmentDescriptor) {
-            IrFileImpl(NaiveSourceBasedFileEntryImpl("CTypeDefinitions"), packageFragmentDescriptor).also {
+            IrFileImpl(NaiveSourceBasedFileEntryImpl(cTypeDefinitionsFileName), packageFragmentDescriptor).also {
                 this@IrProviderForCEnumAndCStructStubs.module?.files?.add(it)
             }
         }
+    }
+
+    companion object {
+        const val cTypeDefinitionsFileName = "CTypeDefinitions"
     }
 }
