@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-@file:UseExperimental(ExperimentalCli::class)
+@file:OptIn(ExperimentalCli::class)
 package org.jetbrains.benchmarksLauncher
 
 import org.jetbrains.report.BenchmarkResult
@@ -133,7 +133,7 @@ class BaseBenchmarkArguments(argParser: ArgParser): BenchmarkArguments(argParser
 
 object BenchmarksRunner {
     fun parse(args: Array<String>, benchmarksListAction: ()->Unit): BenchmarkArguments? {
-        class List: Subcommand("list") {
+        class List: Subcommand("list", "Show list of benchmarks") {
             override fun execute() {
                 benchmarksListAction()
             }
