@@ -74,6 +74,14 @@ ext {
     ]
     cacheableTargetNames = cacheableTargets.collect { it.visibleName }
 
+    // Some targets miss zlib in their sysroots.
+    // We skip these targets when generate a corresponding platform library.
+    // See also: the :distDef task, targetDefFiles in the :platformLibs project.
+    targetsWithoutZlib = [
+            KonanTarget.LINUX_MIPS32.INSTANCE,
+            KonanTarget.LINUX_MIPSEL32.INSTANCE
+    ]
+
     kotlinCompilerModule="org.jetbrains.kotlin:kotlin-compiler:${kotlinVersion}"
     kotlinStdLibModule="org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}"
     kotlinCommonStdlibModule="org.jetbrains.kotlin:kotlin-stdlib-common:${kotlinStdlibVersion}:sources"
@@ -81,7 +89,6 @@ ext {
     kotlinTestAnnotationsCommonModule="org.jetbrains.kotlin:kotlin-test-annotations-common:${kotlinStdlibVersion}:sources"
     kotlinReflectModule="org.jetbrains.kotlin:kotlin-reflect:${kotlinVersion}"
     kotlinScriptRuntimeModule="org.jetbrains.kotlin:kotlin-script-runtime:${kotlinVersion}"
-    kotlinNativeUtilsModule="org.jetbrains.kotlin:kotlin-native-utils:${kotlinVersion}"
     kotlinUtilKliMetadatabModule="org.jetbrains.kotlin:kotlin-util-klib-metadata:${kotlinVersion}"
 
     konanVersionFull = CompilerVersionGeneratedKt.getCurrentCompilerVersion()
@@ -209,8 +216,6 @@ dependencies {
     distPack project(':klib')
     distPack project(path: ':endorsedLibraries:kotlinx.cli', configuration: "jvmRuntimeElements")
     distPack "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
-    distPack "org.jetbrains.kotlin:konan.metadata:$konanVersion"
-    distPack  "org.jetbrains.kotlin:konan.serializer:$konanVersion"
 }
 
 task sharedJar {
@@ -276,6 +281,7 @@ task detectJarCollision(type: CollisionDetector) {
     resolvingRules["META-INF/metadata.kotlin_module"] = "kotlin-compiler"
     resolvingRules["META-INF/type-system.kotlin_module"] = "kotlin-compiler"
     resolvingRules["META-INF/util.runtime.kotlin_module"] = "kotlin-compiler"
+    resolvingRules["META-INF/kotlin-native-utils.kotlin_module"] = "kotlin-compiler"
 
     // These collisions are introduced by kotlinx-metadata-klib.
     resolvingRules["META-INF/serialization.kotlin_module"] = "kotlin-compiler"
@@ -293,13 +299,14 @@ task detectJarCollision(type: CollisionDetector) {
     resolvingRules["org/jetbrains/kotlin/builtins/konan/KonanBuiltIns.class"] = "kotlin-compiler"
     resolvingRules["org/jetbrains/kotlin/resolve/konan/platform/NativeInliningRule.class"] = "kotlin-compiler"
     resolvingRules["org/jetbrains/kotlin/resolve/konan/platform/NativePlatformAnalyzerServices.class"] = "kotlin-compiler"
-    librariesWithIgnoredClassCollisions.addAll(["kotlin-util-klib", "kotlin-util-io", "kotlinx-metadata-klib"])
+    librariesWithIgnoredClassCollisions.addAll(["kotlin-util-klib", "kotlin-util-io", "kotlinx-metadata-klib", "kotlin-native-utils"])
     if (project.hasProperty('kotlinProjectPath')) {
         resolvingRulesWithRegexes[new Regex("META-INF/.+\\.kotlin_module")] = "kotlin-compiler"
         resolvingRules["META-INF/extensions/compiler.xml"] = "kotlin-compiler"
         resolvingRules["META-INF/compiler.version"] = "kotlin-compiler"
         resolvingRules["kotlinManifest.properties"] = "kotlin-compiler"
         librariesWithIgnoredClassCollisions.addAll(["util", "container", "resolution", "serialization", "psi", "frontend",
+                                                    "config", "config.jvm", "js.config", "javac-wrapper",
                                                     "frontend.common", "frontend.java", "cli-common", "ir.tree",
                                                     "ir.psi2ir", "ir.backend.common", "backend.jvm", "backend.js",
                                                     "backend.wasm", "ir.serialization.common", "ir.serialization.js",
@@ -310,7 +317,7 @@ task detectJarCollision(type: CollisionDetector) {
                                                     "metadata.jvm", "descriptors", "descriptors.jvm", "descriptors.runtime",
                                                     "deserialization", "util.runtime", "type-system", "cones", "resolve",
                                                     "tree", "psi2fir", "fir2ir", "java", "kotlin-build-common", "lightTree",
-                                                    "jvm", "checkers"])
+                                                    "jvm", "checkers", "fir-common", "light-tree2fir"])
     }
 }
 
@@ -388,9 +395,14 @@ task distDef(type: Copy) {
 
     destinationDir distDir
 
-    from(project("platformLibs").file("src/platform")) {
-        into('konan/platformDef')
-        include '**/*.def'
+    platformManager.targetValues.each { target ->
+        from(project("platformLibs").file("src/platform/${target.family.name().toLowerCase()}")) {
+            into("konan/platformDef/${target.visibleName}")
+            include '**/*.def'
+            if (target in targetsWithoutZlib) {
+                exclude '**/zlib.def'
+            }
+        }
     }
 }
 
@@ -400,7 +412,6 @@ task listDist(type: Exec) {
 
 task distRuntime(type: Copy) {
     dependsOn "${hostName}CrossDistRuntime"
-    dependsOn('commonDistRuntime')
 }
 
 task distEndorsedLibraries {
@@ -424,19 +435,8 @@ def stdlibDefaultComponent = "$stdlib/default"
 def endorsedLibs = 'klib/common/endorsedLibraries'
 def endorsedLibsBase = 'klib/common'
 
-task commonDistRuntime(type: Copy) {
-    destinationDir distDir
-
-    // Target independant common part.
-    from(project(':runtime').file("build/${hostName}Stdlib")) {
-        include('**')
-        into(stdlib)
-    }
-}
-
 task crossDistRuntime(type: Copy) {
     dependsOn.addAll(targetList.collect { "${it}CrossDistRuntime" })
-    dependsOn('commonDistRuntime')
 }
 
 task crossDistEndorsedLibraries(type: Copy) {
@@ -502,7 +502,7 @@ targetList.each { target ->
     }
 
     task("${target}CrossDist") {
-        dependsOn "${target}CrossDistRuntime", "distCompiler", "commonDistRuntime", "${target}CrossDistEndorsedLibraries"
+        dependsOn "${target}CrossDistRuntime", "distCompiler", "${target}CrossDistEndorsedLibraries"
         if (target in cacheableTargetNames) {
             dependsOn "${target}StdlibCache", "${target}EndorsedCache"
         }

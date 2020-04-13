@@ -208,6 +208,7 @@ def update_external_tests() {
             include 'common/**'
             include 'test/**'
             exclude 'test/js/**'
+            include 'kotlin-test/**'
         }
     }
 }
@@ -2672,6 +2673,15 @@ task initializers5(type: KonanLocalTest) {
     source = "runtime/basic/initializers5.kt"
 }
 
+task initializers6(type: KonanLocalTest) {
+    disabled = project.testTarget == 'wasm32' // Needs workers.
+    source = "runtime/basic/initializers6.kt"
+}
+
+task initializers7(type: KonanLocalTest) {
+    source = "runtime/basic/initializers7.kt"
+}
+
 task expression_as_statement(type: KonanLocalTest) {
     expectedFail = (project.testTarget == 'wasm32') // uses exceptions.
     goldValue = "Ok\n"
@@ -3379,6 +3389,10 @@ createInterop("cvalues") {
     it.defFile 'interop/basics/cvalues.def'
 }
 
+createInterop("cvectors") {
+    it.defFile 'interop/basics/cvectors.def'
+}
+
 createInterop("cstructs") {
     it.defFile 'interop/basics/cstructs.def'
 }
@@ -3560,6 +3574,20 @@ interopTest("interop_types") {
     interop = 'ctypes'
 }
 
+interopTest("interop_vectors") {
+    disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
+    source = "interop/basics/vectors.kt"
+    interop = 'cvectors'
+}
+
+interopTest("interop_vectors_mimalloc") {
+    disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
+    source = "interop/basics/vectors.kt"
+    interop = 'cvectors'
+    flags = [ "-Xallocator=mimalloc" ]
+    arguments = [ "mimalloc" ]
+}
+
 interopTest("interop_mangling") {
     disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
     source = "interop/basics/mangling.kt"
@@ -3656,6 +3684,8 @@ if (PlatformInfo.isAppleTarget(project)) {
                 args "$projectDir/interop/objc/smoke.m"
                 args "-lobjc", '-fobjc-arc'
                 args '-fPIC', '-shared', '-o', "$buildDir/libobjcsmoke.dylib"
+                // Enable ARC optimizations to prevent some objects from leaking in Obj-C code due to exceptions:
+                args '-O2'
             }
             if (project.target instanceof KonanTarget.IOS_X64) {
                 UtilsKt.codesign(project, "$buildDir/libobjcsmoke.dylib")
@@ -3864,12 +3894,27 @@ if (isAppleTarget(project)) {
         }
 
         konanArtifacts {
+            def libraryName = frameworkName + "Library"
+            library(libraryName, targets: [target.name]) {
+                srcDir "objcexport/library"
+                artifactName "test-library"
+
+                extraOpts "-Xshort-module-name=MyLibrary"
+                extraOpts "-module-name", "org.jetbrains.kotlin.native.test-library"
+            }
+
             framework(frameworkName, targets: [target.name]) {
-                srcDir 'objcexport'
+                srcFiles fileTree("objcexport") {
+                    include "*.kt"
+                }
                 baseDir dir
 
                 if (!useCustomDist) {
-                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':distCompiler'
+                }
+
+                libraries {
+                    artifact libraryName
                 }
 
                 extraOpts "-Xembed-bitcode-marker"
@@ -3894,12 +3939,27 @@ if (isAppleTarget(project)) {
         final String dir = "$testOutputFramework/$testName"
 
         konanArtifacts {
+            def libraryName = frameworkName + "Library"
+            library(libraryName, targets: [target.name]) {
+                srcDir "objcexport/library"
+                artifactName "test-library"
+
+                extraOpts "-Xshort-module-name=MyLibrary"
+                extraOpts "-module-name", "org.jetbrains.kotlin.native.test-library"
+            }
+
             framework(frameworkName, targets: [target.name]) {
-                srcDir 'objcexport'
+                srcFiles fileTree("objcexport") {
+                    include "*.kt"
+                }
                 baseDir dir
 
                 if (!useCustomDist) {
-                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':distCompiler'
+                }
+
+                libraries {
+                    artifact libraryName
                 }
 
                 extraOpts "-Xembed-bitcode-marker"
@@ -3925,7 +3985,7 @@ if (isAppleTarget(project)) {
                 baseDir "$testOutputFramework/$testName"
 
                 if (!useCustomDist) {
-                    dependsOn ":${target}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target}CrossDistRuntime", ':distCompiler'
                 }
 
                 extraOpts "-Xembed-bitcode-marker"
@@ -3946,7 +4006,7 @@ if (isAppleTarget(project)) {
                 baseDir "$testOutputFramework/$testName"
 
                 if (!useCustomDist) {
-                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':distCompiler'
                 }
 
                 extraOpts "-Xembed-bitcode"
@@ -3973,7 +4033,7 @@ if (isAppleTarget(project)) {
                 baseDir dir
 
                 if (!useCustomDist) {
-                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':distCompiler'
                 }
 
                 extraOpts "-Xembed-bitcode"
@@ -3986,7 +4046,7 @@ if (isAppleTarget(project)) {
                 baseDir dir
 
                 if (!useCustomDist) {
-                    dependsOn ":${target.name}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target.name}CrossDistRuntime", ':distCompiler'
                 }
 
                 extraOpts "-Xembed-bitcode"
@@ -4015,7 +4075,7 @@ if (isAppleTarget(project)) {
                 baseDir "$testOutputFramework/$testName"
 
                 if (!useCustomDist) {
-                    dependsOn ":${target}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                    dependsOn ":${target}CrossDistRuntime", ':distCompiler'
                 }
 
                 linkerOpts "-L$buildDir"
@@ -4190,6 +4250,7 @@ KotlinNativeTestKt.createTest(project, 'stdlibTest', KonanGTest) { task ->
     task.useFilter = false
     task.testLogger = KonanTest.Logger.GTEST
     task.finalizedBy("resultsTask")
+    task.enabled = (project.testTarget != 'wasm32')  // Uses exceptions
 }
 
 /**

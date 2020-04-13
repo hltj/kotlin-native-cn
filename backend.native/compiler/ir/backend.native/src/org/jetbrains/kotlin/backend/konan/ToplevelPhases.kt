@@ -21,7 +21,7 @@ import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
 import org.jetbrains.kotlin.descriptors.*
-import org.jetbrains.kotlin.descriptors.konan.isKonanStdlib
+import org.jetbrains.kotlin.descriptors.konan.isNativeStdlib
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.symbols.IrSymbol
@@ -140,7 +140,7 @@ internal val buildCExportsPhase = konanUnitPhase(
 internal val psiToIrPhase = konanUnitPhase(
         op = {
             // Translate AST to high level IR.
-            val mppKlibs = config.configuration.get(CommonConfigurationKeys.KLIB_MPP)?:false
+            val expectActualLinker = config.configuration.get(CommonConfigurationKeys.EXPECT_ACTUAL_LINKER)?:false
 
             val symbolTable = symbolTable!!
 
@@ -209,7 +209,9 @@ internal val psiToIrPhase = konanUnitPhase(
                     moduleDescriptor, symbolTable,
                     config.configuration.languageVersionSettings
             )
-            val irProviderForCEnumsAndCStructs = IrProviderForCEnumAndCStructStubs(generatorContext, interopBuiltIns, symbols)
+            val irProviderForCEnumsAndCStructs = IrProviderForCEnumAndCStructStubs(
+                    generatorContext, interopBuiltIns, symbols, llvmModuleSpecification::containsModule
+            )
             // We need to run `buildAllEnumsAndStructsFrom` before `generateModuleFragment` because it adds references to symbolTable
             // that should be bound.
             modulesWithoutDCE
@@ -237,7 +239,7 @@ internal val psiToIrPhase = konanUnitPhase(
                 // referenceExpectsForUsedActuals() appears to be quadratic in time because of
                 // how ExpectedActualResolver is implemented.
                 // Need to fix ExpectActualResolver to either cache expects or somehow reduce the member scope searches.
-                if (mppKlibs) expectDescriptorToSymbol else null
+                if (expectActualLinker) expectDescriptorToSymbol else null
             )
 
             deserializer.finalizeExpectActualLinker()
@@ -245,11 +247,9 @@ internal val psiToIrPhase = konanUnitPhase(
             if (this.stdlibModule in modulesWithoutDCE) {
                 functionIrClassFactory.buildAllClasses()
             }
-            modulesWithoutDCE
-                    .filter(ModuleDescriptor::isFromInteropLibrary)
-                    .forEach(irProviderForCEnumsAndCStructs::buildAllEnumsAndStructsFrom)
-
             module.acceptVoid(ManglerChecker(KonanManglerIr, Ir2DescriptorManglerAdapter(KonanManglerDesc)))
+
+            module.files += irProviderForCEnumsAndCStructs.outputFiles
 
             irModule = module
             irModules = deserializer.modules.filterValues { llvmModuleSpecification.containsModule(it) }
@@ -257,9 +257,7 @@ internal val psiToIrPhase = konanUnitPhase(
 
             functionIrClassFactory.module =
                     (listOf(irModule!!) + deserializer.modules.values)
-                            .single { it.descriptor.isKonanStdlib() }
-
-            irProviderForCEnumsAndCStructs.module = module
+                            .single { it.descriptor.isNativeStdlib() }
         },
         name = "Psi2Ir",
         description = "Psi to IR conversion",
@@ -289,18 +287,18 @@ internal val copyDefaultValuesToActualPhase = konanUnitPhase(
 
 internal val serializerPhase = konanUnitPhase(
         op = {
-            val mppKlibs = config.configuration.get(CommonConfigurationKeys.KLIB_MPP)?:false
+            val expectActualLinker = config.configuration.get(CommonConfigurationKeys.EXPECT_ACTUAL_LINKER)?:false
 
             serializedIr = irModule?.let { ir ->
                 KonanIrModuleSerializer(
-                    this, ir.irBuiltins, expectDescriptorToSymbol, skipExpects = !mppKlibs
+                    this, ir.irBuiltins, expectDescriptorToSymbol, skipExpects = !expectActualLinker
                 ).serializedIrModule(ir)
             }
 
             val serializer = KlibMetadataMonolithicSerializer(
                 this.config.configuration.languageVersionSettings,
                 config.configuration.get(CommonConfigurationKeys.METADATA_VERSION)!!,
-                !mppKlibs)
+                !expectActualLinker)
             serializedMetadata = serializer.serializeModule(moduleDescriptor)
         },
         name = "Serializer",
@@ -326,18 +324,19 @@ internal val allLoweringsPhase = namedIrModulePhase(
                 stripTypeAliasDeclarationsPhase then
                 lowerBeforeInlinePhase then
                 arrayConstructorPhase then
+                lateinitPhase then
+                sharedVariablesPhase then
+                extractLocalClassesFromInlineBodies then
                 inlinePhase then
                 provisionalFunctionExpressionPhase then
                 lowerAfterInlinePhase then
                 performByIrFile(
                         name = "IrLowerByFile",
                         description = "IR Lowering by file",
-                        lower = lateinitPhase then
-                                forLoopsPhase then
+                        lower = forLoopsPhase then
                                 stringConcatenationPhase then
                                 enumConstructorsPhase then
                                 initializersPhase then
-                                sharedVariablesPhase then
                                 localFunctionsPhase then
                                 tailrecPhase then
                                 defaultParameterExtentPhase then

@@ -152,8 +152,18 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     )
     var frameworkImportHeaders: Array<String>? = null
 
-    @Argument(value = "-Xg0", description = "Add light debug information")
-    var lightDebug: Boolean = false
+    @Argument(
+            value = "-Xadd-light-debug",
+            valueDescription = "{disable|enable}",
+            description = "Add light debug information for optimized builds. This option is skipped in debug builds.\n" +
+                    "It's enabled by default on Darwin platforms where collected debug information is stored in .dSYM file.\n" +
+                    "Currently option is disabled by default on other platforms."
+    )
+    var lightDebugString: String? = null
+
+    // TODO: remove after 1.4 release.
+    @Argument(value = "-Xg0", description = "Add light debug information. Deprecated option. Please use instead -Xadd-light-debug=enable")
+    var lightDebugDeprecated: Boolean = false
 
     @Argument(
             value = MAKE_CACHE,
@@ -195,9 +205,16 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(
         value = INCLUDE_ARG,
         valueDescription = "<path>",
-        description = "A path to an intermediate library that should be processed in the same manner as source files.\n"
+        description = "A path to an intermediate library that should be processed in the same manner as source files"
     )
     var includes: Array<String>? = null
+
+    @Argument(
+        value = SHORT_MODULE_NAME_ARG,
+        valueDescription = "<name>",
+        description = "A short name used to denote this library in the IDE and in a generated Objective-C header"
+    )
+    var shortModuleName: String? = null
 
     @Argument(value = STATIC_FRAMEWORK_FLAG, description = "Create a framework with a static library instead of a dynamic one")
     var staticFramework: Boolean = false
@@ -275,3 +292,4 @@ const val INCLUDE_ARG = "-Xinclude"
 const val CACHED_LIBRARY = "-Xcached-library"
 const val MAKE_CACHE = "-Xmake-cache"
 const val ADD_CACHE = "-Xadd-cache"
+const val SHORT_MODULE_NAME_ARG = "-Xshort-module-name"

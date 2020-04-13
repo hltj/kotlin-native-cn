@@ -21,6 +21,7 @@ import org.jetbrains.kotlin.konan.util.visibleName
 import org.jetbrains.kotlin.native.interop.tool.CommonInteropArguments.Companion.DEFAULT_MODE
 import org.jetbrains.kotlin.native.interop.tool.CommonInteropArguments.Companion.MODE_METADATA
 import org.jetbrains.kotlin.native.interop.tool.CommonInteropArguments.Companion.MODE_SOURCECODE
+import org.jetbrains.kotlin.native.interop.tool.SHORT_MODULE_NAME
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.util.concurrent.atomic.AtomicInteger
@@ -69,7 +70,7 @@ fun generatePlatformLibraries(args: Array<String>) {
     val inputDirectoryPath by argParser.option(
             ArgType.String,
             "input-directory", "i",
-            "Input directory. Default value is <dist>/konan/platformDef/<target_family>"
+            "Input directory. Default value is <dist>/konan/platformDef/<target>"
     )
     val outputDirectoryPath by argParser.option(
             ArgType.String,
@@ -123,7 +124,7 @@ fun generatePlatformLibraries(args: Array<String>) {
     val target = HostManager(distribution).targetByName(targetName)
 
     val inputDirectory = inputDirectoryPath?.File()
-            ?: File(distribution.konanSubdir, "platformDef").child(target.family.visibleName)
+            ?: File(distribution.konanSubdir, "platformDef").child(target.visibleName)
 
     val outputDirectory = outputDirectoryPath?.File()
             ?: File(distribution.klib, "platform").child(target.visibleName)
@@ -167,6 +168,9 @@ private class DefFile(val name: String, val depends: MutableList<DefFile>) {
 
     val libraryName: String
         get() = "${PlatformLibsInfo.namePrefix}$name"
+
+    val shortLibraryName: String
+        get() = name
 }
 
 private fun createTempDir(prefix: String, parent: File): File =
@@ -236,6 +240,7 @@ private fun generateLibrary(
                 "-repo", outputDirectory.absolutePath,
                 "-no-default-libs", "-no-endorsed-libs", "-Xpurge-user-libs", "-nopack",
                 "-mode", mode,
+                "-$SHORT_MODULE_NAME", def.shortLibraryName,
                 *def.depends.flatMap { listOf("-l", "$outputDirectory/${it.libraryName}") }.toTypedArray()
         )
         logger.verbose("Run cinterop with args: ${cinteropArgs.joinToString(separator = " ")}")

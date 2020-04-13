@@ -451,6 +451,9 @@ struct MemoryState {
   uint64_t allocSinceLastGcThreshold;
 #endif // USE_GC
 
+  // A stack of initializing singletons.
+  KStdVector<std::pair<ObjHeader**, ObjHeader*>> initializingSingletons;
+
 #if COLLECT_STATISTIC
   #define CONTAINER_ALLOC_STAT(state, size, container) state->statistic.incAlloc(size, container);
   #define CONTAINER_DESTROY_STAT(state, container) \
@@ -1652,14 +1655,6 @@ void garbageCollect() {
 
 #endif  // USE_GC
 
-void deinitInstanceBody(const TypeInfo* typeInfo, void* body) {
-  for (int index = 0; index < typeInfo->objOffsetsCount_; index++) {
-    ObjHeader** location = reinterpret_cast<ObjHeader**>(
-        reinterpret_cast<uintptr_t>(body) + typeInfo->objOffsets_[index]);
-    ZeroHeapRef(location);
-  }
-}
-
 ForeignRefManager* initLocalForeignRef(ObjHeader* object) {
   if (!IsStrictMemoryModel) return nullptr;
 
@@ -1999,7 +1994,7 @@ OBJ_GETTER(initInstance,
 
 template <bool Strict>
 OBJ_GETTER(initSharedInstance,
-    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*)) {
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*)) {
 #if KONAN_NO_THREADS
   ObjHeader* value = *location;
   if (value != nullptr) {
@@ -2025,25 +2020,31 @@ OBJ_GETTER(initSharedInstance,
   }
 #endif  // KONAN_NO_EXCEPTIONS
 #else  // KONAN_NO_THREADS
-  ObjHeader* value = *localLocation;
-  if (value != nullptr) RETURN_OBJ(value);
+  // Search from the top of the stack.
+  for (auto it = memoryState->initializingSingletons.rbegin(); it != memoryState->initializingSingletons.rend(); ++it) {
+    if (it->first == location) {
+      RETURN_OBJ(it->second);
+    }
+  }
 
   ObjHeader* initializing = reinterpret_cast<ObjHeader*>(1);
 
   // Spin lock.
+  ObjHeader* value = nullptr;
   while ((value = __sync_val_compare_and_swap(location, nullptr, initializing)) == initializing);
   if (value != nullptr) {
     // OK'ish, inited by someone else.
     RETURN_OBJ(value);
   }
   ObjHeader* object = AllocInstance(typeInfo, OBJ_RESULT);
-  UpdateHeapRef(localLocation, object);
+  memoryState->initializingSingletons.push_back(std::make_pair(location, object));
 #if KONAN_NO_EXCEPTIONS
   ctor(object);
   if (Strict)
     FreezeSubgraph(object);
   UpdateHeapRef(location, object);
   synchronize();
+  memoryState->initializingSingletons.pop_back();
   return object;
 #else  // KONAN_NO_EXCEPTIONS
   try {
@@ -2052,11 +2053,12 @@ OBJ_GETTER(initSharedInstance,
       FreezeSubgraph(object);
     UpdateHeapRef(location, object);
     synchronize();
+    memoryState->initializingSingletons.pop_back();
     return object;
   } catch (...) {
     UpdateReturnRef(OBJ_RESULT, nullptr);
     zeroHeapRef(location);
-    zeroHeapRef(localLocation);
+    memoryState->initializingSingletons.pop_back();
     synchronize();
     throw;
   }
@@ -2735,10 +2737,6 @@ void ReleaseHeapRefRelaxed(const ObjHeader* object) {
   releaseHeapRef<false>(const_cast<ObjHeader*>(object));
 }
 
-void DeinitInstanceBody(const TypeInfo* typeInfo, void* body) {
-  deinitInstanceBody(typeInfo, body);
-}
-
 ForeignRefContext InitLocalForeignRef(ObjHeader* object) {
   return initLocalForeignRef(object);
 }
@@ -2803,12 +2801,12 @@ OBJ_GETTER(InitInstanceRelaxed,
 }
 
 OBJ_GETTER(InitSharedInstanceStrict,
-    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*)) {
-  RETURN_RESULT_OF(initSharedInstance<true>, location, localLocation, typeInfo, ctor);
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*)) {
+  RETURN_RESULT_OF(initSharedInstance<true>, location, typeInfo, ctor);
 }
 OBJ_GETTER(InitSharedInstanceRelaxed,
-    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*)) {
-  RETURN_RESULT_OF(initSharedInstance<false>, location, localLocation, typeInfo, ctor);
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*)) {
+  RETURN_RESULT_OF(initSharedInstance<false>, location, typeInfo, ctor);
 }
 
 void SetStackRefStrict(ObjHeader** location, const ObjHeader* object) {
