@@ -365,7 +365,7 @@ internal class ObjCExportTranslatorImpl(
 
                     descriptor.enumEntries.forEach {
                         val entryName = namer.getEnumEntrySelector(it)
-                        +ObjCProperty(entryName, null, type, listOf("class", "readonly"),
+                        +ObjCProperty(entryName, it, type, listOf("class", "readonly"),
                                 declarationAttributes = listOf(swiftNameAttribute(entryName)))
                     }
                 }
@@ -949,6 +949,12 @@ abstract class ObjCExportHeaderGenerator internal constructor(
         add("#pragma clang diagnostic push")
         listOf(
                 "-Wunknown-warning-option",
+
+                // Protocols don't have generics, classes do. So generated header may contain
+                // overriding property with "incompatible" type, e.g. `Generic<T>`-typed property
+                // overriding `Generic<id>`. Suppress these warnings:
+                "-Wincompatible-property-type",
+
                 "-Wnullability"
         ).forEach {
             add("#pragma clang diagnostic ignored \"$it\"")

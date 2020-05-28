@@ -23,6 +23,7 @@ import org.jetbrains.kotlin.PlatformInfo
 import org.jetbrains.kotlin.KotlinBuildPusher
 import org.jetbrains.kotlin.CollisionDetector
 import org.jetbrains.kotlin.CollisionTransformer
+import org.jetbrains.kotlin.CompilationDatabaseKt
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import org.apache.tools.ant.filters.ReplaceTokens
 import org.jetbrains.kotlin.UtilsKt
@@ -34,6 +35,7 @@ buildscript {
         maven { url kotlinCompilerRepo }
         maven { url "https://kotlin.bintray.com/kotlinx" }
         maven { url "https://cache-redirector.jetbrains.com/maven-central" }
+        maven { url "https://dl.bintray.com/kotlin/kotlin-dev" }
         jcenter()
     }
 
@@ -102,6 +104,7 @@ allprojects {
             maven {
                 url 'https://cache-redirector.jetbrains.com/jcenter'
             }
+            maven { url "https://dl.bintray.com/kotlin/kotlin-dev" }
         }
     }
     if (path != ":dependencies") {
@@ -213,7 +216,8 @@ dependencies {
     distPack project(':Interop:Indexer')
     distPack project(':Interop:StubGenerator')
     distPack project(':backend.native')
-    distPack project(':utilities')
+    distPack project(':utilities:cli-runner')
+    distPack project(':utilities:basic-utils')
     distPack project(':klib')
     distPack project(path: ':endorsedLibraries:kotlinx.cli', configuration: "jvmRuntimeElements")
     distPack "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
@@ -318,7 +322,7 @@ task detectJarCollision(type: CollisionDetector) {
                                                     "metadata.jvm", "descriptors", "descriptors.jvm", "descriptors.runtime",
                                                     "deserialization", "util.runtime", "type-system", "cones", "resolve",
                                                     "tree", "psi2fir", "fir2ir", "java", "kotlin-build-common", "lightTree",
-                                                    "jvm", "checkers", "fir-common", "light-tree2fir"])
+                                                    "jvm", "checkers", "fir-common", "light-tree2fir", "fir-serialization"])
     }
 }
 
@@ -327,6 +331,9 @@ task shadowJar(type: ShadowJar) {
     mergeServiceFiles()
     destinationDirectory.set(file("$distDir/konan/lib"))
     archiveBaseName.set("kotlin-native")
+    // Exclude trove4j because of license agreement.
+    exclude "*trove4j*"
+    exclude("META-INF/versions/9/module-info.class")
     configurations = [project.configurations.distPack]
     archiveClassifier.set(null)
     transform(CollisionTransformer.class) {
@@ -341,6 +348,10 @@ task distCompiler(type: Copy) {
 
     from(project(':backend.native').file("build/nativelibs/$hostName")) {
         into('konan/nativelib')
+    }
+
+    from(project(':backend.native').file('build/external_jars/trove4j.jar')) {
+        into('konan/lib')
     }
 
     from(project(':Interop').file('Indexer/build/nativelibs')) {
@@ -738,6 +749,7 @@ task clean {
     doLast {
         delete distDir
         delete bundle.outputs.files
+        delete "${projectDir}/compile_commands.json"
     }
 }
 
@@ -748,4 +760,19 @@ task pusher(type: KotlinBuildPusher){
     compilerConfigurationId = System.getenv("TEAMCITY_COMPILER_ID") ?: "Kotlin_KotlinDev_Compiler"
     overrideConfigurationId = System.getenv("TEAMCITY_OVERRIDE_NATIVE_ID") ?: "Kotlin_KotlinDev_DeployMavenArtifacts_OverrideNative"
     token = project.findProperty("teamcityBearToken") ?: System.getenv("TEAMCITY_BEAR_TOKEN")
+}
+
+targetList.each { target ->
+    CompilationDatabaseKt.mergeCompilationDatabases(project, "${target}CompilationDatabase".toString(), [
+            ":common:${target}CompilationDatabase".toString(),
+            ":runtime:${target}CompilationDatabase".toString()
+    ]).configure {
+        outputFile = file("$buildDir/${target}/compile_commands.json")
+    }
+}
+
+task compdb(type: Copy) {
+    dependsOn "${hostName}CompilationDatabase"
+    from "$buildDir/${hostName}/compile_commands.json"
+    into "$projectDir"
 }

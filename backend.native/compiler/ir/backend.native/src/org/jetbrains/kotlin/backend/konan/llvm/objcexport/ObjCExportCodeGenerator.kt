@@ -377,7 +377,7 @@ internal class ObjCExportCodeGenerator(
         )
     }
 
-    private val impType = pointerType(functionType(int8TypePtr, true, int8TypePtr, int8TypePtr))
+    private val impType = pointerType(functionType(voidType, false))
 
     internal val directMethodAdapters = mutableMapOf<DirectAdapterRequest, ObjCToKotlinMethodAdapter>()
 
@@ -486,6 +486,7 @@ private fun ObjCExportCodeGenerator.replaceExternalWeakOrCommonGlobal(
             // Note: actually this is required only if global's weak/common definition is in another object file,
             // but it is simpler to do this for all globals, considering that all usages can't be removed by DCE anyway.
             context.llvm.usedGlobals += global.llvmGlobal
+            LLVMSetVisibility(global.llvmGlobal, LLVMVisibility.LLVMHiddenVisibility)
         }
     }
 }

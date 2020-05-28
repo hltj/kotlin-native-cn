@@ -11,9 +11,14 @@ plugins {
     // We explicitly configure versions of plugins in settings.gradle.kts.
     // due to https://github.com/gradle/gradle/issues/1697.
     id("kotlin")
-    id("kotlinx-serialization")
     groovy
     `java-gradle-plugin`
+}
+
+buildscript {
+    dependencies {
+        classpath("com.google.code.gson:gson:2.8.6")
+    }
 }
 
 val rootProperties = Properties().apply {
@@ -35,16 +40,24 @@ repositories {
     maven(buildKotlinCompilerRepo)
     maven("https://cache-redirector.jetbrains.com/maven-central")
     maven("https://kotlin.bintray.com/kotlinx")
+    maven("https://dl.bintray.com/kotlin/kotlin-dev")
 }
+
+val kotlinCompilerJar by configurations.creating
 
 dependencies {
     compileOnly(gradleApi())
+
+    kotlinCompilerJar("org.jetbrains.kotlin:kotlin-compiler:${kotlinVersion}@jar")
 
     implementation("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
     implementation("org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion")
     implementation("com.ullink.slack:simpleslackapi:1.2.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-runtime:0.20.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-runtime:0.20.0-1.4.0-dev-5730") {
+        exclude("org.jetbrains.kotlin", "kotlin-stdlib")
+        exclude("org.jetbrains.kotlin", "kotlin-stdlib-common")
+    }
 
     implementation("io.ktor:ktor-client-auth:1.2.1")
     implementation("io.ktor:ktor-client-core:1.2.1")
@@ -55,6 +68,8 @@ dependencies {
     // Located in <repo root>/shared and always provided by the composite build.
     api("org.jetbrains.kotlin:kotlin-native-shared:$konanVersion")
     implementation("com.github.jengelman.gradle.plugins:shadow:5.1.0")
+
+    implementation("org.jetbrains.kotlinx:kotlinx-metadata-klib:0.0.1-dev-5")
 }
 
 sourceSets["main"].withConvention(KotlinSourceSet::class) {
@@ -81,9 +96,15 @@ gradlePlugin {
 val compileKotlin: KotlinCompile by tasks
 val compileGroovy: GroovyCompile by tasks
 
+// https://youtrack.jetbrains.com/issue/KT-37435
+compileKotlin.apply {
+    kotlinOptions.freeCompilerArgs += "-Xno-optimized-callable-references"
+}
+
 // Add Kotlin classes to a classpath for the Groovy compiler
 compileGroovy.apply {
     classpath += project.files(compileKotlin.destinationDir)
+    classpath += kotlinCompilerJar
     dependsOn(compileKotlin)
 }
 
