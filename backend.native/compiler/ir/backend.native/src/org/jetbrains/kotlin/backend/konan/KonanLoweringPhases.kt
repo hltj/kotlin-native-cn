@@ -309,7 +309,7 @@ internal val coroutinesPhase = makeKonanFileLoweringPhase(
         ::NativeSuspendFunctionsLowering,
         name = "Coroutines",
         description = "Coroutines lowering",
-        prerequisite = setOf(localFunctionsPhase, finallyBlocksPhase)
+        prerequisite = setOf(localFunctionsPhase, finallyBlocksPhase, kotlinNothingValueExceptionPhase)
 )
 
 internal val typeOperatorPhase = makeKonanFileLoweringPhase(
@@ -341,4 +341,10 @@ internal val returnsInsertionPhase = makeKonanFileLoweringPhase(
         name = "ReturnsInsertion",
         description = "Returns insertion for Unit functions",
         prerequisite = setOf(autoboxPhase, coroutinesPhase, enumClassPhase)
+)
+
+internal val ifNullExpressionsFusionPhase = makeKonanFileLoweringPhase(
+        ::IfNullExpressionsFusionLowering,
+        name = "IfNullExpressionsFusionLowering",
+        description = "Simplify '?.' and '?:' operator chains"
 )

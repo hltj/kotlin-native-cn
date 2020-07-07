@@ -43,21 +43,13 @@ repositories {
     maven("https://dl.bintray.com/kotlin/kotlin-dev")
 }
 
-val kotlinCompilerJar by configurations.creating
-
 dependencies {
     compileOnly(gradleApi())
-
-    kotlinCompilerJar("org.jetbrains.kotlin:kotlin-compiler:${kotlinVersion}@jar")
 
     implementation("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
     implementation("org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion")
     implementation("com.ullink.slack:simpleslackapi:1.2.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-runtime:0.20.0-1.4.0-dev-5730") {
-        exclude("org.jetbrains.kotlin", "kotlin-stdlib")
-        exclude("org.jetbrains.kotlin", "kotlin-stdlib-common")
-    }
 
     implementation("io.ktor:ktor-client-auth:1.2.1")
     implementation("io.ktor:ktor-client-core:1.2.1")
@@ -104,14 +96,5 @@ compileKotlin.apply {
 // Add Kotlin classes to a classpath for the Groovy compiler
 compileGroovy.apply {
     classpath += project.files(compileKotlin.destinationDir)
-    classpath += kotlinCompilerJar
     dependsOn(compileKotlin)
-}
-
-val kotlinCompilerPluginClasspath by configurations.getting
-
-kotlinCompilerPluginClasspath.resolutionStrategy.eachDependency {
-    if (requested.group == "org.jetbrains.kotlin" && requested.name == "kotlin-serialization") {
-        useVersion(buildKotlinVersion)
-    }
 }

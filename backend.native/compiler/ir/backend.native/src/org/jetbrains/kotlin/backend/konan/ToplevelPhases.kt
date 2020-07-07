@@ -1,8 +1,9 @@
 package org.jetbrains.kotlin.backend.konan
 
 import org.jetbrains.kotlin.backend.common.*
-import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
+import org.jetbrains.kotlin.backend.common.extensions.IrPluginContextImpl
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
+import org.jetbrains.kotlin.backend.common.overrides.FakeOverrideChecker
 import org.jetbrains.kotlin.backend.common.phaser.*
 import org.jetbrains.kotlin.backend.common.serialization.mangle.ManglerChecker
 import org.jetbrains.kotlin.backend.common.serialization.mangle.descriptor.Ir2DescriptorManglerAdapter
@@ -19,18 +20,18 @@ import org.jetbrains.kotlin.backend.konan.serialization.*
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
-import org.jetbrains.kotlin.descriptors.*
+import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
+import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.descriptors.konan.DeserializedKlibModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.KlibModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.isNativeStdlib
-import org.jetbrains.kotlin.incremental.components.NoLookupLocation
+import org.jetbrains.kotlin.ir.declarations.IrDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.symbols.IrSymbol
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.visitors.acceptVoid
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
-import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.psi2ir.Psi2IrConfiguration
 import org.jetbrains.kotlin.psi2ir.Psi2IrTranslator
 import org.jetbrains.kotlin.utils.DFS
@@ -168,7 +169,8 @@ internal val psiToIrPhase = konanUnitPhase(
 
             val irProviderForCEnumsAndCStructs =
                     IrProviderForCEnumAndCStructStubs(generatorContext, interopBuiltIns, symbols)
-            val deserializer = KonanIrLinker(
+            val linker =
+                KonanIrLinker(
                     moduleDescriptor,
                     functionIrClassFactory,
                     this as LoggingContext,
@@ -181,14 +183,14 @@ internal val psiToIrPhase = konanUnitPhase(
             )
 
             translator.addPostprocessingStep { module ->
-                val pluginContext = IrPluginContext(
+                val pluginContext = IrPluginContextImpl(
                         generatorContext.moduleDescriptor,
                         generatorContext.bindingContext,
                         generatorContext.languageVersionSettings,
                         generatorContext.symbolTable,
                         generatorContext.typeTranslator,
                         generatorContext.irBuiltIns,
-                        linker = deserializer
+                        linker = linker
                 )
                 pluginExtensions.forEach { extension ->
                     extension.generate(module, pluginContext)
@@ -212,7 +214,7 @@ internal val psiToIrPhase = konanUnitPhase(
                     val kotlinLibrary = dependency.getCapability(KlibModuleOrigin.CAPABILITY)?.let {
                         (it as? DeserializedKlibModuleOrigin)?.library
                     }
-                    deserializer.deserializeIrModuleHeader(dependency, kotlinLibrary)
+                    linker.deserializeIrModuleHeader(dependency, kotlinLibrary)
                 }
                 if (dependencies.size == dependenciesCount) break
                 dependenciesCount = dependencies.size
@@ -224,7 +226,7 @@ internal val psiToIrPhase = konanUnitPhase(
                     .filter(ModuleDescriptor::isFromInteropLibrary)
                     .forEach(irProviderForCEnumsAndCStructs::referenceAllEnumsAndStructsFrom)
 
-            val irProviders = listOf(deserializer)
+            val irProviders = listOf(linker)
             stubGenerator.setIrProviders(irProviders)
 
             expectDescriptorToSymbol = mutableMapOf<DeclarationDescriptor, IrSymbol>()
@@ -232,6 +234,7 @@ internal val psiToIrPhase = konanUnitPhase(
                 generatorContext,
                 environment.getSourceFiles(),
                 irProviders,
+                pluginExtensions,
                 // TODO: This is a hack to allow platform libs to build in reasonable time.
                 // referenceExpectsForUsedActuals() appears to be quadratic in time because of
                 // how ExpectedActualResolver is implemented.
@@ -239,7 +242,7 @@ internal val psiToIrPhase = konanUnitPhase(
                 if (expectActualLinker) expectDescriptorToSymbol else null
             )
 
-            deserializer.postProcess()
+            linker.postProcess()
 
             if (this.stdlibModule in modulesWithoutDCE) {
                 functionIrClassFactory.buildAllClasses()
@@ -248,20 +251,32 @@ internal val psiToIrPhase = konanUnitPhase(
             // Enable lazy IR genration for newly-created symbols inside BE
             stubGenerator.unboundSymbolGeneration = true
 
+            symbolTable.noUnboundLeft("Unbound symbols left after linker")
+
             module.acceptVoid(ManglerChecker(KonanManglerIr, Ir2DescriptorManglerAdapter(KonanManglerDesc)))
+            val fakeOverrideChecker = FakeOverrideChecker(KonanManglerIr, KonanManglerDesc)
+            linker.modules.values.forEach{ fakeOverrideChecker.check(it) }
 
             irModule = module
-            irModules = deserializer.modules.filterValues { llvmModuleSpecification.containsModule(it) }
+
+            // Note: coupled with [shouldLower] below.
+            irModules = linker.modules.filterValues { llvmModuleSpecification.containsModule(it) }
+
             ir.symbols = symbols
 
             functionIrClassFactory.module =
-                    (listOf(irModule!!) + deserializer.modules.values)
+                    (listOf(irModule!!) + linker.modules.values)
                             .single { it.descriptor.isNativeStdlib() }
         },
         name = "Psi2Ir",
         description = "Psi to IR conversion",
         prerequisite = setOf(createSymbolTablePhase)
 )
+
+// Coupled with [psiToIrPhase] logic above.
+internal fun shouldLower(context: Context, declaration: IrDeclaration): Boolean {
+    return context.llvmModuleSpecification.containsDeclaration(declaration)
+}
 
 internal val destroySymbolTablePhase = konanUnitPhase(
         op = {
@@ -342,6 +357,7 @@ internal val allLoweringsPhase = namedIrModulePhase(
                                 innerClassPhase then
                                 dataClassesPhase then
                                 singleAbstractMethodPhase then
+                                ifNullExpressionsFusionPhase then
                                 builtinOperatorPhase then
                                 finallyBlocksPhase then
                                 testProcessorPhase then
@@ -351,11 +367,11 @@ internal val allLoweringsPhase = namedIrModulePhase(
                                 interopPhase then
                                 varargPhase then
                                 compileTimeEvaluatePhase then
+                                kotlinNothingValueExceptionPhase then
                                 coroutinesPhase then
                                 typeOperatorPhase then
                                 bridgesPhase then
                                 autoboxPhase then
-                                kotlinNothingValueExceptionPhase then
                                 returnsInsertionPhase
                 ),
         actions = setOf(defaultDumper, ::moduleValidationCallback)

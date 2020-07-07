@@ -223,19 +223,22 @@ Kotlin/Native 是包含预定义目录结构的 zip 文件，
 
 ```yaml
   - foo/
-    - targets/
-      - $platform/
-        - kotlin/
-          - Kotlin 编译为 LLVM 位码（bitcode）。
-        - native/
-          - 附加原生对象的位码文件。
-      - $another_platform/
-        - 可以有几个平台相关的 kotlin 与原生对。
-    - linkdata/
-      - 一组带有序列化的链接元数据的 ProtoBuf 文件。
-    - resources/
-      - 图像等普通资源。(尚未使用)。
-    - manifest——描述库的 *java 属性*格式文件。
+    - $component_name/
+      - ir/
+        - Seriaized Kotlin IR.
+      - targets/
+        - $platform/
+          - kotlin/
+            - Kotlin 编译为 LLVM 位码（bitcode）。
+          - native/
+            - 附加原生对象的位码文件。
+        - $another_platform/
+          - 可以有几个平台相关的 kotlin 与原生对。
+      - linkdata/
+        - 一组带有序列化的链接元数据的 ProtoBuf 文件。
+      - resources/
+        - 图像等普通资源。(尚未使用)。
+      - manifest——描述库的 *java 属性*格式文件。
 ```
 
 可以在安装的 `klib/stdlib` 目录中找到示例布局。

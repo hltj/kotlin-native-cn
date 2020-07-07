@@ -17,11 +17,15 @@
 package org.jetbrains.kotlin.backend.konan.serialization
 
 import org.jetbrains.kotlin.backend.common.LoggingContext
+import org.jetbrains.kotlin.backend.common.overrides.FakeOverrideBuilderImpl
+import org.jetbrains.kotlin.backend.common.overrides.PlatformFakeOverrideClassFilter
 import org.jetbrains.kotlin.backend.common.serialization.*
 import org.jetbrains.kotlin.backend.common.serialization.encodings.BinarySymbolData
+import org.jetbrains.kotlin.backend.common.serialization.signature.IdSignatureSerializer
 import org.jetbrains.kotlin.backend.konan.descriptors.isInteropLibrary
 import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
 import org.jetbrains.kotlin.backend.konan.ir.interop.IrProviderForCEnumAndCStructStubs
+import org.jetbrains.kotlin.backend.konan.isObjCClass
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.konan.isNativeStdlib
 import org.jetbrains.kotlin.descriptors.konan.kotlinLibrary
@@ -29,10 +33,12 @@ import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrClassImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrFileImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrModuleFragmentImpl
+import org.jetbrains.kotlin.ir.declarations.lazy.IrLazyClass
 import org.jetbrains.kotlin.ir.descriptors.IrAbstractFunctionFactory
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
 import org.jetbrains.kotlin.ir.symbols.IrSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrFileSymbolImpl
+import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.library.IrLibrary
 import org.jetbrains.kotlin.library.KotlinLibrary
@@ -41,9 +47,13 @@ import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
 
+object KonanFakeOverrideClassFilter : PlatformFakeOverrideClassFilter {
+    override fun constructFakeOverrides(clazz: IrClass): Boolean = !clazz.isObjCClass()
+}
+
 internal class KonanIrLinker(
         private val currentModule: ModuleDescriptor,
-        override val functionalInteraceFactory: IrAbstractFunctionFactory,
+        override val functionalInterfaceFactory: IrAbstractFunctionFactory,
         logger: LoggingContext,
         builtIns: IrBuiltIns,
         symbolTable: SymbolTable,
@@ -63,6 +73,8 @@ internal class KonanIrLinker(
     }
 
     override fun isBuiltInModule(moduleDescriptor: ModuleDescriptor): Boolean = moduleDescriptor.isNativeStdlib()
+
+    override val fakeOverrideBuilderImpl = FakeOverrideBuilderImpl(symbolTable, IdSignatureSerializer(KonanManglerIr), builtIns, KonanFakeOverrideClassFilter)
 
     private val forwardDeclarationDeserializer = forwardModuleDescriptor?.let { KonanForwardDeclarationModuleDeserialier(it) }
 
@@ -126,6 +138,19 @@ internal class KonanIrLinker(
 
             val symbolOwner = stubGenerator.generateMemberStub(descriptor) as IrSymbolOwner
 
+            // Make sure all class hierarchy is available, otherwise we won't be able
+            // to build fake overrides.
+            // TODO: we actually only need it to tell if class .isObjCClass
+            // So if we could come up with a way to tell without looking at class hierarchy
+            // this hack could be erased.
+            if (symbolOwner is IrLazyClass) {
+                symbolOwner.superTypes.forEach {
+                    it.classOrNull?.let {
+                        symbolTable.referenceClassFromLinker(it.descriptor, it.signature)
+                    }
+                }
+            }
+
             return symbolOwner.symbol
         }
 
@@ -155,7 +180,7 @@ internal class KonanIrLinker(
 
         private fun resolveDescriptor(idSig: IdSignature): ClassDescriptor =
             with(idSig as IdSignature.PublicSignature) {
-                val classId = ClassId(packageFqn, declarationFqn, false)
+                val classId = ClassId(packageFqName(), FqName(declarationFqName), false)
                 moduleDescriptor.findClassAcrossModuleDependencies(classId) ?: error("No declaration found with $idSig")
             }
 
@@ -163,7 +188,7 @@ internal class KonanIrLinker(
             val fqn = packageFragment.fqName
             return packageToFileMap.getOrPut(packageFragment.fqName) {
                 val fileSymbol = IrFileSymbolImpl(packageFragment)
-                IrFileImpl(NaiveSourceBasedFileEntryImpl("forward declarations for $fqn"), fileSymbol).also {
+                IrFileImpl(NaiveSourceBasedFileEntryImpl("forward declarations for $fqn"), fileSymbol, packageFragment.fqName).also {
                     moduleFragment.files.add(it)
                 }
             }
@@ -174,7 +199,7 @@ internal class KonanIrLinker(
             val irFile = getIrFile(packageDescriptor)
 
             val klass = symbolTable.declareClassFromLinker(descriptor, idSig) { s ->
-                IrClassImpl(offset, offset, FORWARD_DECLARATION_ORIGIN, s)
+                IrClassImpl(offset, offset, FORWARD_DECLARATION_ORIGIN, s, descriptor)
             }
 
             klass.parent = irFile
