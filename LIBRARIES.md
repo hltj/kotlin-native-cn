@@ -225,7 +225,7 @@ Kotlin/Native 是包含预定义目录结构的 zip 文件，
   - foo/
     - $component_name/
       - ir/
-        - Seriaized Kotlin IR.
+        - 序列化的 Kotlin IR。
       - targets/
         - $platform/
           - kotlin/
