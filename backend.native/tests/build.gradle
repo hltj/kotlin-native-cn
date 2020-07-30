@@ -3576,8 +3576,8 @@ createInterop("embedStaticLibraries") {
         }
     }
 
-    it.extraOpts '-staticLibrary', "$libDir/1.a"
-    it.extraOpts '-staticLibrary', "$libDir/2.a"
+    it.extraOpts '-staticLibrary', "1.a"
+    it.extraOpts '-staticLibrary', "2.a"
 }
 
 if (PlatformInfo.isAppleTarget(project)) {
@@ -4426,6 +4426,11 @@ if (UtilsKt.getTestTargetSupportsCodeCoverage(project)) {
 task metadata_compare_typedefs(type: MetadataComparisonTest) {
     enabled = (project.testTarget != 'wasm32')
     defFile = "interop/basics/typedefs.def"
+}
+
+task metadata_compare_unable_to_import(type: MetadataComparisonTest) {
+    enabled = (project.testTarget != 'wasm32')
+    defFile = "interop/basics/unable_to_import.def"
 }
 
 standaloneTest("local_ea_arraysfieldwrite") {
