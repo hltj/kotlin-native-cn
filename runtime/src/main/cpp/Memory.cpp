@@ -748,15 +748,21 @@ inline void traverseReferredObjects(ObjHeader* obj, func process) {
 }
 
 template <typename func>
-inline void traverseContainerObjectFields(ContainerHeader* container, func process) {
+inline void traverseContainerObjects(ContainerHeader* container, func process) {
   RuntimeAssert(!isAggregatingFrozenContainer(container), "Must not be called on such containers");
   ObjHeader* obj = reinterpret_cast<ObjHeader*>(container + 1);
-
-  for (int object = 0; object < container->objectCount(); object++) {
-    traverseObjectFields(obj, process);
+  for (int i = 0; i < container->objectCount(); ++i) {
+    process(obj);
     obj = reinterpret_cast<ObjHeader*>(
       reinterpret_cast<uintptr_t>(obj) + objectSize(obj));
   }
+}
+
+template <typename func>
+inline void traverseContainerObjectFields(ContainerHeader* container, func process) {
+  traverseContainerObjects(container, [process](ObjHeader* obj) {
+    traverseObjectFields(obj, process);
+  });
 }
 
 template <typename func>
@@ -1679,7 +1685,7 @@ void garbageCollect(MemoryState* state, bool force) {
       GC_LOG("||| GC: collectCyclesDuration = %lld\n", cyclicGcEndTime - cyclicGcStartTime);
     #endif
     auto cyclicGcDuration = cyclicGcEndTime - cyclicGcStartTime;
-    if (state->gcErgonomics && cyclicGcDuration > kGcCollectCyclesMinimumDuration &&
+    if (!force && state->gcErgonomics && cyclicGcDuration > kGcCollectCyclesMinimumDuration &&
         double(cyclicGcDuration) / (cyclicGcStartTime - state->lastCyclicGcTimestamp + 1) > kGcCollectCyclesLoadRatio) {
       increaseGcCollectCyclesThreshold(state);
       GC_LOG("Adjusting GC collecting cycles threshold to %lld\n", state->gcCollectCyclesThreshold);
@@ -1692,7 +1698,7 @@ void garbageCollect(MemoryState* state, bool force) {
 
   if (state->gcErgonomics) {
     auto gcToComputeRatio = double(gcEndTime - gcStartTime) / (gcStartTime - state->lastGcTimestamp + 1);
-    if (gcToComputeRatio > kGcToComputeRatioThreshold) {
+    if (!force && gcToComputeRatio > kGcToComputeRatioThreshold) {
       increaseGcThreshold(state);
       GC_LOG("Adjusting GC threshold to %d\n", state->gcThreshold);
     }
@@ -1993,6 +1999,16 @@ inline void checkIfGcNeeded(MemoryState* state) {
     if (konan::getTimeMicros() - state->lastGcTimestamp > 10 * 1000) {
       GC_LOG("Calling GC from checkIfGcNeeded: %d\n", state->toRelease->size())
       garbageCollect(state, false);
+    }
+  }
+}
+
+inline void checkIfForceCyclicGcNeeded(MemoryState* state) {
+  if (state != nullptr && state->toFree != nullptr && state->toFree->size() > kMaxToFreeSizeThreshold) {
+    // To avoid GC trashing check that at least 10ms passed since last GC.
+    if (konan::getTimeMicros() - state->lastGcTimestamp > 10 * 1000) {
+      GC_LOG("Calling GC from checkIfForceCyclicGcNeeded: %d\n", state->toFree->size())
+      garbageCollect(state, true);
     }
   }
 }
@@ -2400,6 +2416,9 @@ bool clearSubgraphReferences(ObjHeader* root, bool checked) {
     // TODO: assert for that?
     return true;
 
+  // Free cyclic garbage to decrease number of analyzed objects.
+  checkIfForceCyclicGcNeeded(state);
+
   ContainerHeaderSet visited;
   if (!checked) {
     hasExternalRefs(container, &visited);
@@ -2569,6 +2588,34 @@ void freezeCyclic(ObjHeader* root,
   }
 }
 
+// These hooks are only allowed to modify `obj` subgraph.
+void runFreezeHooks(ObjHeader* obj) {
+  if (obj->type_info() == theWorkerBoundReferenceTypeInfo) {
+    WorkerBoundReferenceFreezeHook(obj);
+  }
+}
+
+void runFreezeHooksRecursive(ObjHeader* root) {
+  KStdUnorderedSet<KRef> seen;
+  KStdVector<KRef> toVisit;
+  seen.insert(root);
+  toVisit.push_back(root);
+  while (!toVisit.empty()) {
+    KRef obj = toVisit.back();
+    toVisit.pop_back();
+
+    runFreezeHooks(obj);
+
+    traverseReferredObjects(obj, [&seen, &toVisit](ObjHeader* field) {
+      auto wasNotSeenYet = seen.insert(field).second;
+      // Only iterating on unseen objects which containers will get frozen by freezeCyclic or freezeAcyclic.
+      if (wasNotSeenYet && canFreeze(field->container())) {
+        toVisit.push_back(field);
+      }
+    });
+  }
+}
+
 /**
  * Theory of operations.
  *
@@ -2599,7 +2646,19 @@ void freezeSubgraph(ObjHeader* root) {
   ContainerHeader* rootContainer = root->container();
   if (isPermanentOrFrozen(rootContainer)) return;
 
+  MEMORY_LOG("Run freeze hooks on subgraph of %p\n", root);
+
+  // Note: Actual freezing can fail, but these hooks won't be undone, and moreover
+  // these hooks will run again on a repeated freezing attempt.
+  runFreezeHooksRecursive(root);
+
   MEMORY_LOG("Freeze subgraph of %p\n", root)
+
+  #if USE_GC
+    auto state = memoryState;
+    // Free cyclic garbage to decrease number of analyzed objects.
+    checkIfForceCyclicGcNeeded(state);
+  #endif
 
   // Do DFS cycle detection.
   bool hasCycles = false;
@@ -2624,7 +2683,6 @@ void freezeSubgraph(ObjHeader* root) {
   // Now remove frozen objects from the toFree list.
   // TODO: optimize it by keeping ignored (i.e. freshly frozen) objects in the set,
   // and use it when analyzing toFree during collection.
-  auto state = memoryState;
   for (auto& container : *(state->toFree)) {
     if (!isMarkedAsRemoved(container) && container->frozen()) {
       RuntimeAssert(newlyFrozen.count(container) != 0, "Must be newly frozen");
