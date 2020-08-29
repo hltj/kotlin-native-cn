@@ -22,6 +22,14 @@
 // Allow concurrent global cycle collector.
 #define USE_CYCLIC_GC 0
 
+// CycleDetector internally uses static local with runtime initialization,
+// which requires atomics. Atomics are not available on WASM.
+#ifdef KONAN_WASM
+#define USE_CYCLE_DETECTOR 0
+#else
+#define USE_CYCLE_DETECTOR 1
+#endif
+
 #include "Alloc.h"
 #include "KAssert.h"
 #include "Atomic.h"
@@ -35,6 +43,7 @@
 #include "Natives.h"
 #include "Porting.h"
 #include "Runtime.h"
+#include "Utils.h"
 #include "WorkerBoundReference.h"
 
 // If garbage collection algorithm for cyclic garbage to be used.
@@ -93,7 +102,7 @@ constexpr size_t kMaxToFreeSizeThreshold = 8 * 1024;
 // Never exceed this value when increasing size for toFree set, triggering actual cycle collector.
 constexpr size_t kMaxErgonomicToFreeSizeThreshold = 8 * 1024 * 1024;
 // How many elements in finalizer queue allowed before cleaning it up.
-constexpr size_t kFinalizerQueueThreshold = 32;
+constexpr int32_t kFinalizerQueueThreshold = 32;
 // If allocated that much memory since last GC - force new GC.
 constexpr size_t kMaxGcAllocThreshold = 8 * 1024 * 1024;
 // If the ratio of GC collection cycles time to program execution time is greater this value,
@@ -119,13 +128,119 @@ typedef KStdUnorderedMap<void**, std::pair<KRef*,int>> KThreadLocalStorageMap;
 // Prevents clang from replacing FrameOverlay struct
 // with single pointer.
 // Can be removed when FrameOverlay will become more complex.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-variable"
 FrameOverlay exportFrameOverlay;
+#pragma clang diagnostic pop
 
 // Current number of allocated containers.
 volatile int allocCount = 0;
 volatile int aliveMemoryStatesCount = 0;
 
+#if USE_CYCLIC_GC
 KBoolean g_hasCyclicCollector = true;
+#endif  // USE_CYCLIC_GC
+
+// TODO: Consider using ObjHolder.
+class ScopedRefHolder {
+ public:
+  ScopedRefHolder() = default;
+
+  explicit ScopedRefHolder(KRef obj);
+
+  ScopedRefHolder(const ScopedRefHolder&) = delete;
+
+  ScopedRefHolder(ScopedRefHolder&& other) noexcept: obj_(other.obj_) {
+    other.obj_ = nullptr;
+  }
+
+  ScopedRefHolder& operator=(const ScopedRefHolder&) = delete;
+
+  ScopedRefHolder& operator=(ScopedRefHolder&& other) noexcept {
+    ScopedRefHolder tmp(std::move(other));
+    swap(tmp);
+    return *this;
+  }
+
+  ~ScopedRefHolder();
+
+  void swap(ScopedRefHolder& other) noexcept {
+    std::swap(obj_, other.obj_);
+  }
+
+ private:
+  KRef obj_ = nullptr;
+};
+
+#if USE_CYCLE_DETECTOR
+
+struct CycleDetectorRootset {
+  // Orders roots.
+  KStdVector<KRef> roots;
+  // Pins a state of each root.
+  KStdUnorderedMap<KRef, KStdVector<KRef>> rootToFields;
+  // Holding roots and their fields to avoid GC-ing them.
+  KStdVector<ScopedRefHolder> heldRefs;
+};
+
+class CycleDetector {
+ public:
+  static void insertCandidateIfNeeded(KRef object) {
+    if (canBeACandidate(object))
+      instance().insertCandidate(object);
+  }
+
+  static void removeCandidateIfNeeded(KRef object) {
+    if (canBeACandidate(object))
+      instance().removeCandidate(object);
+  }
+
+  static CycleDetectorRootset collectRootset();
+
+ private:
+  CycleDetector() = default;
+  ~CycleDetector() = default;
+  CycleDetector(const CycleDetector&) = delete;
+  CycleDetector(CycleDetector&&) = delete;
+  CycleDetector& operator=(const CycleDetector&) = delete;
+  CycleDetector& operator=(CycleDetector&&) = delete;
+
+  static CycleDetector& instance() {
+    // Only store a pointer to CycleDetector in .bss
+    static CycleDetector* result = new CycleDetector();
+    return *result;
+  }
+
+  static bool canBeACandidate(KRef object) {
+    return KonanNeedDebugInfo &&
+        Kotlin_memoryLeakCheckerEnabled() &&
+        (object->type_info()->flags_ & TF_LEAK_DETECTOR_CANDIDATE) != 0;
+  }
+
+  void insertCandidate(KRef candidate) {
+    LockGuard<SimpleMutex> guard(lock_);
+
+    auto it = candidateList_.insert(candidateList_.begin(), candidate);
+    candidateInList_.emplace(candidate, it);
+  }
+
+  void removeCandidate(KRef candidate) {
+    LockGuard<SimpleMutex> guard(lock_);
+
+    auto it = candidateInList_.find(candidate);
+    if (it == candidateInList_.end())
+      return;
+    candidateList_.erase(it->second);
+    candidateInList_.erase(it);
+  }
+
+  SimpleMutex lock_;
+  using CandidateList = KStdList<KRef>;
+  CandidateList candidateList_;
+  KStdUnorderedMap<KRef, CandidateList::iterator> candidateInList_;
+};
+
+#endif  // USE_CYCLE_DETECTOR
 
 // TODO: can we pass this variable as an explicit argument?
 THREAD_LOCAL_VARIABLE MemoryState* memoryState = nullptr;
@@ -733,7 +848,7 @@ inline void traverseObjectFields(ObjHeader* obj, func process) {
     }
   } else {
     ArrayHeader* array = obj->array();
-    for (int index = 0; index < array->count_; index++) {
+    for (uint32_t index = 0; index < array->count_; index++) {
       process(ArrayAddressOfElementAt(array, index));
     }
   }
@@ -751,7 +866,7 @@ template <typename func>
 inline void traverseContainerObjects(ContainerHeader* container, func process) {
   RuntimeAssert(!isAggregatingFrozenContainer(container), "Must not be called on such containers");
   ObjHeader* obj = reinterpret_cast<ObjHeader*>(container + 1);
-  for (int i = 0; i < container->objectCount(); ++i) {
+  for (uint32_t i = 0; i < container->objectCount(); ++i) {
     process(obj);
     obj = reinterpret_cast<ObjHeader*>(
       reinterpret_cast<uintptr_t>(obj) + objectSize(obj));
@@ -937,7 +1052,7 @@ void freeAggregatingFrozenContainer(ContainerHeader* container) {
   // Special container for frozen objects.
   ContainerHeader** subContainer = reinterpret_cast<ContainerHeader**>(container + 1);
   MEMORY_LOG("Total subcontainers = %d\n", container->objectCount());
-  for (int i = 0; i < container->objectCount(); ++i) {
+  for (uint32_t i = 0; i < container->objectCount(); ++i) {
     MEMORY_LOG("Freeing subcontainer %p\n", *subContainer);
     freeContainer(*subContainer++);
   }
@@ -952,7 +1067,7 @@ void freeAggregatingFrozenContainer(ContainerHeader* container) {
 // so better be inlined.
 ALWAYS_INLINE void runDeallocationHooks(ContainerHeader* container) {
   ObjHeader* obj = reinterpret_cast<ObjHeader*>(container + 1);
-  for (int index = 0; index < container->objectCount(); index++) {
+  for (uint32_t index = 0; index < container->objectCount(); index++) {
     auto* type_info = obj->type_info();
     if (type_info == theWorkerBoundReferenceTypeInfo) {
       DisposeWorkerBoundReference(obj);
@@ -962,6 +1077,9 @@ ALWAYS_INLINE void runDeallocationHooks(ContainerHeader* container) {
       cyclicRemoveAtomicRoot(obj);
     }
 #endif  // USE_CYCLIC_GC
+#if USE_CYCLE_DETECTOR
+    CycleDetector::removeCandidateIfNeeded(obj);
+#endif  // USE_CYCLE_DETECTOR
     if (obj->has_meta_object()) {
       ObjHeader::destroyMetaObject(&obj->typeInfoOrMeta_);
     }
@@ -980,7 +1098,7 @@ void freeContainer(ContainerHeader* container) {
   runDeallocationHooks(container);
 
   // Now let's clean all object's fields in this container.
-  traverseContainerObjectFields(container, [container](ObjHeader** location) {
+  traverseContainerObjectFields(container, [](ObjHeader** location) {
       ZeroHeapRef(location);
   });
 
@@ -1017,7 +1135,7 @@ void depthFirstTraversal(ContainerHeader* start, bool* hasCycles,
       continue;
     }
     toVisit.push_front(markAsRemoved(container));
-    traverseContainerReferredObjects(container, [container, hasCycles, firstBlocker, &order, &toVisit](ObjHeader* obj) {
+    traverseContainerReferredObjects(container, [container, hasCycles, firstBlocker, &toVisit](ObjHeader* obj) {
       if (*firstBlocker != nullptr)
         return;
       if (obj->has_meta_object() && ((obj->meta_object()->flags_ & MF_NEVER_FROZEN) != 0)) {
@@ -1426,7 +1544,7 @@ void collectWhite(MemoryState* state, ContainerHeader* start) {
      toVisit.pop_front();
      if (container->color() != CONTAINER_TAG_GC_WHITE || container->buffered()) continue;
      container->setColorAssertIfGreen(CONTAINER_TAG_GC_BLACK);
-     traverseContainerObjectFields(container, [state, &toVisit](ObjHeader** location) {
+     traverseContainerObjectFields(container, [&toVisit](ObjHeader** location) {
         auto* ref = *location;
         if (ref == nullptr) return;
         auto* childContainer = ref->container();
@@ -1535,7 +1653,7 @@ inline ArenaContainer* initedArena(ObjHeader** auxSlot) {
 inline size_t containerSize(const ContainerHeader* container) {
   size_t result = 0;
   const ObjHeader* obj = reinterpret_cast<const ObjHeader*>(container + 1);
-  for (int object = 0; object < container->objectCount(); object++) {
+  for (uint32_t object = 0; object < container->objectCount(); object++) {
     size_t size = objectSize(obj);
     result += size;
     obj = reinterpret_cast<ObjHeader*>(reinterpret_cast<uintptr_t>(obj) + size);
@@ -1610,7 +1728,9 @@ void decrementStack(MemoryState* state) {
 void garbageCollect(MemoryState* state, bool force) {
   RuntimeAssert(!state->gcInProgress, "Recursive GC is disallowed");
 
+#if TRACE_GC
   uint64_t allocSinceLastGc = state->allocSinceLastGc;
+#endif  // TRACE_GC
   state->allocSinceLastGc = 0;
 
   if (!IsStrictMemoryModel) {
@@ -1651,7 +1771,8 @@ void garbageCollect(MemoryState* state, bool force) {
   auto decrementStackDuration = konan::getTimeMicros() - decrementStackStartTime;
   GC_LOG("||| GC: decrementStackDuration = %lld\n", decrementStackDuration);
 #endif
-  long stackReferences = afterDecrements - beforeDecrements;
+  RuntimeAssert(afterDecrements >= beforeDecrements, "toRelease size must not have decreased");
+  size_t stackReferences = afterDecrements - beforeDecrements;
   if (state->gcErgonomics && stackReferences * 5 > state->gcThreshold) {
     increaseGcThreshold(state);
     GC_LOG("||| GC: too many stack references, increased threshold to %d\n", state->gcThreshold);
@@ -2029,6 +2150,9 @@ OBJ_GETTER(allocInstance, const TypeInfo* type_info) {
     makeShareable(container.header());
   }
 #endif  // USE_GC
+#if USE_CYCLE_DETECTOR
+  CycleDetector::insertCandidateIfNeeded(obj);
+#endif  // USE_CYCLE_DETECTOR
 #if USE_CYCLIC_GC
   if ((obj->type_info()->flags_ & TF_LEAK_DETECTOR_CANDIDATE) != 0) {
     // Note: this should be performed after [rememberNewContainer] (above).
@@ -2493,7 +2617,7 @@ void freezeAcyclic(ContainerHeader* rootContainer, ContainerHeaderSet* newlyFroz
       newlyFrozen->insert(current);
     MEMORY_LOG("freezing %p\n", current)
     current->freeze();
-    traverseContainerReferredObjects(current, [current, &queue](ObjHeader* obj) {
+    traverseContainerReferredObjects(current, [&queue](ObjHeader* obj) {
         ContainerHeader* objContainer = obj->container();
         if (canFreeze(objContainer)) {
           if (objContainer->marked())
@@ -2707,6 +2831,129 @@ void shareAny(ObjHeader* obj) {
   RuntimeCheck(container->objectCount() == 1, "Must be a single object container");
   container->makeShared();
 }
+
+ScopedRefHolder::ScopedRefHolder(KRef obj): obj_(obj) {
+  if (obj_) {
+    addHeapRef(obj_);
+  }
+}
+
+ScopedRefHolder::~ScopedRefHolder() {
+  if (obj_) {
+    ReleaseHeapRef(obj_);
+  }
+}
+
+#if USE_CYCLE_DETECTOR
+
+// static
+CycleDetectorRootset CycleDetector::collectRootset() {
+  auto& detector = instance();
+  CycleDetectorRootset rootset;
+  LockGuard<SimpleMutex> guard(detector.lock_);
+  for (auto* candidate: detector.candidateList_) {
+    // Only frozen candidates are to be analyzed.
+    if (!isPermanentOrFrozen(candidate))
+      continue;
+    rootset.roots.push_back(candidate);
+    rootset.heldRefs.emplace_back(candidate);
+    traverseReferredObjects(candidate, [&rootset, candidate](KRef field) {
+      rootset.rootToFields[candidate].push_back(field);
+      // TODO: There's currently a race here:
+      // some other thread might null this field and destroy it in GC before
+      // we put it in ScopedRefHolder.
+      rootset.heldRefs.emplace_back(field);
+    });
+  }
+  return rootset;
+}
+
+KStdVector<KRef> findCycleWithDFS(KRef root, const CycleDetectorRootset& rootset) {
+  auto traverseFields = [&rootset](KRef obj, auto process) {
+    auto it = rootset.rootToFields.find(obj);
+    // If obj is in the rootset, use it's pinned state.
+    if (it != rootset.rootToFields.end()) {
+      const auto& fields = it->second;
+      for (KRef field: fields) {
+        if (field != nullptr) {
+          process(field);
+        }
+      }
+      return;
+    }
+
+    traverseReferredObjects(obj, process);
+  };
+
+  KStdVector<KStdVector<KRef>> toVisit;
+  auto appendFieldsToVisit = [&toVisit, &traverseFields](KRef obj, const KStdVector<KRef>& currentPath) {
+    traverseFields(obj, [&toVisit, &currentPath](KRef field) {
+      auto path = currentPath;
+      path.push_back(field);
+      toVisit.emplace_back(std::move(path));
+    });
+  };
+
+  appendFieldsToVisit(root, KRefList(1, root));
+
+  KStdUnorderedSet<KRef> seen;
+  seen.insert(root);
+  while (!toVisit.empty()) {
+    KStdVector<KRef> currentPath = std::move(toVisit.back());
+    toVisit.pop_back();
+    KRef node = currentPath[currentPath.size() - 1];
+
+    if (node == root) {
+      // Found a cycle.
+      return currentPath;
+    }
+
+    // Already traversed this node.
+    if (seen.count(node) != 0)
+      continue;
+    seen.insert(node);
+
+    appendFieldsToVisit(node, currentPath);
+  }
+
+  return {};
+}
+
+template <typename C>
+OBJ_GETTER(createAndFillArray, const C& container) {
+  auto* result = AllocArrayInstance(theArrayTypeInfo, container.size(), OBJ_RESULT)->array();
+  KRef* place = ArrayAddressOfElementAt(result, 0);
+  for (KRef it: container) {
+    UpdateHeapRef(place++, it);
+  }
+  RETURN_OBJ(result->obj());
+}
+
+OBJ_GETTER0(detectCyclicReferences) {
+  auto rootset = CycleDetector::collectRootset();
+
+  KStdVector<KRef> cyclic;
+
+  for (KRef root: rootset.roots) {
+    if (!findCycleWithDFS(root, rootset).empty()) {
+      cyclic.push_back(root);
+    }
+  }
+
+  RETURN_RESULT_OF(createAndFillArray, cyclic);
+}
+
+OBJ_GETTER(findCycle, KRef root) {
+  auto rootset = CycleDetector::collectRootset();
+
+  auto cycle = findCycleWithDFS(root, rootset);
+  if (cycle.empty()) {
+    RETURN_OBJ(nullptr);
+  }
+  RETURN_RESULT_OF(createAndFillArray, cycle);
+}
+
+#endif  // USE_CYCLE_DETECTOR
 
 }  // namespace
 
@@ -3132,6 +3379,23 @@ KBoolean Kotlin_native_internal_GC_getTuneThreshold(KRef) {
   return getTuneGCThreshold();
 #else
   return false;
+#endif
+}
+
+OBJ_GETTER(Kotlin_native_internal_GC_detectCycles, KRef) {
+#if USE_CYCLE_DETECTOR
+  if (!KonanNeedDebugInfo || !Kotlin_memoryLeakCheckerEnabled()) RETURN_OBJ(nullptr);
+  RETURN_RESULT_OF0(detectCyclicReferences);
+#else
+  RETURN_OBJ(nullptr);
+#endif
+}
+
+OBJ_GETTER(Kotlin_native_internal_GC_findCycle, KRef, KRef root) {
+#if USE_CYCLE_DETECTOR
+  RETURN_RESULT_OF(findCycle, root);
+#else
+  RETURN_OBJ(nullptr);
 #endif
 }
 

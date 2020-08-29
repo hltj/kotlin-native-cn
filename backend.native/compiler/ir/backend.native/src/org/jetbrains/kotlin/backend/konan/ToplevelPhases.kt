@@ -357,11 +357,13 @@ internal val allLoweringsPhase = NamedCompilerPhase(
                         name = "IrLowerByFile",
                         description = "IR Lowering by file",
                         lower = listOf(
+                            rangeContainsLoweringPhase,
                             forLoopsPhase,
                             stringConcatenationPhase,
                             enumConstructorsPhase,
                             initializersPhase,
                             localFunctionsPhase,
+                            foldConstantLoweringPhase,
                             tailrecPhase,
                             defaultParameterExtentPhase,
                             innerClassPhase,
