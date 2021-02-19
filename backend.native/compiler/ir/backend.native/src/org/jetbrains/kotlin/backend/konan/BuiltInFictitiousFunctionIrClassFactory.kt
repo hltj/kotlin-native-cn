@@ -11,6 +11,7 @@ import org.jetbrains.kotlin.backend.common.ir.createParameterDeclarations
 import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.konan.descriptors.findPackage
 import org.jetbrains.kotlin.builtins.functions.FunctionClassDescriptor
+import org.jetbrains.kotlin.builtins.functions.FunctionClassKind
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
 import org.jetbrains.kotlin.ir.declarations.*
@@ -61,7 +62,7 @@ internal class BuiltInFictitiousFunctionIrClassFactory(
 //            builtClasses.forEach { it.addFakeOverrides() }
         }
 
-    class FunctionalInterface(val irClass: IrClass, val arity: Int)
+    class FunctionalInterface(val irClass: IrClass, val descriptor: FunctionClassDescriptor, val arity: Int)
 
     fun buildAllClasses() {
         val maxArity = 255 // See [BuiltInFictitiousFunctionClassFactory].
@@ -111,10 +112,10 @@ internal class BuiltInFictitiousFunctionIrClassFactory(
 
     val builtClasses get() = builtClassesMap.values
 
-    val builtFunctionNClasses get() = builtClassesMap.values.mapNotNull {
-        with(it.descriptor as FunctionClassDescriptor) {
-            if (functionKind == FunctionClassDescriptor.Kind.Function)
-                FunctionalInterface(it, arity)
+    val builtFunctionNClasses get() = builtClassesMap.entries.mapNotNull { (descriptor, irClass) ->
+        with(descriptor) {
+            if (functionKind == FunctionClassKind.Function)
+                FunctionalInterface(irClass, descriptor, arity)
             else null
         }
     }
@@ -212,7 +213,8 @@ internal class BuiltInFictitiousFunctionIrClassFactory(
                                         SYNTHETIC_OFFSET, SYNTHETIC_OFFSET, invokeFunctionOrigin,
                                         IrValueParameterSymbolImpl(it), it.name, it.index,
                                         functionClass.typeParameters[it.index].defaultType, null,
-                                        it.isCrossinline, it.isNoinline
+                                        it.isCrossinline, it.isNoinline,
+                                        isHidden = false, isAssignable = false
                                 ).also { it.parent = this }
                             }
                             if (!isFakeOverride)
@@ -270,7 +272,9 @@ internal class BuiltInFictitiousFunctionIrClassFactory(
                 toIrType(descriptor.type),
                 varargType?.let { toIrType(it) },
                 descriptor.isCrossinline,
-                descriptor.isNoinline
+                descriptor.isNoinline,
+                isHidden = false,
+                isAssignable = false
         ).also {
             it.parent = this
         }

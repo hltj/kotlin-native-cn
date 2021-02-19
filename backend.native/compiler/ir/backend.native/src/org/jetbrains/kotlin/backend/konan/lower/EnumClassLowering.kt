@@ -16,6 +16,7 @@ import org.jetbrains.kotlin.backend.konan.DECLARATION_ORIGIN_ENUM
 import org.jetbrains.kotlin.backend.konan.llvm.IntrinsicType
 import org.jetbrains.kotlin.backend.konan.llvm.tryGetIntrinsicType
 import org.jetbrains.kotlin.descriptors.ClassKind
+import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrPropertyImpl
@@ -31,7 +32,7 @@ import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
 import org.jetbrains.kotlin.name.Name
 
-internal class EnumSyntheticFunctionsBuilder(val context: Context) {
+private class EnumSyntheticFunctionsBuilder(val context: Context) {
     fun buildValuesExpression(startOffset: Int, endOffset: Int,
                               enumClass: IrClass): IrExpression {
 
@@ -39,16 +40,7 @@ internal class EnumSyntheticFunctionsBuilder(val context: Context) {
 
         return irCall(startOffset, endOffset, genericValuesSymbol.owner, listOf(enumClass.defaultType))
                 .apply {
-                    val receiver = IrGetObjectValueImpl(startOffset, endOffset,
-                            loweredEnum.implObject.defaultType,
-                            loweredEnum.implObject.symbol)
-                    putValueArgument(0, IrGetFieldImpl(
-                            startOffset,
-                            endOffset,
-                            loweredEnum.valuesField.symbol,
-                            loweredEnum.valuesField.type,
-                            receiver
-                    ))
+                    putValueArgument(0, loweredEnum.getValuesField(startOffset, endOffset))
                 }
     }
 
@@ -60,15 +52,7 @@ internal class EnumSyntheticFunctionsBuilder(val context: Context) {
         return irCall(startOffset, endOffset, genericValueOfSymbol.owner, listOf(enumClass.defaultType))
                 .apply {
                     putValueArgument(0, value)
-                    val receiver = IrGetObjectValueImpl(startOffset, endOffset,
-                            loweredEnum.implObject.defaultType, loweredEnum.implObject.symbol)
-                    putValueArgument(1, IrGetFieldImpl(
-                            startOffset,
-                            endOffset,
-                            loweredEnum.valuesField.symbol,
-                            loweredEnum.valuesField.type,
-                            receiver
-                    ))
+                    putValueArgument(1, loweredEnum.getValuesField(startOffset, endOffset))
                 }
     }
 
@@ -126,35 +110,44 @@ internal class EnumUsageLowering(val context: Context)
 
     private fun loadEnumEntry(startOffset: Int, endOffset: Int, enumClass: IrClass, name: Name): IrExpression {
         val loweredEnum = context.specialDeclarationsFactory.getLoweredEnum(enumClass)
-        val ordinal = loweredEnum.entriesMap[name]!!
-        return IrCallImpl(
+        val ordinal = loweredEnum.entriesMap.getValue(name)
+        return IrCallImpl.fromSymbolDescriptor(
                 startOffset, endOffset, enumClass.defaultType,
                 loweredEnum.itemGetterSymbol.owner.symbol,
-                typeArgumentsCount = 0
+                typeArgumentsCount = 0,
+                loweredEnum.itemGetterSymbol.owner.valueParameters.size
         ).apply {
-            dispatchReceiver = IrCallImpl(startOffset, endOffset, loweredEnum.valuesGetter.returnType, loweredEnum.valuesGetter.symbol)
+            dispatchReceiver = IrCallImpl(startOffset, endOffset, loweredEnum.valuesGetter.returnType,
+                    loweredEnum.valuesGetter.symbol, loweredEnum.valuesGetter.typeParameters.size,
+                    loweredEnum.valuesGetter.valueParameters.size)
             putValueArgument(0, IrConstImpl.int(startOffset, endOffset, context.irBuiltIns.intType, ordinal))
         }
     }
 }
 
-internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
+internal class EnumClassLowering(val context: Context) : FileLoweringPass {
 
     fun run(irFile: IrFile) {
         // EnumWhenLowering should be performed before EnumUsageLowering because
         // the latter performs lowering of IrGetEnumValue
         EnumWhenLowering(context).lower(irFile)
-        runOnFilePostfix(irFile)
+        lower(irFile)
         EnumUsageLowering(context).lower(irFile)
     }
 
-    override fun lower(irClass: IrClass) {
-        if (irClass.kind != ClassKind.ENUM_CLASS) return
-        EnumClassTransformer(irClass).run()
+    override fun lower(irFile: IrFile) {
+        irFile.transformChildrenVoid(object : IrElementTransformerVoid() {
+            override fun visitClass(declaration: IrClass): IrStatement {
+                declaration.transformChildrenVoid()
+                if (declaration.kind == ClassKind.ENUM_CLASS)
+                    EnumClassTransformer(declaration).run()
+                return declaration
+            }
+        })
     }
 
     private inner class EnumClassTransformer(val irClass: IrClass) {
-        private val loweredEnum = context.specialDeclarationsFactory.getLoweredEnum(irClass)
+        private val loweredEnum = context.specialDeclarationsFactory.getInternalLoweredEnum(irClass)
         private val enumSyntheticFunctionsBuilder = EnumSyntheticFunctionsBuilder(context)
 
         fun run() {

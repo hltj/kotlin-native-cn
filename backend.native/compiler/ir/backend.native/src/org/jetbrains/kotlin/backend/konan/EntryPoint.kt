@@ -9,14 +9,12 @@ import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.backend.common.lower.irBlockBody
 import org.jetbrains.kotlin.backend.konan.ir.buildSimpleAnnotation
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrValueParameterImpl
-import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
-import org.jetbrains.kotlin.ir.descriptors.WrappedValueParameterDescriptor
 import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrValueParameterSymbolImpl
@@ -25,15 +23,14 @@ import org.jetbrains.kotlin.ir.util.irCatch
 import org.jetbrains.kotlin.name.Name
 
 internal fun makeEntryPoint(context: Context): IrFunction {
-    val entryPointDescriptor = WrappedSimpleFunctionDescriptor()
     val actualMain = context.ir.symbols.entryPoint!!.owner
     val entryPoint = IrFunctionImpl(
             actualMain.startOffset,
             actualMain.startOffset,
             IrDeclarationOrigin.DEFINED,
-            IrSimpleFunctionSymbolImpl(entryPointDescriptor),
+            IrSimpleFunctionSymbolImpl(),
             Name.identifier("Konan_start"),
-            Visibilities.PRIVATE,
+            DescriptorVisibilities.PRIVATE,
             Modality.FINAL,
             context.irBuiltIns.intType,
             isInline = false,
@@ -45,24 +42,23 @@ internal fun makeEntryPoint(context: Context): IrFunction {
             isOperator = false,
             isInfix = false
     ).also { function ->
-        function.valueParameters = listOf(WrappedValueParameterDescriptor().let {
+        function.valueParameters = listOf(
             IrValueParameterImpl(
                     actualMain.startOffset, actualMain.startOffset,
                     IrDeclarationOrigin.DEFINED,
-                    IrValueParameterSymbolImpl(it),
+                    IrValueParameterSymbolImpl(),
                     Name.identifier("args"),
                     index = 0,
                     varargElementType = null,
                     isCrossinline = false,
                     type = context.irBuiltIns.arrayClass.typeWith(context.irBuiltIns.stringType),
-                    isNoinline = false
+                    isNoinline = false,
+                    isHidden = false,
+                    isAssignable = false
             ).apply {
-                it.bind(this)
                 parent = function
-            }
-        })
+            })
     }
-    entryPointDescriptor.bind(entryPoint)
     entryPoint.annotations += buildSimpleAnnotation(context.irBuiltIns,
             actualMain.startOffset, actualMain.startOffset,
             context.ir.symbols.exportForCppRuntime.owner, "Konan_start")

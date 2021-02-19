@@ -57,9 +57,7 @@ extern "C" RUNTIME_USED int Init_and_run_start(int argc, const char** argv, int 
   KInt exitStatus = Konan_run_start(argc, argv);
 
   if (memoryDeInit) {
-    if (Kotlin_memoryLeakCheckerEnabled())
-      WaitNativeWorkersTermination();
-    Kotlin_deinitRuntimeIfNeeded();
+      Kotlin_shutdownRuntime();
   }
 
   return exitStatus;

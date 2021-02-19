@@ -24,12 +24,15 @@ extern "C" {
 #endif
 
 // Returns current stacktrace as Array<String>.
-OBJ_GETTER0(GetCurrentStackTrace);
+OBJ_GETTER0(Kotlin_getCurrentStackTrace);
 
 OBJ_GETTER(GetStackTraceStrings, KConstRef stackTrace);
 
 // Throws arbitrary exception.
 void ThrowException(KRef exception);
+
+// RuntimeUtils.kt
+void OnUnhandledException(KRef throwable);
 
 RUNTIME_NORETURN void TerminateWithUnhandledException(KRef exception);
 

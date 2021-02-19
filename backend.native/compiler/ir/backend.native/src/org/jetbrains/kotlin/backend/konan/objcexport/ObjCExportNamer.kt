@@ -5,11 +5,13 @@
 
 package org.jetbrains.kotlin.backend.konan.objcexport
 
+import org.jetbrains.kotlin.backend.common.serialization.findSourceFile
 import org.jetbrains.kotlin.backend.konan.cKeywords
 import org.jetbrains.kotlin.backend.konan.descriptors.isArray
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.descriptors.konan.isNativeStdlib
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
+import org.jetbrains.kotlin.builtins.StandardNames
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.konan.*
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
@@ -22,6 +24,7 @@ import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.psi.psiUtil.getStrictParentOfType
 import org.jetbrains.kotlin.resolve.descriptorUtil.isSubclassOf
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
+import org.jetbrains.kotlin.resolve.descriptorUtil.propertyIfAccessor
 import org.jetbrains.kotlin.resolve.source.PsiSourceFile
 
 internal interface ObjCExportNameTranslator {
@@ -54,6 +57,7 @@ interface ObjCExportNamer {
     fun getPropertyName(property: PropertyDescriptor): String
     fun getObjectInstanceSelector(descriptor: ClassDescriptor): String
     fun getEnumEntrySelector(descriptor: ClassDescriptor): String
+    fun getEnumValuesSelector(descriptor: FunctionDescriptor): String
     fun getTypeParameterName(typeParameterDescriptor: TypeParameterDescriptor): String
 
     fun numberBoxName(classId: ClassId): ClassOrProtocolName
@@ -326,7 +330,7 @@ internal class ObjCExportNamerImpl(
 
     private val genericTypeParameterNameMapping = GenericTypeParameterNameMapping()
 
-    private abstract inner class ClassPropertyNameMapping<T : Any> : Mapping<T, String>() {
+    private abstract inner class ClassSelectorNameMapping<T : Any> : Mapping<T, String>() {
 
         // Try to avoid clashing with NSObject class methods:
 
@@ -341,12 +345,12 @@ internal class ObjCExportNamerImpl(
         override fun reserved(name: String) = (name in reserved) || (name in cKeywords)
     }
 
-    private val objectInstanceSelectors = object : ClassPropertyNameMapping<ClassDescriptor>() {
+    private val objectInstanceSelectors = object : ClassSelectorNameMapping<ClassDescriptor>() {
         override fun conflict(first: ClassDescriptor, second: ClassDescriptor) = false
     }
 
-    private val enumEntrySelectors = object : ClassPropertyNameMapping<ClassDescriptor>() {
-        override fun conflict(first: ClassDescriptor, second: ClassDescriptor) =
+    private val enumClassSelectors = object : ClassSelectorNameMapping<DeclarationDescriptor>() {
+        override fun conflict(first: DeclarationDescriptor, second: DeclarationDescriptor) =
                 first.containingDeclaration == second.containingDeclaration
     }
 
@@ -556,7 +560,7 @@ internal class ObjCExportNamerImpl(
     override fun getEnumEntrySelector(descriptor: ClassDescriptor): String {
         assert(descriptor.kind == ClassKind.ENUM_ENTRY)
 
-        return enumEntrySelectors.getOrPut(descriptor) {
+        return enumClassSelectors.getOrPut(descriptor) {
             // FOO_BAR_BAZ -> fooBarBaz:
             val name = descriptor.name.asString().split('_').mapIndexed { index, s ->
                 val lower = s.toLowerCase()
@@ -564,6 +568,19 @@ internal class ObjCExportNamerImpl(
             }.joinToString("").toIdentifier().mangleIfSpecialFamily("the")
 
             StringBuilder(name).mangledBySuffixUnderscores()
+        }
+    }
+
+    override fun getEnumValuesSelector(descriptor: FunctionDescriptor): String {
+        val containingDeclaration = descriptor.containingDeclaration
+        require(containingDeclaration is ClassDescriptor && containingDeclaration.kind == ClassKind.ENUM_CLASS)
+        require(descriptor.name == StandardNames.ENUM_VALUES)
+        require(descriptor.dispatchReceiverParameter == null) { "must be static" }
+        require(descriptor.extensionReceiverParameter == null) { "must be static" }
+        require(descriptor.valueParameters.isEmpty())
+
+        return enumClassSelectors.getOrPut(descriptor) {
+            StringBuilder(descriptor.name.asString()).mangledBySuffixUnderscores()
         }
     }
 
@@ -791,7 +808,7 @@ private fun ObjCExportMapper.canBeInheritedBySameClass(
 ): Boolean {
     if (this.isTopLevel(first) || this.isTopLevel(second)) {
         return this.isTopLevel(first) && this.isTopLevel(second) &&
-                first.source.containingFile == second.source.containingFile
+                first.propertyIfAccessor.findSourceFile() == second.propertyIfAccessor.findSourceFile()
     }
 
     val firstClass = this.getClassIfCategory(first) ?: first.containingDeclaration as ClassDescriptor

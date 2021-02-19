@@ -5,52 +5,141 @@
 
 package org.jetbrains.kotlin.backend.konan
 
-import org.jetbrains.kotlin.backend.common.ir.addFakeOverridesViaIncorrectHeuristic
+import org.jetbrains.kotlin.backend.common.ir.addFakeOverrides
 import org.jetbrains.kotlin.backend.common.ir.addSimpleDelegatingConstructor
 import org.jetbrains.kotlin.backend.common.ir.createParameterDeclarations
+import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.descriptors.ClassKind
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
+import org.jetbrains.kotlin.ir.builders.declarations.buildFun
+import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrClassImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrFieldImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
-import org.jetbrains.kotlin.ir.descriptors.WrappedClassDescriptor
-import org.jetbrains.kotlin.ir.descriptors.WrappedFieldDescriptor
-import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.impl.IrCallImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrGetFieldImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrGetObjectValueImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrClassSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrFieldSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
+import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.resolve.descriptorUtil.module
 
 
 internal object DECLARATION_ORIGIN_ENUM : IrDeclarationOriginImpl("ENUM")
 
-internal data class LoweredEnum(val implObject: IrClass,
-                                val valuesField: IrField,
-                                val valuesGetter: IrSimpleFunction,
-                                val itemGetterSymbol: IrSimpleFunctionSymbol,
-                                val entriesMap: Map<Name, Int>)
+/**
+ * Common interface for both [InternalLoweredEnum] and [ExternalLoweredEnum]
+ * that allows to work with lowered enum regardless of its location.
+ */
+internal interface LoweredEnumAccess {
+    val valuesGetter: IrSimpleFunction
+    val itemGetterSymbol: IrSimpleFunctionSymbol
+    val entriesMap: Map<Name, Int>
+    fun getValuesField(startOffset: Int, endOffset: Int): IrExpression
+}
+
+/**
+ * Represents lowered enum from current module.
+ */
+internal data class InternalLoweredEnum(
+        val implObject: IrClass,
+        val valuesField: IrField,
+        val valuesGetterWrapper: IrSimpleFunction,
+        override val valuesGetter: IrSimpleFunction,
+        override val itemGetterSymbol: IrSimpleFunctionSymbol,
+        override val entriesMap: Map<Name, Int>
+) : LoweredEnumAccess {
+    private fun internalObjectGetter(startOffset: Int, endOffset: Int) =
+            IrGetObjectValueImpl(startOffset, endOffset,
+                    implObject.defaultType,
+                    implObject.symbol
+            )
+
+    override fun getValuesField(startOffset: Int, endOffset: Int): IrExpression = IrGetFieldImpl(
+            startOffset,
+            endOffset,
+            valuesField.symbol,
+            valuesField.type,
+            internalObjectGetter(startOffset, endOffset)
+    )
+}
+
+/**
+ * Represents lowered enum that's located in external module.
+ */
+internal data class ExternalLoweredEnum(
+        override val valuesGetter: IrSimpleFunction,
+        override val itemGetterSymbol: IrSimpleFunctionSymbol,
+        override val entriesMap: Map<Name, Int>
+) : LoweredEnumAccess {
+    override fun getValuesField(startOffset: Int, endOffset: Int): IrExpression =
+            IrCallImpl(startOffset, endOffset, valuesGetter.returnType, valuesGetter.symbol, valuesGetter.typeParameters.size, valuesGetter.valueParameters.size)
+}
 
 internal class EnumSpecialDeclarationsFactory(val context: Context) {
     private val symbols = context.ir.symbols
 
-    fun createLoweredEnum(enumClass: IrClass): LoweredEnum {
+    private fun enumEntriesMap(enumClass: IrClass): Map<Name, Int> =
+            enumClass.declarations
+                    .filterIsInstance<IrEnumEntry>()
+                    .sortedBy { it.name }
+                    .withIndex()
+                    .associate { it.value.name to it.index }
+                    .toMap()
+
+    private fun findItemGetterSymbol(): IrSimpleFunctionSymbol =
+            symbols.array.functions.single { it.descriptor.name == Name.identifier("get") }
+
+    private fun valuesArrayType(enumClass: IrClass): IrType =
+            symbols.array.typeWith(enumClass.defaultType)
+
+    // We can't move property getter to the top-level scope.
+    // So add a wrapper instead.
+    private fun createValuesGetterWrapper(enumClass: IrClass, isExternal: Boolean): IrSimpleFunction =
+            context.irFactory.buildFun {
+                name = InternalAbi.getEnumValuesAccessorName(enumClass)
+                returnType = valuesArrayType(enumClass)
+                origin = InternalAbi.INTERNAL_ABI_ORIGIN
+                this.isExternal = isExternal
+            }.also {
+                if (isExternal) {
+                    context.internalAbi.reference(it, enumClass.module)
+                } else {
+                    context.internalAbi.declare(it, enumClass.module)
+                }
+            }
+
+    fun createExternalLoweredEnum(enumClass: IrClass): ExternalLoweredEnum {
+        val enumEntriesMap = enumEntriesMap(enumClass)
+        val itemGetterSymbol = findItemGetterSymbol()
+        val valuesGetterWrapper = createValuesGetterWrapper(enumClass, isExternal = true)
+        return ExternalLoweredEnum(valuesGetterWrapper, itemGetterSymbol, enumEntriesMap)
+    }
+
+    fun createInternalLoweredEnum(enumClass: IrClass): InternalLoweredEnum {
         val startOffset = enumClass.startOffset
         val endOffset = enumClass.endOffset
 
-        val implObject = WrappedClassDescriptor().let {
+        val implObject =
             IrClassImpl(
                     startOffset, endOffset,
                     DECLARATION_ORIGIN_ENUM,
-                    IrClassSymbolImpl(it),
+                    IrClassSymbolImpl(),
                     "OBJECT".synthesizedName,
                     ClassKind.OBJECT,
-                    Visibilities.PUBLIC,
+                    DescriptorVisibilities.PUBLIC,
                     Modality.FINAL,
                     isCompanion = false,
                     isInner = false,
@@ -60,37 +149,33 @@ internal class EnumSpecialDeclarationsFactory(val context: Context) {
                     isExpect = false,
                     isFun = false
             ).apply {
-                it.bind(this)
                 parent = enumClass
                 createParameterDeclarations()
             }
-        }
 
-        val valuesType = symbols.array.typeWith(enumClass.defaultType)
-        val valuesField = WrappedFieldDescriptor().let {
+        val valuesType = valuesArrayType(enumClass)
+        val valuesField =
             IrFieldImpl(
                     startOffset, endOffset,
                     DECLARATION_ORIGIN_ENUM,
-                    IrFieldSymbolImpl(it),
+                    IrFieldSymbolImpl(),
                     "VALUES".synthesizedName,
                     valuesType,
-                    Visibilities.PRIVATE,
+                    DescriptorVisibilities.PRIVATE,
                     isFinal = true,
                     isExternal = false,
                     isStatic = false,
             ).apply {
-                it.bind(this)
                 parent = implObject
             }
-        }
 
-        val valuesGetter = WrappedSimpleFunctionDescriptor().let {
+        val valuesGetter =
             IrFunctionImpl(
                     startOffset, endOffset,
                     DECLARATION_ORIGIN_ENUM,
-                    IrSimpleFunctionSymbolImpl(it),
+                    IrSimpleFunctionSymbolImpl(),
                     "get-VALUES".synthesizedName,
-                    Visibilities.PUBLIC,
+                    DescriptorVisibilities.PUBLIC,
                     Modality.FINAL,
                     valuesType,
                     isInline = false,
@@ -102,10 +187,8 @@ internal class EnumSpecialDeclarationsFactory(val context: Context) {
                     isOperator = false,
                     isInfix = false
             ).apply {
-                it.bind(this)
                 parent = implObject
             }
-        }
 
         val constructorOfAny = context.irBuiltIns.anyClass.owner.constructors.first()
         implObject.addSimpleDelegatingConstructor(
@@ -115,19 +198,20 @@ internal class EnumSpecialDeclarationsFactory(val context: Context) {
         )
 
         implObject.superTypes += context.irBuiltIns.anyType
-        implObject.addFakeOverridesViaIncorrectHeuristic()
+        implObject.addFakeOverrides(context.irBuiltIns)
 
-        val itemGetterSymbol = symbols.array.functions.single { it.descriptor.name == Name.identifier("get") }
-        val enumEntriesMap = enumClass.declarations
-                .filterIsInstance<IrEnumEntry>()
-                .sortedBy { it.name }
-                .withIndex()
-                .associate { it.value.name to it.index }
-                .toMap()
-
-        return LoweredEnum(
+        val itemGetterSymbol = findItemGetterSymbol()
+        val enumEntriesMap = enumEntriesMap(enumClass)
+        val valuesGetterWrapper = createValuesGetterWrapper(enumClass, isExternal = false)
+        context.createIrBuilder(valuesGetterWrapper.symbol).run {
+            valuesGetterWrapper.body = irBlockBody {
+                +irReturn(irCall(valuesGetter))
+            }
+        }
+        return InternalLoweredEnum(
                 implObject,
                 valuesField,
+                valuesGetterWrapper,
                 valuesGetter,
                 itemGetterSymbol,
                 enumEntriesMap)

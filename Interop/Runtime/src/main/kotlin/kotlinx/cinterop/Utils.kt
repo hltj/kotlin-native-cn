@@ -107,9 +107,11 @@ public class Arena(parent: NativeFreeablePlacement = nativeHeap) : ArenaBase(par
  * @param T must not be abstract
  */
 public inline fun <reified T : CVariable> NativePlacement.alloc(): T =
+        @Suppress("DEPRECATION")
         alloc(typeOf<T>()).reinterpret()
 
 @PublishedApi
+@Suppress("DEPRECATION")
 internal fun NativePlacement.alloc(type: CVariable.Type): NativePointed =
         alloc(type.size, type.align)
 
@@ -284,11 +286,13 @@ public fun <T : CVariable> CPointed.readValue(size: Long, align: Int): CValue<T>
     }
 }
 
+@Suppress("DEPRECATION")
 @PublishedApi internal fun <T : CVariable> CPointed.readValue(type: CVariable.Type): CValue<T> =
     readValue(type.size, type.align)
 
 // Note: can't be declared as property due to possible clash with a struct field.
 // TODO: find better name.
+@Suppress("DEPRECATION")
 public inline fun <reified T : CStructVar> T.readValue(): CValue<T> = this.readValue(typeOf<T>())
 
 public fun <T: CVariable> CValue<T>.write(location: NativePtr) {
@@ -386,11 +390,29 @@ private class CString(val bytes: ByteArray): CValues<ByteVar>() {
     }
 }
 
+private object EmptyCString: CValues<ByteVar>() {
+    override val size get() = 1
+    override val align get() = 1
+
+    private val placement =
+            interpretCPointer<ByteVar>(nativeMemUtils.allocRaw(1, 1))!!.also {
+                it[0] = 0.toByte()
+            }
+
+    override fun getPointer(scope: AutofreeScope): CPointer<ByteVar> {
+        return placement
+    }
+    override fun place(placement: CPointer<ByteVar>): CPointer<ByteVar> {
+        placement[0] = 0.toByte()
+        return placement
+    }
+}
+
 /**
  * @return the value of zero-terminated UTF-8-encoded C string constructed from given [kotlin.String].
  */
 public val String.cstr: CValues<ByteVar>
-    get() = CString(encodeToUtf8(this))
+    get() = if (isEmpty()) EmptyCString else CString(encodeToUtf8(this))
 
 /**
  * @return the value of zero-terminated UTF-8-encoded C string constructed from given [kotlin.String].
@@ -519,7 +541,7 @@ public fun CPointer<ShortVar>.toKStringFromUtf16(): String {
         chars[index] = nativeBytes[index].toChar()
         ++index
     }
-    return String(chars)
+    return chars.concatToString()
 }
 
 /**
@@ -551,7 +573,7 @@ public fun CPointer<IntVar>.toKStringFromUtf32(): String {
             chars[toIndex++] = value.toChar()
         }
     }
-    return String(chars)
+    return chars.concatToString()
 }
 
 /**

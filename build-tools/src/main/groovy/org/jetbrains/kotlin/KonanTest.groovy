@@ -28,12 +28,13 @@ import java.util.function.UnaryOperator
 import java.util.regex.Pattern
 import java.util.stream.Collectors
 
-class RunExternalTestGroup extends JavaExec {
+class RunExternalTestGroup extends JavaExec implements CompilerRunner {
     def platformManager = project.rootProject.platformManager
     def target = platformManager.targetManager(project.testTarget).target
     def dist = UtilsKt.getKotlinNativeDist(project)
 
     def enableKonanAssertions = true
+    def verifyIr = true
     String outputDirectory = null
     String goldValue = null
     // Checks test's output against gold value and returns true if the output matches the expectation
@@ -73,7 +74,8 @@ class RunExternalTestGroup extends JavaExec {
         // configuration part at runCompiler.
     }
 
-    protected void runCompiler(List<String> filesToCompile, String output, List<String> moreArgs) {
+    @Override
+    void runCompiler(List<String> filesToCompile, String output, List<String> moreArgs) {
         def log = new ByteArrayOutputStream()
         try {
             classpath = project.fileTree("$dist.canonicalPath/konan/lib/") {
@@ -99,6 +101,9 @@ class RunExternalTestGroup extends JavaExec {
             }
             if (enableKonanAssertions) {
                 args "-ea"
+            }
+            if (verifyIr) {
+                args "-Xverify-ir"
             }
             if (project.hasProperty("test_verbose")) {
                 println("Files to compile: $filesToCompile")
@@ -210,7 +215,10 @@ class RunExternalTestGroup extends JavaExec {
         def languageSettings = findLinesWithPrefixesRemoved(text, "// !LANGUAGE: ")
         if (languageSettings.size() != 0) {
             languageSettings.forEach { line ->
-                line.split(" ").toList().forEach { flags.add("-XXLanguage:$it") }
+                line.split(" ").toList().forEach {
+                    if (it != "+NewInference") // It is on already by default, but passing it explicitly turns on a special "compatibility mode" in FE which is not desirable.
+                        flags.add("-XXLanguage:$it")
+                }
             }
         }
 
@@ -265,6 +273,7 @@ class RunExternalTestGroup extends JavaExec {
         def packages = new LinkedHashSet<String>()
         def imports = []
         def classes = []
+        def vars = new HashSet<String>()  // variables that has the same name as a package
         TestModule mainModule = null
 
         def testFiles = TestDirectivesKt.buildCompileList(project.file("build/$src").toPath(), "$outputDirectory/$src")
@@ -282,7 +291,7 @@ class RunExternalTestGroup extends JavaExec {
                 text = text.replaceFirst(packagePattern, "package $pkg")
             } else {
                 pkg = sourceName
-                text = insertInTextAfter(text, "\npackage $pkg\n", "@file:Suppress")
+                text = insertInTextAfter(text, "\npackage $pkg\n", "@file:")
             }
             if (text =~ boxPattern) {
                 imports.add("${pkg}.*")
@@ -331,15 +340,15 @@ class RunExternalTestGroup extends JavaExec {
                     pkg = 'package ' + (text =~ packagePattern)[0][1]
                     text = text.replaceFirst(packagePattern, '')
                 }
-                text = insertInTextAfter(text, (pkg ? "\n$pkg\n" : "") + "import $sourceName.*\n", "@file:Suppress")
+                text = insertInTextAfter(text, (pkg ? "\n$pkg\n" : "") + "import $sourceName.*\n", "@file:")
             }
             // now replace all package usages in full qualified names
             def res = ""                      // filesToCompile
-            def vars = new HashSet<String>()  // variables that has the same name as a package
             text.eachLine { line ->
                 packages.each { pkg ->
                     // line contains val or var declaration or function parameter declaration
-                    if ((line =~ ~/va(l|r) *$pkg *\=/) || (line =~ ~/fun .*\(\n?\s*$pkg:.*/)) {
+                    if ((line =~ ~/va(l|r) *$pkg*( *: *$fullQualified*)?( *get\(\))? *\=.*/) ||
+                            (line =~ ~/fun .*\(\n?\s*$pkg:.*/)) {
                         vars.add(pkg)
                     }
                     if (line.contains("$pkg.") && !(line =~ packagePattern || line =~ importRegex)
@@ -407,15 +416,19 @@ fun runTest() {
 
     static def excludeList = [
             "external/compiler/codegen/boxInline/multiplatform/defaultArguments/receiversAndParametersInLambda.kt", // KT-36880
-            "external/compiler/compileKotlinAgainstKotlin/useDeserializedFunInterface.kt" // KT-37634
+            "external/compiler/compileKotlinAgainstKotlin/specialBridgesInDependencies.kt",         // KT-42723
+            "external/compiler/codegen/box/collections/kt41123.kt",                                 // KT-42723
+            "external/compiler/codegen/box/multiplatform/multiModule/expectActualTypealiasLink.kt", // KT-40137
+            "external/compiler/codegen/box/multiplatform/multiModule/expectActualMemberLink.kt",    // KT-33091
+            "external/compiler/codegen/box/multiplatform/multiModule/expectActualLink.kt",          // KT-41901
+            "external/compiler/codegen/box/coroutines/multiModule/",                                // KT-40121
+            "external/compiler/codegen/box/defaultArguments/recursiveDefaultArguments.kt"           // KT-42684
     ]
 
     boolean isEnabledForNativeBackend(String fileName) {
         def text = project.buildDir.toPath().resolve(fileName).text
 
-        if (excludeList.contains(fileName.replace(File.separator, "/"))) return false
-
-        if (findLinesWithPrefixesRemoved(text, "// WITH_REFLECT").size() != 0) return false
+        if (excludeList.any { fileName.replace(File.separator, "/").contains(it) }) return false
 
         def languageSettings = findLinesWithPrefixesRemoved(text, '// !LANGUAGE: ')
         if (!languageSettings.empty) {
@@ -509,25 +522,15 @@ fun runTest() {
                     List<TestModule> orderedModules = DFS.INSTANCE.topologicalOrder(modules.values()) { module ->
                         module.dependencies.collect { modules[it] }.findAll { it != null }
                     }
-                    Set<String> libs = new HashSet<String>()
+                    def compiler = new MultiModuleCompilerInvocations(this, outputDirectory, executablePath(), modules, flags)
+
                     orderedModules.reverse().each { module ->
                         if (!module.isDefaultModule()) {
-                            def klibModulePath = "${executablePath()}.${module.name}.klib"
-                            libs.addAll(module.dependencies)
-                            runCompiler(compileList.findAll { it.module == module }.collect { it.path },
-                                    klibModulePath, flags + ["-p", "library"] +
-                                    libs.collectMany { ["-l", "${executablePath()}.${it}.klib"] }.toList())
+                            compiler.produceLibrary(module)
                         }
                     }
 
-                    def compileMain = compileList.findAll {
-                        it.module.isDefaultModule() || it.module == TestModule.support
-                    }
-                    compileMain.forEach { f ->
-                        libs.addAll(f.module.dependencies)
-                    }
-                    if (!compileMain.empty) runCompiler(compileMain.collect { it.path }, executablePath(),
-                            flags + libs.collectMany { ["-l", "${executablePath()}.${it}.klib"] }.toList())
+                    compiler.produceProgram(compileList)
                 }
             } catch (Exception ex) {
                 project.logger.quiet("ERROR: Compilation failed for test suite: $name with exception", ex)

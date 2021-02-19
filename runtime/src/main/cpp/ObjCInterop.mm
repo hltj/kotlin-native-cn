@@ -24,6 +24,7 @@
 #include <objc/message.h>
 #include <cstdio>
 #include <cstdint>
+#include <mutex>
 
 #include "Memory.h"
 #include "MemorySharedRefs.hpp"
@@ -31,8 +32,9 @@
 #include "Natives.h"
 #include "ObjCInterop.h"
 #include "ObjCExportPrivate.h"
+#include "ObjCMMAPI.h"
 #include "Types.h"
-#include "Utils.h"
+#include "Mutex.hpp"
 
 // Replaced in ObjCExportCodeGenerator.
 __attribute__((weak)) const char* Kotlin_ObjCInterop_uniquePrefix = nullptr;
@@ -45,26 +47,33 @@ const char* Kotlin_ObjCInterop_getUniquePrefix() {
 
 extern "C" id objc_msgSendSuper2(struct objc_super *super, SEL op, ...);
 
-struct KotlinClassData {
+struct KotlinObjCClassData {
   const TypeInfo* typeInfo;
+  Class objcClass;
   int32_t bodyOffset;
 };
 
-static inline struct KotlinClassData* GetKotlinClassData(Class clazz) {
-  void* ivars = object_getIndexedIvars(reinterpret_cast<id>(clazz));
-  return static_cast<struct KotlinClassData*>(ivars);
+// Acts only as container for the method, not actually applied to any class.
+@protocol HasKotlinObjCClassData
+@required
+-(void*)_kotlinObjCClassData;
+@end;
+
+static inline struct KotlinObjCClassData* GetKotlinClassData(id objOrClass) {
+  void* ptr = [(id<HasKotlinObjCClassData>)objOrClass _kotlinObjCClassData];
+  return static_cast<struct KotlinObjCClassData*>(ptr);
 }
 
 namespace {
 
-BackRefFromAssociatedObject* getBackRef(id obj, KotlinClassData* classData) {
+BackRefFromAssociatedObject* getBackRef(id obj, KotlinObjCClassData* classData) {
   void* body = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(obj) + classData->bodyOffset);
   return reinterpret_cast<BackRefFromAssociatedObject*>(body);
 }
 
 BackRefFromAssociatedObject* getBackRef(id obj) {
   // TODO: suboptimal; consider specializing methods for each class.
-  auto* classData = GetKotlinClassData(object_getClass(obj));
+  auto* classData = GetKotlinClassData(obj);
   return getBackRef(obj, classData);
 }
 
@@ -74,11 +83,11 @@ OBJ_GETTER(toKotlinImp, id self, SEL _cmd) {
 
 id allocWithZoneImp(Class self, SEL _cmd, void* zone) {
   // [super allocWithZone:zone]
-  struct objc_super s = {(id)self, object_getClass((id)self)};
+  auto* classData = GetKotlinClassData(self); // TODO: suboptimal; consider specializing.
+  struct objc_super s = {(id)self, object_getClass(classData->objcClass)};
   auto messenger = reinterpret_cast<id (*) (struct objc_super*, SEL _cmd, void* zone)>(objc_msgSendSuper2);
   id result = messenger(&s, _cmd, zone);
 
-  auto* classData = GetKotlinClassData(self); // TODO: suboptimal; consider specializing.
   auto* typeInfo = classData->typeInfo;
   ObjHolder holder;
   auto kotlinObj = AllocInstanceWithAssociatedObject(typeInfo, result, holder.slot());
@@ -118,8 +127,28 @@ void releaseImp(id self, SEL _cmd) {
 }
 
 void releaseAsAssociatedObjectImp(id self, SEL _cmd) {
+  auto* classData = GetKotlinClassData(self);
+
+  // This function is called by the GC. It made a decision to reclaim Kotlin object, and runs
+  // deallocation hooks at the moment, including deallocation of the "associated object" ([self])
+  // using the [super release] call below.
+
+  // The deallocation involves running [self dealloc] which can contain arbitrary code.
+  // In particular, this code can retain and release [self]. Obj-C and Swift runtimes handle this
+  // gracefully (unless the object gets accessed after the deallocation of course), but Kotlin doesn't.
+  // For example, this happens in https://youtrack.jetbrains.com/issue/KT-41811, provoked by
+  // UIViewController.dealloc (which retains-releases self._view._viewDelegate == self) and UIView.dealloc.
+  // Generally retaining and releasing Kotlin object that is being deallocated would lead to
+  // use-after-dispose and double-dispose problems (with unpredictable consequences) or to an assertion failure.
+  // To workaround this, detach the back ref from the Kotlin object:
+  getBackRef(self, classData)->detach();
+  // So retain/release/etc. on [self] won't affect the Kotlin object, and an attempt to get
+  // the reference to it (e.g. when calling Kotlin method on [self]) would crash.
+  // The latter is generally ok, because by the time superclass dealloc gets launched, subclass state
+  // should already be deinitialized, and Kotlin methods operate on the subclass.
+
   // [super release]
-  Class clazz = object_getClass(self);
+  Class clazz = classData->objcClass;
   struct objc_super s = {self, clazz};
   auto messenger = reinterpret_cast<void (*) (struct objc_super*, SEL _cmd)>(objc_msgSendSuper2);
   messenger(&s, @selector(release));
@@ -131,18 +160,12 @@ extern "C" {
 
 Class Kotlin_Interop_getObjCClass(const char* name);
 
-static inline void SetKotlinTypeInfo(Class clazz, const TypeInfo* typeInfo) {
-  GetKotlinClassData(clazz)->typeInfo = typeInfo;
-}
-
 const TypeInfo* GetObjCKotlinTypeInfo(ObjHeader* obj) RUNTIME_NOTHROW;
 
 RUNTIME_NOTHROW const TypeInfo* GetObjCKotlinTypeInfo(ObjHeader* obj) {
-  RuntimeAssert(obj->has_meta_object(), "");
-  void* objcPtr = obj->meta_object()->associatedObject_;
-  RuntimeAssert(objcPtr != nullptr, "");
-  Class clazz = object_getClass(reinterpret_cast<id>(objcPtr));
-  return GetKotlinClassData(clazz)->typeInfo;
+    void* objcPtr = obj->GetAssociatedObject();
+    RuntimeAssert(objcPtr != nullptr, "");
+    return GetKotlinClassData(reinterpret_cast<id>(objcPtr))->typeInfo;
 }
 
 
@@ -160,6 +183,24 @@ static void AddNSObjectOverride(bool isClassMethod, Class clazz, SEL selector, v
 
   BOOL added = class_addMethod(
       isClassMethod ? object_getClass((id)clazz) : clazz, selector, (IMP)imp, nsObjectMethodTypeEncoding);
+  RuntimeCheck(added, "Unable to add method to Objective-C class");
+}
+
+static void AddKotlinClassData(bool isClassMethod, Class clazz, void* imp) {
+  SEL selector = @selector(_kotlinObjCClassData);
+
+  auto methodDescription = protocol_getMethodDescription(
+      @protocol(HasKotlinObjCClassData),
+      selector,
+      YES, YES
+  );
+
+  const char* typeEncoding = methodDescription.types;
+
+  RuntimeCheck(typeEncoding != nullptr, "unable to find method in Objective-C protocol");
+
+  BOOL added = class_addMethod(
+      isClassMethod ? object_getClass((id)clazz) : clazz, selector, (IMP)imp, typeEncoding);
   RuntimeCheck(added, "Unable to add method to Objective-C class");
 }
 
@@ -188,6 +229,8 @@ struct KotlinObjCClassInfo {
   const TypeInfo* metaTypeInfo;
 
   void** createdClass;
+
+  KotlinObjCClassData* (*classDataImp)(void*, void*);
 };
 
 static void AddMethods(Class clazz, const struct ObjCMethodDescription* methods, int32_t methodsNum) {
@@ -198,16 +241,15 @@ static void AddMethods(Class clazz, const struct ObjCMethodDescription* methods,
   }
 }
 
-static SimpleMutex classCreationMutex;
+static kotlin::SpinLock classCreationMutex;
 static int anonymousClassNextId = 0;
 
 static Class allocateClass(const KotlinObjCClassInfo* info) {
   Class superclass = Kotlin_Interop_getObjCClass(info->superclassName);
-  size_t extraBytes = sizeof(struct KotlinClassData);
 
   if (info->exported) {
     RuntimeCheck(info->name != nullptr, "exported Objective-C class must have a name");
-    Class result = objc_allocateClassPair(superclass, info->name, extraBytes);
+    Class result = objc_allocateClassPair(superclass, info->name, 0);
     if (result != nullptr) return result;
     // Similar to how Objective-C runtime handles this:
     fprintf(stderr, "Class %s has multiple implementations. Which one will be used is undefined.\n", info->name);
@@ -224,13 +266,13 @@ static Class allocateClass(const KotlinObjCClassInfo* info) {
   int classId = anonymousClassNextId++;
   className += std::to_string(classId);
 
-  Class result = objc_allocateClassPair(superclass, className.c_str(), extraBytes);
+  Class result = objc_allocateClassPair(superclass, className.c_str(), 0);
   RuntimeCheck(result != nullptr, "Failed to allocate Objective-C class");
   return result;
 }
 
 void* CreateKotlinObjCClass(const KotlinObjCClassInfo* info) {
-  LockGuard<SimpleMutex> lockGuard(classCreationMutex);
+  std::lock_guard<kotlin::SpinLock> lockGuard(classCreationMutex);
 
   void* createdClass = *info->createdClass;
   if (createdClass != nullptr) {
@@ -266,7 +308,12 @@ void* CreateKotlinObjCClass(const KotlinObjCClassInfo* info) {
   AddMethods(newClass, info->instanceMethods, info->instanceMethodsNum);
   AddMethods(newMetaclass, info->classMethods, info->classMethodsNum);
 
-  SetKotlinTypeInfo(newClass, Kotlin_ObjCExport_createTypeInfoWithKotlinFieldsFrom(newClass, info->typeInfo));
+  // Adding both instance and class methods to make [GetKotlinClassData] work
+  // for instances as well as the class itself.
+  AddKotlinClassData(false, newClass, (void*)info->classDataImp);
+  AddKotlinClassData(true, newClass, (void*)info->classDataImp);
+
+  const TypeInfo* actualTypeInfo = Kotlin_ObjCExport_createTypeInfoWithKotlinFieldsFrom(newClass, info->typeInfo);
 
   int bodySize = sizeof(BackRefFromAssociatedObject);
   char bodyTypeEncoding[16];
@@ -279,8 +326,14 @@ void* CreateKotlinObjCClass(const KotlinObjCClassInfo* info) {
   Ivar body = class_getInstanceVariable(newClass, "kotlinBody");
   RuntimeAssert(body != nullptr, "Unable to get ivar added to Objective-C class");
   int32_t offset = (int32_t)ivar_getOffset(body);
-  GetKotlinClassData(newClass)->bodyOffset = offset;
   *info->bodyOffset = offset;
+
+  // Doing this after objc_registerClassPair because it is not clear whether calling class methods
+  // is safe before that.
+  auto* classData = GetKotlinClassData(newClass);
+  classData->typeInfo = actualTypeInfo;
+  classData->objcClass = newClass;
+  classData->bodyOffset = offset;
 
   *info->createdClass = newClass;
   return newClass;
@@ -291,6 +344,13 @@ void objc_autoreleasePoolPop(void* ptr);
 id objc_allocWithZone(Class clazz);
 id objc_retain(id ptr);
 void objc_release(id ptr);
+
+konan::AutoreleasePool::AutoreleasePool()
+  : handle(objc_autoreleasePoolPush()) {}
+
+konan::AutoreleasePool::~AutoreleasePool() {
+  objc_autoreleasePoolPop(handle);
+}
 
 void* Kotlin_objc_autoreleasePoolPush() {
   return objc_autoreleasePoolPush();

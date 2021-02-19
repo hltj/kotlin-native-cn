@@ -78,7 +78,7 @@ enum DependencyKind {
 def platformManager = rootProject.ext.platformManager
 
 
-platformManager.filteredOutEnabledButNotSupported.each { target ->
+platformManager.enabled.each { target ->
     def loader = platformManager.loader(target)
 
     task "${target}Dependencies"(type: NativeDep) {
@@ -98,7 +98,7 @@ platformManager.filteredOutEnabledButNotSupported.each { target ->
     DependencyKind.values().each { kind ->
         def dir = kind.getDirectory(loader)
         if (dir != null) {
-            String path = dependencyProcessor.resolveRelative(dir).canonicalPath
+            String path = dependencyProcessor.resolve(dir).canonicalPath
             rootProject.ext.set(kind.getPropertyName(target), path)
         }
     }

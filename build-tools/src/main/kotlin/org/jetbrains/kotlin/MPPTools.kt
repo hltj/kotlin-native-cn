@@ -98,14 +98,14 @@ fun createJsonReport(projectProperties: Map<String, Any>): String {
     val machine = Environment.Machine(getValue("cpu"), getValue("os"))
     val jdk = Environment.JDKInstance(getValue("jdkVersion"), getValue("jdkVendor"))
     val env = Environment(machine, jdk)
-    val flags = (projectProperties["flags"] ?: emptyList<String>()) as List<String>
+    val flags: List<String> = (projectProperties["flags"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
     val backend = Compiler.Backend(Compiler.backendTypeFromString(getValue("type"))!! ,
                                     getValue("compilerVersion"), flags)
     val kotlin = Compiler(backend, getValue("kotlinVersion"))
     val benchDesc = getValue("benchmarks")
     val benchmarksArray = JsonTreeParser.parse(benchDesc)
     val benchmarks = parseBenchmarksArray(benchmarksArray)
-            .union(projectProperties["compileTime"] as List<BenchmarkResult>).union(
+            .union((projectProperties["compileTime"] as? List<*>)?.filterIsInstance<BenchmarkResult>() ?: emptyList()).union(
                     listOf(projectProperties["codeSize"] as? BenchmarkResult).filterNotNull()).toList()
     val report = BenchmarksReport(env, benchmarks, kotlin)
     return report.toJson()
@@ -133,7 +133,7 @@ fun getCompileOnlyBenchmarksOpts(project: Project, defaultCompilerOpts: List<Str
     val dist = project.file(project.findProperty("kotlin.native.home") ?: "dist")
     val useCache = !project.hasProperty("disableCompilerCaches")
     val cacheOption = "-Xcache-directory=$dist/klib/cache/${HostManager.host.name}-gSTATIC"
-            .takeIf { useCache && PlatformInfo.isMac() } // TODO: remove target condition when we have cache support for other targets.
+            .takeIf { useCache && !PlatformInfo.isWindows() } // TODO: remove target condition when we have cache support for other targets.
     return (project.findProperty("nativeBuildType") as String?)?.let {
         if (it.equals("RELEASE", true))
             listOf("-opt")
@@ -145,7 +145,8 @@ fun getCompileOnlyBenchmarksOpts(project: Project, defaultCompilerOpts: List<Str
 
 // Find file with set name in directory.
 fun findFile(fileName: String, directory: String): String? =
-    File(directory).walkBottomUp().find { it.name == fileName }?.getAbsolutePath()
+        File(directory).walkTopDown().filter { !it.absolutePath.contains(".dSYM") }
+                .find { it.name == fileName }?.getAbsolutePath()
 
 fun uploadFileToArtifactory(url: String, project: String, artifactoryFilePath: String,
                         filePath: String, password: String) {
@@ -183,7 +184,6 @@ fun sendUploadRequest(url: String, fileName: String, username: String? = null, p
 }
 
 // A short-cut to add a Kotlin/Native run task.
-@JvmOverloads
 fun createRunTask(
         subproject: Project,
         name: String,

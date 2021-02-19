@@ -17,7 +17,6 @@ import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
-import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
@@ -82,9 +81,11 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
                     )
 
                     // We shall keep initializer for constants for compile-time instantiation.
+                    // We suppose that if the property is const, then its initializer is IrConst.
+                    // If this requirement isn't satisfied, then PropertyAccessorInlineLowering can fail.
                     declaration.initializer =
                             if (initExpression is IrConst<*> &&
-                                    (initExpression.type.isPrimitiveType() || initExpression.type.isString())) {
+                                    declaration.correspondingPropertySymbol?.owner?.isConst == true) {
                                 IrExpressionBodyImpl(initExpression.copy())
                             } else {
                                 null
@@ -106,13 +107,13 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
 
             val startOffset = irClass.startOffset
             val endOffset = irClass.endOffset
-            val initializeFun = WrappedSimpleFunctionDescriptor().let {
+            val initializeFun =
                 IrFunctionImpl(
                         startOffset, endOffset,
                         DECLARATION_ORIGIN_ANONYMOUS_INITIALIZER,
-                        IrSimpleFunctionSymbolImpl(it),
+                        IrSimpleFunctionSymbolImpl(),
                         "INITIALIZER".synthesizedName,
-                        Visibilities.PRIVATE,
+                        DescriptorVisibilities.PRIVATE,
                         Modality.FINAL,
                         context.irBuiltIns.unitType,
                         isInline = false,
@@ -124,7 +125,6 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
                         isOperator = false,
                         isInfix = false
                 ).apply {
-                    it.bind(this)
                     parent = irClass
                     irClass.declarations.add(this)
 
@@ -132,7 +132,6 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
 
                     body = IrBlockBodyImpl(startOffset, endOffset, initializers)
                 }
-            }
 
             for (initializer in initializers) {
                 initializer.transformChildrenVoid(object : IrElementTransformerVoid() {
@@ -173,7 +172,8 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
                 }
 
                 override fun visitConstructor(declaration: IrConstructor): IrStatement {
-                    val blockBody = declaration.body as? IrBlockBody
+                    val body = declaration.body ?: return declaration
+                    val blockBody = body as? IrBlockBody
                             ?: throw AssertionError("Unexpected constructor body: ${declaration.body}")
 
                     blockBody.statements.transformFlat {
@@ -188,7 +188,9 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
                                     val startOffset = it.startOffset
                                     val endOffset = it.endOffset
                                     listOf(IrCallImpl(startOffset, endOffset,
-                                            context.irBuiltIns.unitType, initializeMethodSymbol
+                                            context.irBuiltIns.unitType, initializeMethodSymbol,
+                                            initializeMethodSymbol.owner.typeParameters.size,
+                                            initializeMethodSymbol.owner.valueParameters.size
                                     ).apply {
                                         dispatchReceiver = IrGetValueImpl(
                                                 startOffset, endOffset,

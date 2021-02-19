@@ -8,6 +8,7 @@ buildscript {
         maven {
             url 'https://cache-redirector.jetbrains.com/jcenter'
         }
+        jcenter()
         maven {
             url kotlinCompilerRepo
         }
@@ -24,6 +25,7 @@ repositories {
     maven {
         url 'https://cache-redirector.jetbrains.com/jcenter'
     }
+    jcenter()
     maven {
         url kotlinCompilerRepo
     }
@@ -151,6 +153,17 @@ kotlin {
                         linkerOpts("-L${getMingwPath()}/lib")
                     }
                 }
+            }
+        }
+    }
+
+    js {
+        browser {
+            distribution {
+                directory = new File("$projectDir/web/")
+            }
+            dceTask {
+                keep 'benchmarksAnalyzer.main_kand9s$'
             }
         }
     }

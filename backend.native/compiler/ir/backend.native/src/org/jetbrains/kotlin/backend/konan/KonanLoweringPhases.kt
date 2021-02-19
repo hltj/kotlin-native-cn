@@ -8,10 +8,12 @@ import org.jetbrains.kotlin.backend.common.lower.inline.LocalClassesInInlineFunc
 import org.jetbrains.kotlin.backend.common.lower.inline.LocalClassesInInlineLambdasLowering
 import org.jetbrains.kotlin.backend.common.lower.loops.ForLoopsLowering
 import org.jetbrains.kotlin.backend.common.lower.optimizations.FoldConstantLowering
+import org.jetbrains.kotlin.backend.common.lower.optimizations.PropertyAccessorInlineLowering
 import org.jetbrains.kotlin.backend.common.phaser.*
 import org.jetbrains.kotlin.backend.konan.lower.*
 import org.jetbrains.kotlin.backend.konan.lower.FinallyBlocksLowering
 import org.jetbrains.kotlin.backend.konan.lower.InitializersLowering
+import org.jetbrains.kotlin.backend.konan.lower.StringConcatenationLowering
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 
@@ -65,6 +67,12 @@ internal fun makeKonanModuleOpPhase(
         actions = modulePhaseActions
 )
 
+internal val specialBackendChecksPhase = konanUnitPhase(
+        op = { irModule!!.files.forEach { SpecialBackendChecksTraversal(this).lower(it) } },
+        name = "SpecialBackendChecks",
+        description = "Special backend checks"
+)
+
 internal val removeExpectDeclarationsPhase = makeKonanModuleLoweringPhase(
         ::ExpectDeclarationsRemoving,
         name = "RemoveExpectDeclarations",
@@ -91,14 +99,18 @@ internal val arrayConstructorPhase = makeKonanModuleLoweringPhase(
 
 internal val lateinitPhase = makeKonanModuleOpPhase(
         { context, irModule ->
-            NullableFieldsForLateinitCreationLowering(context)
-                    .runPostfix(true).toFileLoweringPass().lower(irModule)
-            NullableFieldsDeclarationLowering(context)
-                    .runPostfix(true).toFileLoweringPass().lower(irModule)
+            NullableFieldsForLateinitCreationLowering(context).lower(irModule)
+            NullableFieldsDeclarationLowering(context).lower(irModule)
             LateinitUsageLowering(context).lower(irModule)
         },
         name = "Lateinit",
         description = "Lateinit properties lowering"
+)
+
+internal val propertyAccessorInlinePhase = makeKonanModuleLoweringPhase(
+        ::PropertyAccessorInlineLowering,
+        name = "PropertyAccessorInline",
+        description = "Property accessor inline lowering"
 )
 
 internal val sharedVariablesPhase = makeKonanModuleLoweringPhase(
@@ -165,6 +177,12 @@ internal val provisionalFunctionExpressionPhase = makeKonanModuleLoweringPhase(
     description = "Transform IrFunctionExpression to a local function reference"
 )
 
+internal val flattenStringConcatenationPhase = makeKonanFileLoweringPhase(
+        ::FlattenStringConcatenationLowering,
+        name = "FlattenStringConcatenationLowering",
+        description = "Flatten nested string concatenation expressions into a single IrStringConcatenation"
+)
+
 internal val stringConcatenationPhase = makeKonanFileLoweringPhase(
         ::StringConcatenationLowering,
         name = "StringConcatenation",
@@ -210,7 +228,7 @@ internal val tailrecPhase = makeKonanFileLoweringPhase(
 
 internal val defaultParameterExtentPhase = makeKonanFileOpPhase(
         { context, irFile ->
-            DefaultArgumentStubGenerator(context, skipInlineMethods = false).lower(irFile)
+            KonanDefaultArgumentStubGenerator(context).lower(irFile)
             DefaultParameterCleaner(context, replaceDefaultValuesWithStubs = true).lower(irFile)
             KonanDefaultParameterInjector(context).lower(irFile)
         },
@@ -244,19 +262,6 @@ internal val dataClassesPhase = makeKonanFileLoweringPhase(
         description = "Data classes lowering"
 )
 
-internal val singleAbstractMethodPhase = makeKonanFileLoweringPhase(
-        ::NativeSingleAbstractMethodLowering,
-        name = "SingleAbstractMethod",
-        description = "Replace SAM conversions with instances of interface-implementing classes"
-)
-
-internal val builtinOperatorPhase = makeKonanFileLoweringPhase(
-        ::BuiltinOperatorLowering,
-        name = "BuiltinOperators",
-        description = "BuiltIn operators lowering",
-        prerequisite = setOf(defaultParameterExtentPhase, singleAbstractMethodPhase)
-)
-
 internal val finallyBlocksPhase = makeKonanFileLoweringPhase(
         ::FinallyBlocksLowering,
         name = "FinallyBlocks",
@@ -270,38 +275,52 @@ internal val testProcessorPhase = makeKonanFileOpPhase(
         description = "Unit test processor"
 )
 
-internal val enumClassPhase = makeKonanFileOpPhase(
-        { context, irFile -> EnumClassLowering(context).run(irFile) },
-        name = "Enums",
-        description = "Enum classes lowering",
-        prerequisite = setOf(enumConstructorsPhase) // TODO: make weak dependency on `testProcessorPhase`
-)
-
 internal val delegationPhase = makeKonanFileLoweringPhase(
         ::PropertyDelegationLowering,
         name = "Delegation",
         description = "Delegation lowering"
 )
 
-internal val callableReferencePhase = makeKonanFileLoweringPhase(
-        ::CallableReferenceLowering,
-        name = "CallableReference",
-        description = "Callable references lowering",
-        prerequisite = setOf(delegationPhase) // TODO: make weak dependency on `testProcessorPhase`
+internal val functionReferencePhase = makeKonanFileLoweringPhase(
+        ::FunctionReferenceLowering,
+        name = "FunctionReference",
+        description = "Function references lowering",
+        prerequisite = setOf(delegationPhase, localFunctionsPhase) // TODO: make weak dependency on `testProcessorPhase`
+)
+
+internal val enumClassPhase = makeKonanFileOpPhase(
+        { context, irFile -> EnumClassLowering(context).run(irFile) },
+        name = "Enums",
+        description = "Enum classes lowering",
+        prerequisite = setOf(enumConstructorsPhase, functionReferencePhase) // TODO: make weak dependency on `testProcessorPhase`
+)
+
+internal val singleAbstractMethodPhase = makeKonanFileLoweringPhase(
+        ::NativeSingleAbstractMethodLowering,
+        name = "SingleAbstractMethod",
+        description = "Replace SAM conversions with instances of interface-implementing classes",
+        prerequisite = setOf(functionReferencePhase)
+)
+
+internal val builtinOperatorPhase = makeKonanFileLoweringPhase(
+        ::BuiltinOperatorLowering,
+        name = "BuiltinOperators",
+        description = "BuiltIn operators lowering",
+        prerequisite = setOf(defaultParameterExtentPhase, singleAbstractMethodPhase)
 )
 
 internal val interopPhase = makeKonanFileLoweringPhase(
         ::InteropLowering,
         name = "Interop",
         description = "Interop lowering",
-        prerequisite = setOf(inlinePhase, localFunctionsPhase, callableReferencePhase)
+        prerequisite = setOf(inlinePhase, localFunctionsPhase, functionReferencePhase)
 )
 
 internal val varargPhase = makeKonanFileLoweringPhase(
         ::VarargInjectionLowering,
         name = "Vararg",
         description = "Vararg lowering",
-        prerequisite = setOf(callableReferencePhase, defaultParameterExtentPhase, interopPhase)
+        prerequisite = setOf(functionReferencePhase, defaultParameterExtentPhase, interopPhase)
 )
 
 internal val compileTimeEvaluatePhase = makeKonanFileLoweringPhase(
@@ -358,5 +377,12 @@ internal val ifNullExpressionsFusionPhase = makeKonanFileLoweringPhase(
 internal val foldConstantLoweringPhase = makeKonanFileOpPhase(
         { context, irFile -> FoldConstantLowering(context).lower(irFile) },
         name = "FoldConstantLowering",
-        description = "Constant Folding"
+        description = "Constant Folding",
+        prerequisite = setOf(flattenStringConcatenationPhase)
+)
+
+internal val computeStringTrimPhase = makeKonanFileLoweringPhase(
+        ::StringTrimLowering,
+        name = "StringTrimLowering",
+        description = "Compute trimIndent and trimMargin operations on constant strings"
 )

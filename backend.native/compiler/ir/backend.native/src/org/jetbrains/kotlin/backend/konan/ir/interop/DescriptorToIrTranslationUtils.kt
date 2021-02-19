@@ -15,7 +15,7 @@ import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSymbol
-import org.jetbrains.kotlin.ir.types.impl.*
+import org.jetbrains.kotlin.ir.types.impl.IrUninitializedType
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.resolve.descriptorUtil.getSuperClassNotAny
 import org.jetbrains.kotlin.resolve.descriptorUtil.getSuperInterfaces
@@ -41,6 +41,12 @@ internal interface DescriptorToIrTranslationMixin {
 
     val typeTranslator: TypeTranslator
 
+    val postLinkageSteps: MutableList<() -> Unit>
+
+    fun invokePostLinkageSteps() {
+        postLinkageSteps.forEach { it() }
+    }
+
     fun KotlinType.toIrType() = typeTranslator.translateType(this)
 
     /**
@@ -54,7 +60,7 @@ internal interface DescriptorToIrTranslationMixin {
                     SYNTHETIC_OFFSET, SYNTHETIC_OFFSET, IrDeclarationOrigin.IR_EXTERNAL_DECLARATION_STUB, it, descriptor
                 )
             }.also { irClass ->
-                symbolTable.withScope(descriptor) {
+                symbolTable.withScope(irClass) {
                     irClass.superTypes += descriptor.typeConstructor.supertypes.map {
                         it.toIrType()
                     }
@@ -82,8 +88,6 @@ internal interface DescriptorToIrTranslationMixin {
     fun createConstructor(constructorDescriptor: ClassConstructorDescriptor): IrConstructor {
         val irConstructor = symbolTable.declareConstructor(constructorDescriptor) {
             with(constructorDescriptor) {
-                // TODO: [IrUninitializedType] is deprecated.
-                @Suppress("DEPRECATION")
                 IrConstructorImpl(
                     SYNTHETIC_OFFSET, SYNTHETIC_OFFSET, IrDeclarationOrigin.IR_EXTERNAL_DECLARATION_STUB, it, name, visibility,
                     IrUninitializedType, isInline, isEffectivelyExternal(), isPrimary, isExpect
@@ -129,7 +133,7 @@ internal interface DescriptorToIrTranslationMixin {
             origin: IrDeclarationOrigin = IrDeclarationOrigin.IR_EXTERNAL_DECLARATION_STUB
     ): IrSimpleFunction {
         val irFunction = symbolTable.declareSimpleFunctionWithOverrides(SYNTHETIC_OFFSET, SYNTHETIC_OFFSET, origin, functionDescriptor)
-        symbolTable.withScope(functionDescriptor) {
+        symbolTable.withScope(irFunction) {
             irFunction.returnType = functionDescriptor.returnType!!.toIrType()
             irFunction.valueParameters +=  functionDescriptor.valueParameters.map {
                 symbolTable.declareValueParameter(SYNTHETIC_OFFSET, SYNTHETIC_OFFSET, IrDeclarationOrigin.DEFINED, it, it.type.toIrType())

@@ -6,7 +6,7 @@ import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.lower.*
 import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.*
@@ -14,11 +14,9 @@ import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrVariableImpl
-import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
-import org.jetbrains.kotlin.ir.descriptors.WrappedVariableDescriptor
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.IrGetValueImpl
-import org.jetbrains.kotlin.ir.expressions.impl.IrSetVariableImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrSetValueImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrSuspendableExpressionImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrSuspensionPointImpl
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
@@ -48,12 +46,8 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
             "${function.name}COROUTINE\$${context.coroutineCount++}".synthesizedName
 
     override fun initializeStateMachine(coroutineConstructors: List<IrConstructor>, coroutineClassThis: IrValueDeclaration) {
-        for (constructor in coroutineConstructors) {
-            val labelField = constructor.parentAsClass.declarations.single { it is IrField && it.name.asString() == "label" } as IrField
-            (constructor.body as IrBlockBody).statements += with(context.createIrBuilder(constructor.symbol, constructor.startOffset, constructor.endOffset)) {
-                irSetField(irGet(coroutineClassThis), labelField, irCall(symbols.getNativeNullPtr.owner))
-            }
-        }
+        // Nothing to do: it's redundant to initialize the "label" field with null
+        // since all freshly allocated objects are zeroed out.
     }
 
     override fun IrBlockBodyBuilder.generateCoroutineStart(invokeSuspendFunction: IrFunction, receiver: IrExpression) {
@@ -125,6 +119,13 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                     val capturedValue = argumentToPropertiesMap[expression.symbol.owner]
                             ?: return expression
                     return irGetField(irGet(thisReceiver), capturedValue)
+                }
+
+                override fun visitSetValue(expression: IrSetValue): IrExpression {
+                    expression.transformChildrenVoid(this)
+                    val capturedValue = argumentToPropertiesMap[expression.symbol.owner]
+                            ?: return expression
+                    return irSetField(irGet(thisReceiver), capturedValue, expression.value)
                 }
 
                 // Save/restore state at suspension points.
@@ -206,13 +207,13 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                         origin      = expression.origin)
             }
 
-            override fun visitSetVariable(expression: IrSetVariable): IrExpression {
+            override fun visitSetValue(expression: IrSetValue): IrExpression {
                 expression.transformChildrenVoid(this)
 
                 val newVariable = variablesMap[expression.symbol.owner]
                         ?: return expression
 
-                return IrSetVariableImpl(
+                return IrSetValueImpl(
                         startOffset = expression.startOffset,
                         endOffset   = expression.endOffset,
                         type        = context.irBuiltIns.unitType,
@@ -388,7 +389,7 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                         result                     = irBlock(startOffset, endOffset) {
                             if (!calledSaveState)
                                 +irCall(saveState)
-                            +irSetVar(suspendResult.symbol, suspendCall)
+                            +irSet(suspendResult.symbol, suspendCall)
                             +irReturnIfSuspended(suspendResult)
                             +irGet(suspendResult)
                         },
@@ -475,13 +476,13 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
     }
 
     // These are marker functions to split up the lowering on two parts.
-    private val saveState = WrappedSimpleFunctionDescriptor().let {
+    private val saveState =
         IrFunctionImpl(
                 SYNTHETIC_OFFSET, SYNTHETIC_OFFSET,
                 IrDeclarationOrigin.DEFINED,
-                IrSimpleFunctionSymbolImpl(it),
+                IrSimpleFunctionSymbolImpl(),
                 "saveState".synthesizedName,
-                Visibilities.PRIVATE,
+                DescriptorVisibilities.PRIVATE,
                 Modality.ABSTRACT,
                 context.irBuiltIns.unitType,
                 isInline = false,
@@ -492,18 +493,15 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                 isFakeOverride = false,
                 isOperator = false,
                 isInfix = false
-        ).apply {
-            it.bind(this)
-        }
-    }
+        )
 
-    private val restoreState = WrappedSimpleFunctionDescriptor().let {
+    private val restoreState =
         IrFunctionImpl(
                 SYNTHETIC_OFFSET, SYNTHETIC_OFFSET,
                 IrDeclarationOrigin.DEFINED,
-                IrSimpleFunctionSymbolImpl(it),
+                IrSimpleFunctionSymbolImpl(),
                 "restoreState".synthesizedName,
-                Visibilities.PRIVATE,
+                DescriptorVisibilities.PRIVATE,
                 Modality.ABSTRACT,
                 context.irBuiltIns.unitType,
                 isInline = false,
@@ -514,29 +512,24 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                 isFakeOverride = false,
                 isOperator = false,
                 isInfix = false
-        ).apply {
-            it.bind(this)
-        }
-    }
+        )
 
     private fun IrBuilderWithScope.irVar(name: Name, type: IrType,
                                          isMutable: Boolean = false,
-                                         initializer: IrExpression? = null) = WrappedVariableDescriptor().let {
+                                         initializer: IrExpression? = null) =
         IrVariableImpl(
                 startOffset, endOffset,
                 DECLARATION_ORIGIN_COROUTINE_IMPL,
-                IrVariableSymbolImpl(it),
+                IrVariableSymbolImpl(),
                 name,
                 type,
                 isMutable,
                 isConst = false,
                 isLateinit = false
         ).apply {
-            it.bind(this)
             this.initializer = initializer
             this.parent = this@irVar.parent
         }
-    }
 
     private fun IrBuilderWithScope.irGetOrThrow(result: IrExpression): IrExpression =
             irCall(symbols.kotlinResultGetOrThrow.owner).apply {

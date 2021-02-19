@@ -90,6 +90,7 @@ internal annotation class FixmeConcurrency
 @Retention(AnnotationRetention.BINARY)
 internal annotation class Escapes(val who: Int)
 
+// Decyphering of binary values can be found in EscapeAnalysis.kt
 @Target(AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.BINARY)
 internal annotation class PointsTo(vararg val onWhom: Int)
@@ -115,7 +116,7 @@ annotation class Independent
  */
 @Target(AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.BINARY)
-@PublishedApi internal annotation class FilterExceptions
+@PublishedApi internal annotation class FilterExceptions(val mode: String = "terminate")
 
 /**
  * Marks a class whose instances to be added to the list of leak detector candidates.
@@ -131,3 +132,22 @@ annotation class Independent
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.SOURCE)
 public annotation class CanBePrecreated
+
+/**
+ * Marks a class that has a finalizer.
+ */
+@Target(AnnotationTarget.CLASS)
+internal annotation class HasFinalizer
+
+/**
+ * Marks a declaration that is internal for Kotlin/Native and shouldn't be used externally.
+ */
+@RequiresOptIn(level = RequiresOptIn.Level.ERROR)
+@Retention(value = AnnotationRetention.BINARY)
+internal annotation class InternalForKotlinNative
+
+/**
+ * Marks a class that has a freeze hook.
+ */
+@Target(AnnotationTarget.CLASS)
+internal annotation class HasFreezeHook

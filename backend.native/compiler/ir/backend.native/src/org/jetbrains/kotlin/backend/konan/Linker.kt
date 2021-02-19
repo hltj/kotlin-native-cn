@@ -1,11 +1,10 @@
 package org.jetbrains.kotlin.backend.konan
 
 import org.jetbrains.kotlin.konan.KonanExternalToolFailure
+import org.jetbrains.kotlin.konan.exec.Command
 import org.jetbrains.kotlin.konan.file.File
-import org.jetbrains.kotlin.konan.target.CompilerOutputKind
-import org.jetbrains.kotlin.konan.target.Family
-import org.jetbrains.kotlin.konan.target.LinkerOutputKind
 import org.jetbrains.kotlin.konan.library.KonanLibrary
+import org.jetbrains.kotlin.konan.target.*
 import org.jetbrains.kotlin.library.resolver.TopologicalLibraryOrder
 import org.jetbrains.kotlin.library.uniqueName
 import org.jetbrains.kotlin.utils.addToStdlib.cast
@@ -112,7 +111,7 @@ internal class Linker(val context: Context) {
             additionalLinkerArgs = if (target.family.isAppleFamily) {
                 when (context.config.produce) {
                     CompilerOutputKind.DYNAMIC_CACHE ->
-                        listOf("-install_name", context.config.outputFiles.mainFile)
+                        listOf("-install_name", context.config.outputFiles.dynamicCacheInstallName)
                     else -> listOf("-dead_strip")
                 }
             } else {
@@ -136,31 +135,38 @@ internal class Linker(val context: Context) {
         }
 
         val needsProfileLibrary = context.coverage.enabled
+        val mimallocEnabled = config.get(KonanConfigKeys.ALLOCATION_MODE) == "mimalloc" &&
+                target.supportsMimallocAllocator()
 
-        val caches = determineCachesToLink(context)
-
+        val linkerInput = determineLinkerInput(objectFiles, linkerOutput)
         try {
             File(executable).delete()
-            linker.linkCommands(objectFiles = objectFiles, executable = executable,
-                    libraries = linker.linkStaticLibraries(includedBinaries) + context.config.defaultSystemLibraries +
-                            caches.static.takeIf { context.config.produce != CompilerOutputKind.STATIC_CACHE }.orEmpty(),
-                    linkerArgs = asLinkerArgs(config.getNotNull(KonanConfigKeys.LINKER_ARGS)) +
-                            BitcodeEmbedding.getLinkerOptions(context.config) +
-                            caches.dynamic +
-                            libraryProvidedLinkerFlags + additionalLinkerArgs,
-                    optimize = optimize, debug = debug, kind = linkerOutput,
+            val linkerArgs = asLinkerArgs(config.getNotNull(KonanConfigKeys.LINKER_ARGS)) +
+                    BitcodeEmbedding.getLinkerOptions(context.config) +
+                    linkerInput.caches.dynamic +
+                    libraryProvidedLinkerFlags + additionalLinkerArgs
+            val finalOutputCommands = linker.finalLinkCommands(
+                    objectFiles = linkerInput.objectFiles,
+                    executable = executable,
+                    libraries = linker.linkStaticLibraries(includedBinaries) + linkerInput.caches.static,
+                    linkerArgs = linkerArgs,
+                    optimize = optimize,
+                    debug = debug,
+                    kind = linkerOutput,
                     outputDsymBundle = context.config.outputFiles.symbolicInfoFile,
-                    needsProfileLibrary = needsProfileLibrary).forEach {
+                    needsProfileLibrary = needsProfileLibrary,
+                    mimallocEnabled = mimallocEnabled)
+            (linkerInput.preLinkCommands + finalOutputCommands).forEach {
                 it.logWith(context::log)
                 it.execute()
             }
         } catch (e: KonanExternalToolFailure) {
             val extraUserInfo =
-                    if (caches.static.isNotEmpty() || caches.dynamic.isNotEmpty())
+                    if (linkerInput.cachingInvolved)
                         """
                         Please try to disable compiler caches and rerun the build. To disable compiler caches, add the following line to the gradle.properties file in the project's root directory:
                             
-                            kotlin.native.cacheKind=none
+                            kotlin.native.cacheKind.${target.presetName}=none
                             
                         Also, consider filing an issue with full Gradle log here: https://kotl.in/issue
                         """.trimIndent()
@@ -170,7 +176,41 @@ internal class Linker(val context: Context) {
         return executable
     }
 
+    private fun shouldPerformPreLink(caches: CachesToLink, linkerOutputKind: LinkerOutputKind): Boolean {
+        // Pre-link is only useful when producing static library. Otherwise its just a waste of time.
+        val isStaticLibrary = linkerOutputKind == LinkerOutputKind.STATIC_LIBRARY &&
+                context.config.produce.isFinalBinary
+        val enabled = context.config.cacheSupport.preLinkCaches
+        val nonEmptyCaches = caches.static.isNotEmpty()
+        return isStaticLibrary && enabled && nonEmptyCaches
+    }
+
+    private fun determineLinkerInput(objectFiles: List<ObjectFile>, linkerOutputKind: LinkerOutputKind): LinkerInput {
+        val caches = determineCachesToLink(context)
+        // Since we have several linker stages that involve caching,
+        // we should detect cache usage early to report errors correctly.
+        val cachingInvolved = caches.static.isNotEmpty() || caches.dynamic.isNotEmpty()
+        return when {
+            context.config.produce == CompilerOutputKind.STATIC_CACHE -> {
+                // Do not link static cache dependencies.
+                LinkerInput(objectFiles, CachesToLink(emptyList(), caches.dynamic), emptyList(), cachingInvolved)
+            }
+            shouldPerformPreLink(caches, linkerOutputKind) -> {
+                val preLinkResult = context.config.tempFiles.create("withStaticCaches", ".o").absolutePath
+                val preLinkCommands = linker.preLinkCommands(objectFiles + caches.static, preLinkResult)
+                LinkerInput(listOf(preLinkResult), CachesToLink(emptyList(), caches.dynamic), preLinkCommands, cachingInvolved)
+            }
+            else -> LinkerInput(objectFiles, caches, emptyList(), cachingInvolved)
+        }
+    }
 }
+
+private class LinkerInput(
+        val objectFiles: List<ObjectFile>,
+        val caches: CachesToLink,
+        val preLinkCommands: List<Command>,
+        val cachingInvolved: Boolean
+)
 
 private class CachesToLink(val static: List<String>, val dynamic: List<String>)
 

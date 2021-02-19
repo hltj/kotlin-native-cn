@@ -57,7 +57,11 @@ compileCompilerKotlin {
     dependsOn('generateCompilerProto')
     kotlinOptions.jvmTarget = "1.8"
     kotlinOptions.allWarningsAsErrors=true
-    kotlinOptions.freeCompilerArgs += ['-Xopt-in=kotlin.RequiresOptIn', '-Xopt-in=org.jetbrains.kotlin.ir.ObsoleteDescriptorBasedAPI']
+    kotlinOptions.freeCompilerArgs += ['-Xopt-in=kotlin.RequiresOptIn', '-Xopt-in=org.jetbrains.kotlin.ir.ObsoleteDescriptorBasedAPI', '-Xskip-prerelease-check']
+}
+
+compileCli_bcKotlin {
+    kotlinOptions.freeCompilerArgs += ['-Xskip-prerelease-check']
 }
 
 compileCompilerJava {
@@ -207,7 +211,7 @@ targetList.each { target ->
     if (target != "wasm32") defaultArgs += '-g'
     def konanArgs = [*defaultArgs,
                      '-target', target,
-                     "-Xruntime=${project(':runtime').file('build/' + target + '/runtime.bc')}",
+                     "-Xruntime=${project(':runtime').file('build/bitcode/main/' + target + '/runtime.bc')}",
                      *project.globalBuildArgs]
 
     task("${target}Stdlib", type: JavaExec) {

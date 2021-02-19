@@ -30,7 +30,8 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
     internal val distribution = Distribution(
             configuration.get(KonanConfigKeys.KONAN_HOME) ?: KonanHomeProvider.determineKonanHome(),
             false,
-            configuration.get(KonanConfigKeys.RUNTIME_FILE)
+            configuration.get(KonanConfigKeys.RUNTIME_FILE),
+            configuration.get(KonanConfigKeys.OVERRIDE_KONAN_PROPERTIES)
     )
 
     private val platformManager = PlatformManager(distribution)
@@ -44,6 +45,10 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
             ?: target.family.isAppleFamily // Default is true for Apple targets.
 
     val memoryModel: MemoryModel get() = configuration.get(KonanConfigKeys.MEMORY_MODEL)!!
+    val destroyRuntimeMode: DestroyRuntimeMode get() = configuration.get(KonanConfigKeys.DESTROY_RUNTIME_MODE)!!
+
+    val needVerifyIr: Boolean
+        get() = configuration.get(KonanConfigKeys.VERIFY_IR) == true
 
     val needCompilerVerification: Boolean
         get() = configuration.get(KonanConfigKeys.VERIFY_COMPILER) ?:
@@ -115,17 +120,51 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
 
     internal val runtimeNativeLibraries: List<String> = mutableListOf<String>().apply {
         add(if (debug) "debug.bc" else "release.bc")
-        add(if (memoryModel == MemoryModel.STRICT) "strict.bc" else "relaxed.bc")
-        if (shouldCoverLibraries || shouldCoverSources) add("profileRuntime.bc")
-        if (configuration.get(KonanConfigKeys.ALLOCATION_MODE) == "mimalloc") {
-            if (!target.supportsMimallocAllocator()) {
+        val effectiveMemoryModel = when (memoryModel) {
+            MemoryModel.STRICT -> MemoryModel.STRICT
+            MemoryModel.RELAXED -> MemoryModel.RELAXED
+            MemoryModel.EXPERIMENTAL -> {
+                if (!target.supportsThreads()) {
+                    configuration.report(CompilerMessageSeverity.STRONG_WARNING,
+                            "Experimental memory model requires threads, which are not supported on target ${target.name}. Used strict memory model.")
+                    MemoryModel.STRICT
+                } else if (destroyRuntimeMode == DestroyRuntimeMode.LEGACY) {
+                    configuration.report(CompilerMessageSeverity.STRONG_WARNING,
+                            "Experimental memory model is incompatible with 'legacy' destroy runtime mode. Used strict memory model.")
+                    MemoryModel.STRICT
+                } else {
+                    MemoryModel.EXPERIMENTAL
+                }
+            }
+        }
+        val useMimalloc = if (configuration.get(KonanConfigKeys.ALLOCATION_MODE) == "mimalloc") {
+            if (target.supportsMimallocAllocator()) {
+                true
+            } else {
                 configuration.report(CompilerMessageSeverity.STRONG_WARNING,
                         "Mimalloc allocator isn't supported on target ${target.name}. Used standard mode.")
-                add("std_alloc.bc")
-            } else {
-                add("opt_alloc.bc")
-                add("mimalloc.bc")
+                false
             }
+        } else {
+            false
+        }
+        when (effectiveMemoryModel) {
+            MemoryModel.STRICT -> {
+                add("strict.bc")
+                add("legacy_memory_manager.bc")
+            }
+            MemoryModel.RELAXED -> {
+                add("relaxed.bc")
+                add("legacy_memory_manager.bc")
+            }
+            MemoryModel.EXPERIMENTAL -> {
+                add("experimental_memory_manager.bc")
+            }
+        }
+        if (shouldCoverLibraries || shouldCoverSources) add("profileRuntime.bc")
+        if (useMimalloc) {
+            add("opt_alloc.bc")
+            add("mimalloc.bc")
         } else {
             add("std_alloc.bc")
         }
@@ -148,8 +187,6 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
 
     internal val includeBinaries: List<String> = 
         configuration.getList(KonanConfigKeys.INCLUDED_BINARY_FILES)
-
-    internal val defaultSystemLibraries: List<String> = emptyList()
 
     internal val languageVersionSettings =
             configuration.get(CommonConfigurationKeys.LANGUAGE_VERSION_SETTINGS)!!

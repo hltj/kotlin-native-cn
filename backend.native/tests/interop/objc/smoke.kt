@@ -10,6 +10,8 @@ import kotlin.native.ref.*
 import kotlin.test.*
 
 fun main(args: Array<String>) {
+    // Test relies on full deinitialization at shutdown.
+    kotlin.native.internal.Debugging.forceCheckedShutdown = true
     autoreleasepool {
         run()
     }
@@ -65,11 +67,10 @@ fun run() {
 
     // hashCode (directly):
     // hash() returns value of NSUInteger type.
-    val hash = when (Platform.osFamily) {
-        // `typedef unsigned int NSInteger` on watchOS.
-        OsFamily.WATCHOS -> foo.hash().toInt()
-        // `typedef unsigned long NSUInteger` on iOS, macOS, tvOS.
-        else -> foo.hash().let { it.toInt() xor (it shr 32).toInt() }
+    val hash = if (sizeOf<NSUIntegerVar>() == 4L) {
+        foo.hash().toInt()
+    } else {
+        foo.hash().let { it.toInt() xor (it shr 32).toInt() }
     }
     if (foo.hashCode() == hash) {
         // toString (virtually):

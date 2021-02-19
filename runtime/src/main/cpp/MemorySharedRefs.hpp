@@ -37,8 +37,7 @@ class KRefSharedHolder {
   ForeignRefContext context_;
 };
 
-static_assert(std::is_trivially_destructible<KRefSharedHolder>::value,
-    "KRefSharedHolder destructor is not guaranteed to be called.");
+static_assert(std::is_trivially_destructible_v<KRefSharedHolder>, "KRefSharedHolder destructor is not guaranteed to be called.");
 
 class BackRefFromAssociatedObject {
  public:
@@ -54,21 +53,20 @@ class BackRefFromAssociatedObject {
 
   void releaseRef();
 
+  void detach();
+
   // Error if called from the wrong worker with non-frozen obj_.
   template <ErrorPolicy errorPolicy>
   ObjHeader* ref() const;
 
-  inline bool permanent() const {
-    return obj_->permanent(); // Safe to query from any thread.
-  }
-
  private:
-  ObjHeader* obj_;
+  ObjHeader* obj_; // May be null before [initAndAddRef] or after [detach].
   ForeignRefContext context_;
   volatile int refCount;
 };
 
-static_assert(std::is_trivially_destructible<BackRefFromAssociatedObject>::value,
-    "BackRefFromAssociatedObject destructor is not guaranteed to be called.");
+static_assert(
+        std::is_trivially_destructible_v<BackRefFromAssociatedObject>,
+        "BackRefFromAssociatedObject destructor is not guaranteed to be called.");
 
 #endif // RUNTIME_MEMORYSHAREDREFS_HPP

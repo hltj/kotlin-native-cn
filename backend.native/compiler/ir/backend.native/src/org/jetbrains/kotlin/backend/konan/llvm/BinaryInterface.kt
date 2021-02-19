@@ -6,13 +6,13 @@
 package org.jetbrains.kotlin.backend.konan.llvm
 
 import llvm.LLVMTypeRef
+import org.jetbrains.kotlin.backend.common.ir.allParameters
 import org.jetbrains.kotlin.backend.common.serialization.mangle.MangleConstant
 import org.jetbrains.kotlin.backend.common.serialization.mangle.SpecialDeclarationType
 import org.jetbrains.kotlin.backend.konan.RuntimeNames
 import org.jetbrains.kotlin.backend.konan.descriptors.externalSymbolOrThrow
 import org.jetbrains.kotlin.backend.konan.descriptors.getAnnotationStringValue
 import org.jetbrains.kotlin.backend.konan.descriptors.isAbstract
-import org.jetbrains.kotlin.backend.konan.ir.allParameters
 import org.jetbrains.kotlin.backend.konan.ir.isUnit
 import org.jetbrains.kotlin.backend.konan.isExternalObjCClass
 import org.jetbrains.kotlin.backend.konan.isKotlinObjCClass
@@ -24,6 +24,7 @@ import org.jetbrains.kotlin.ir.util.isSuspend
 import org.jetbrains.kotlin.ir.util.render
 import org.jetbrains.kotlin.konan.library.KonanLibrary
 import org.jetbrains.kotlin.library.uniqueName
+import org.jetbrains.kotlin.name.Name
 
 
 // This file describes the ABI for Kotlin descriptors of exported declarations.
@@ -111,13 +112,19 @@ internal val IrClass.kotlinObjCClassInfoSymbolName: String
         return "kobjcclassinfo:$fqNameForIrSerialization"
     }
 
-val IrFunction.functionName get() = with(KonanBinaryInterface) { functionName }
+fun IrFunction.computeFunctionName() = with(KonanBinaryInterface) { functionName }
 
-val IrFunction.symbolName get() = with(KonanBinaryInterface) { symbolName }
+fun IrFunction.computeFullName() = parent.fqNameForIrSerialization.child(Name.identifier(computeFunctionName())).asString()
 
-val IrField.symbolName get() = with(KonanBinaryInterface) { symbolName }
+fun IrFunction.computeSymbolName() = with(KonanBinaryInterface) { symbolName }.replaceSpecialSymbols()
 
-val IrClass.typeInfoSymbolName get() = with(KonanBinaryInterface) { typeInfoSymbolName }
+fun IrField.computeSymbolName() = with(KonanBinaryInterface) { symbolName }.replaceSpecialSymbols()
+
+fun IrClass.computeTypeInfoSymbolName() = with(KonanBinaryInterface) { typeInfoSymbolName }.replaceSpecialSymbols()
+
+private fun String.replaceSpecialSymbols() =
+        // '@' is used for symbol versioning in GCC: https://gcc.gnu.org/wiki/SymbolVersioning.
+        this.replace("@", "__at__")
 
 fun IrDeclaration.isExported() = KonanBinaryInterface.isExported(this)
 

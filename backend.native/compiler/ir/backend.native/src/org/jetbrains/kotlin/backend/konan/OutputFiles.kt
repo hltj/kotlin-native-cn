@@ -24,6 +24,9 @@ class OutputFiles(outputPath: String?, target: KonanTarget, val produce: Compile
 
     val outputName = outputPath?.removeSuffixIfPresent(suffix) ?: produce.visibleName
 
+    fun klibOutputFileName(isPacked: Boolean): String =
+            if (isPacked) "$outputName$suffix" else outputName
+
     /**
      * Header file for dynamic library.
      */
@@ -39,6 +42,10 @@ class OutputFiles(outputPath: String?, target: KonanTarget, val produce: Compile
             else
                 outputName.fullOutputName()
 
+    private val cacheFile = File(outputName.fullOutputName()).absoluteFile.name
+
+    val dynamicCacheInstallName = File(outputName).child(cacheFile).absolutePath
+
     val tempCacheDirectory =
             if (produce.isCache)
                 File(outputName + Random.nextLong().toString())
@@ -46,7 +53,7 @@ class OutputFiles(outputPath: String?, target: KonanTarget, val produce: Compile
 
     val nativeBinaryFile =
             if (produce.isCache)
-                tempCacheDirectory!!.child(File(outputName.fullOutputName()).absoluteFile.name).absolutePath
+                tempCacheDirectory!!.child(cacheFile).absolutePath
             else mainFile
 
     val symbolicInfoFile = "$nativeBinaryFile.dSYM"

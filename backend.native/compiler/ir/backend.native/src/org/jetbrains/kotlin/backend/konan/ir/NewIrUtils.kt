@@ -6,46 +6,51 @@
 package org.jetbrains.kotlin.backend.konan.ir
 
 import org.jetbrains.kotlin.backend.common.atMostOne
-import org.jetbrains.kotlin.builtins.KotlinBuiltIns
+import org.jetbrains.kotlin.backend.konan.DECLARATION_ORIGIN_INLINE_CLASS_SPECIAL_FUNCTION
+import org.jetbrains.kotlin.backend.konan.descriptors.isInteropLibrary
+import org.jetbrains.kotlin.backend.konan.llvm.KonanMetadata
+import org.jetbrains.kotlin.backend.konan.serialization.KonanFileMetadataSource
+import org.jetbrains.kotlin.backend.konan.serialization.KonanIrModuleFragmentImpl
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
+import org.jetbrains.kotlin.descriptors.ModuleDescriptor
+import org.jetbrains.kotlin.descriptors.konan.DeserializedKlibModuleOrigin
+import org.jetbrains.kotlin.descriptors.konan.klibModuleOrigin
 import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.ir.declarations.lazy.IrLazyDeclarationBase
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
+import org.jetbrains.kotlin.ir.expressions.IrCall
 import org.jetbrains.kotlin.ir.expressions.IrConst
 import org.jetbrains.kotlin.ir.expressions.IrConstructorCall
+import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
+import org.jetbrains.kotlin.ir.symbols.isPublicApi
+import org.jetbrains.kotlin.ir.types.IdSignatureValues
 import org.jetbrains.kotlin.ir.types.classifierOrFail
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.*
+import org.jetbrains.kotlin.library.KotlinLibrary
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.utils.addToStdlib.safeAs
 
-val IrField.fqNameForIrSerialization: FqName get() = this.parent.fqNameForIrSerialization.child(this.name)
+private fun IrClass.isClassTypeWithSignature(signature: IdSignature.PublicSignature): Boolean {
+    if (!symbol.isPublicApi) return false
+    return signature == symbol.signature
+}
 
-/**
- * @return naturally-ordered list of all parameters available inside the function body.
- */
-val IrFunction.allParameters: List<IrValueParameter>
-    get() = if (this is IrConstructor) {
-        listOf(this.constructedClass.thisReceiver
-                ?: error(this.descriptor)
-        ) + explicitParameters
-    } else {
-        explicitParameters
-    }
+fun IrClass.isUnit() = this.isClassTypeWithSignature(IdSignatureValues.unit)
 
-fun IrClass.isUnit() = this.fqNameForIrSerialization == KotlinBuiltIns.FQ_NAMES.unit.toSafe()
-
-fun IrClass.isKotlinArray() = this.fqNameForIrSerialization == KotlinBuiltIns.FQ_NAMES.array.toSafe()
+fun IrClass.isKotlinArray() = this.isClassTypeWithSignature(IdSignatureValues.array)
 
 val IrClass.superClasses get() = this.superTypes.map { it.classifierOrFail as IrClassSymbol }
 fun IrClass.getSuperClassNotAny() = this.superClasses.map { it.owner }.atMostOne { !it.isInterface && !it.isAny() }
 
-fun IrClass.isAny() = this.fqNameForIrSerialization == KotlinBuiltIns.FQ_NAMES.any.toSafe()
-fun IrClass.isNothing() = this.fqNameForIrSerialization == KotlinBuiltIns.FQ_NAMES.nothing.toSafe()
+fun IrClass.isAny() = this.isClassTypeWithSignature(IdSignatureValues.any)
+
+fun IrClass.isNothing() = this.isClassTypeWithSignature(IdSignatureValues.nothing)
 
 fun IrClass.getSuperInterfaces() = this.superClasses.map { it.owner }.filter { it.isInterface }
 
@@ -54,7 +59,7 @@ val IrProperty.isReal: Boolean get() = this.descriptor.kind.isReal
 val IrField.isReal: Boolean get() = this.descriptor.kind.isReal
 
 val IrSimpleFunction.isOverridable: Boolean
-    get() = visibility != Visibilities.PRIVATE
+    get() = visibility != DescriptorVisibilities.PRIVATE
             && modality != Modality.FINAL
             && (parent as? IrClass)?.isFinalClass != true
 
@@ -102,3 +107,26 @@ fun buildSimpleAnnotation(irBuiltIns: IrBuiltIns, startOffset: Int, endOffset: I
         }
     }
 }
+
+internal fun IrExpression.isBoxOrUnboxCall() =
+        (this is IrCall && symbol.owner.origin == DECLARATION_ORIGIN_INLINE_CLASS_SPECIAL_FUNCTION)
+
+val ModuleDescriptor.konanLibrary get() = (this.klibModuleOrigin as? DeserializedKlibModuleOrigin)?.library
+val IrModuleFragment.konanLibrary get() =
+    (this as? KonanIrModuleFragmentImpl)?.konanLibrary ?: descriptor.konanLibrary
+val IrFile.konanLibrary get() =
+    (metadata as? KonanFileMetadataSource)?.module?.konanLibrary ?: packageFragmentDescriptor.containingDeclaration.konanLibrary
+val IrDeclaration.konanLibrary: KotlinLibrary? get() {
+    ((this as? IrMetadataSourceOwner)?.metadata as? KonanMetadata)?.let { return it.konanLibrary }
+    val result = when (val parent = parent) {
+        is IrFile -> parent.konanLibrary
+        is IrPackageFragment -> parent.packageFragmentDescriptor.containingDeclaration.konanLibrary
+        is IrDeclaration -> parent.konanLibrary
+        else -> TODO("Unexpected declaration parent: $parent")
+    }
+    if (this is IrMetadataSourceOwner && this !is IrLazyDeclarationBase)
+        metadata = KonanMetadata(metadata?.name, result)
+    return result
+}
+
+fun IrDeclaration.isFromInteropLibrary() = konanLibrary?.isInteropLibrary() == true

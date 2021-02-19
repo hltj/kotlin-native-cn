@@ -25,10 +25,13 @@ val MeanVarianceBenchmark.description: String
 
 // Calculate difference in percentage compare to another.
 fun MeanVarianceBenchmark.calcPercentageDiff(other: MeanVarianceBenchmark): MeanVariance {
+    if (score == 0.0 && variance == 0.0 && other.score == 0.0 && other.variance == 0.0)
+        return MeanVariance(score, variance)
     assert(other.score >= 0 &&
             other.variance >= 0 &&
-            other.score - other.variance != 0.0,
+            (other.score - other.variance != 0.0 || other.score == 0.0),
             { "Mean and variance should be positive and not equal!" })
+
     // Analyze intervals. Calculate difference between border points.
     val (bigValue, smallValue) = if (score > other.score) Pair(this, other) else Pair(other, this)
     val bigValueIntervalStart = bigValue.score - bigValue.variance
@@ -50,11 +53,13 @@ fun MeanVarianceBenchmark.calcPercentageDiff(other: MeanVarianceBenchmark): Mean
 
 // Calculate ratio value compare to another.
 fun MeanVarianceBenchmark.calcRatio(other: MeanVarianceBenchmark): MeanVariance {
+    if (other.score == 0.0 && other.variance == 0.0)
+        return MeanVariance(1.0, 0.0)
     assert(other.score >= 0 &&
             other.variance >= 0 &&
-            other.score - other.variance != 0.0,
+            (other.score - other.variance != 0.0 || other.score == 0.0),
             { "Mean and variance should be positive and not equal!" })
-    val mean = score / other.score
+    val mean = if (other.score != 0.0) (score / other.score) else 0.0
     val minRatio = (score - variance) / (other.score + other.variance)
     val maxRatio = (score + variance) / (other.score - other.variance)
     val ratioConfInt = min(abs(minRatio - mean), abs(maxRatio - mean))
@@ -63,7 +68,7 @@ fun MeanVarianceBenchmark.calcRatio(other: MeanVarianceBenchmark): MeanVariance 
 
 fun geometricMean(values: Collection<Double>, totalNumber: Int = values.size) =
         with(values.asSequence().filter { it != 0.0 }) {
-            if (count() == 0) {
+            if (count() == 0 || totalNumber == 0) {
                 0.0
             } else {
                 map { it.pow(1.0 / totalNumber) }.reduce { a, b -> a * b }
@@ -71,9 +76,20 @@ fun geometricMean(values: Collection<Double>, totalNumber: Int = values.size) =
         }
 
 fun computeMeanVariance(samples: List<Double>): MeanVariance {
+    val removedBroadSamples = 0.2
     val zStar = 1.67    // Critical point for 90% confidence of normal distribution.
-    val mean = samples.sum() / samples.size
-    val variance = samples.indices.sumByDouble { (samples[it] - mean) * (samples[it] - mean) } / samples.size
+    // Skip several minimal and maximum values.
+    val filteredSamples = if (samples.size >= 1/removedBroadSamples) {
+         samples.sorted().subList((samples.size * removedBroadSamples).toInt(),
+                samples.size - (samples.size * removedBroadSamples).toInt())
+    } else {
+        samples
+    }
+
+    val mean = filteredSamples.sum() / filteredSamples.size
+    val variance = samples.indices.sumByDouble {
+        (samples[it] - mean) * (samples[it] - mean)
+    } / samples.size
     val confidenceInterval = sqrt(variance / samples.size) * zStar
     return MeanVariance(mean, confidenceInterval)
 }

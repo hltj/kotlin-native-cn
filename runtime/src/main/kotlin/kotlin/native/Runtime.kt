@@ -4,8 +4,8 @@
  */
 package kotlin.native
 
-import kotlin.native.concurrent.isFrozen
 import kotlin.native.concurrent.InvalidMutabilityException
+import kotlin.native.internal.UnhandledExceptionHookHolder
 
 /**
  * Initializes Kotlin runtime for the current thread, if not inited already.
@@ -44,14 +44,12 @@ public typealias ReportUnhandledExceptionHook = Function1<Throwable, Unit>
  * with custom exception hooks.
  */
 public fun setUnhandledExceptionHook(hook: ReportUnhandledExceptionHook): ReportUnhandledExceptionHook? {
-    if (!hook.isFrozen) {
+    try {
+        return UnhandledExceptionHookHolder.hook.swap(hook)
+    } catch (e: InvalidMutabilityException) {
         throw InvalidMutabilityException("Unhandled exception hook must be frozen")
     }
-    return setUnhandledExceptionHook0(hook)
 }
-
-@SymbolName("Kotlin_setUnhandledExceptionHook")
-external private fun setUnhandledExceptionHook0(hook: ReportUnhandledExceptionHook): ReportUnhandledExceptionHook?
 
 /**
  * Compute stable wrt potential object relocations by the memory manager identity hash code.

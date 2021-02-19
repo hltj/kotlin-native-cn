@@ -9,7 +9,7 @@ import llvm.LLVMStoreSizeOfType
 import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.ir.*
-import org.jetbrains.kotlin.backend.konan.llvm.functionName
+import org.jetbrains.kotlin.backend.konan.llvm.computeFunctionName
 import org.jetbrains.kotlin.backend.konan.llvm.llvmType
 import org.jetbrains.kotlin.backend.konan.llvm.localHash
 import org.jetbrains.kotlin.backend.konan.lower.InnerClassLowering
@@ -262,19 +262,12 @@ internal class GlobalHierarchyAnalysis(val context: Context, val irModule: IrMod
 }
 
 internal class ClassLayoutBuilder(val irClass: IrClass, val context: Context, val isLowered: Boolean) {
-    private val DEBUG = 0
-
-    private inline fun DEBUG_OUTPUT(severity: Int, block: () -> Unit) {
-        if (DEBUG > severity) block()
-    }
-
     val vtableEntries: List<OverriddenFunctionInfo> by lazy {
-
         assert(!irClass.isInterface)
 
-        DEBUG_OUTPUT(0) {
-            println()
-            println("BUILDING vTable for ${irClass.render()}")
+        context.logMultiple {
+            +""
+            +"BUILDING vTable for ${irClass.render()}"
         }
 
         val superVtableEntries = if (irClass.isSpecialClassWithNoSupertypes()) {
@@ -288,17 +281,17 @@ internal class ClassLayoutBuilder(val irClass: IrClass, val context: Context, va
         val newVtableSlots = mutableListOf<OverriddenFunctionInfo>()
         val overridenVtableSlots = mutableMapOf<IrSimpleFunction, OverriddenFunctionInfo>()
 
-        DEBUG_OUTPUT(0) {
-            println()
-            println("SUPER vTable:")
-            superVtableEntries.forEach { println("    ${it.overriddenFunction.render()} -> ${it.function.render()}") }
+        context.logMultiple {
+            +""
+            +"SUPER vTable:"
+            superVtableEntries.forEach { +"    ${it.overriddenFunction.render()} -> ${it.function.render()}" }
 
-            println()
-            println("METHODS:")
-            methods.forEach { println("    ${it.render()}") }
+            +""
+            +"METHODS:"
+            methods.forEach { +"    ${it.render()}" }
 
-            println()
-            println("BUILDING INHERITED vTable")
+            +""
+            +"BUILDING INHERITED vTable"
         }
 
         val superVtableMap = superVtableEntries.groupBy { it.function }
@@ -316,13 +309,9 @@ internal class ClassLayoutBuilder(val irClass: IrClass, val context: Context, va
         }
         val inheritedVtableSlots = superVtableEntries.map { superMethod ->
             overridenVtableSlots[superMethod.overriddenFunction]?.also {
-                DEBUG_OUTPUT(0) {
-                    println("Taking overridden ${superMethod.overriddenFunction.render()} -> ${it.function.render()}")
-                }
+                context.log { "Taking overridden ${superMethod.overriddenFunction.render()} -> ${it.function.render()}" }
             } ?: superMethod.also {
-                DEBUG_OUTPUT(0) {
-                    println("Taking super ${superMethod.overriddenFunction.render()} -> ${superMethod.function.render()}")
-                }
+                context.log { "Taking super ${superMethod.overriddenFunction.render()} -> ${superMethod.function.render()}" }
             }
         }
 
@@ -336,15 +325,15 @@ internal class ClassLayoutBuilder(val irClass: IrClass, val context: Context, va
             .distinctBy { it.function to it.bridgeDirections }
             .filter { it.function.isOverridable }
 
-        DEBUG_OUTPUT(0) {
-            println()
-            println("INHERITED vTable slots:")
-            inheritedVtableSlots.forEach { println("    ${it.overriddenFunction.render()} -> ${it.function.render()}") }
+        context.logMultiple {
+            +""
+            +"INHERITED vTable slots:"
+            inheritedVtableSlots.forEach { +"    ${it.overriddenFunction.render()} -> ${it.function.render()}" }
 
-            println()
-            println("MY OWN vTable slots:")
-            filteredNewVtableSlots.forEach { println("    ${it.overriddenFunction.render()} -> ${it.function.render()} ${it.function}") }
-            println("DONE vTable for ${irClass.render()}")
+            +""
+            +"MY OWN vTable slots:"
+            filteredNewVtableSlots.forEach { +"    ${it.overriddenFunction.render()} -> ${it.function.render()} ${it.function}" }
+            +"DONE vTable for ${irClass.render()}"
         }
 
         inheritedVtableSlots + filteredNewVtableSlots.sortedBy { it.overriddenFunction.uniqueId }
@@ -374,9 +363,9 @@ internal class ClassLayoutBuilder(val irClass: IrClass, val context: Context, va
                 .toList()
     }
 
-    data class InterfaceTablePlace(val interfaceId: Int, val methodIndex: Int) {
+    data class InterfaceTablePlace(val interfaceId: Int, val itableSize: Int, val methodIndex: Int) {
         companion object {
-            val INVALID = InterfaceTablePlace(0, -1)
+            val INVALID = InterfaceTablePlace(0, -1, -1)
         }
     }
 
@@ -385,7 +374,7 @@ internal class ClassLayoutBuilder(val irClass: IrClass, val context: Context, va
         val itable = interfaceTableEntries
         val index = itable.indexOf(function)
         if (index >= 0)
-            return InterfaceTablePlace(hierarchyInfo.interfaceId, index)
+            return InterfaceTablePlace(hierarchyInfo.interfaceId, itable.size, index)
         val superFunction = function.overriddenSymbols.first().owner
         return context.getLayoutBuilder(superFunction.parentAsClass).itablePlace(superFunction)
     }
@@ -473,5 +462,5 @@ internal class ClassLayoutBuilder(val irClass: IrClass, val context: Context, va
 
     private val functionIds = mutableMapOf<IrFunction, Long>()
 
-    private val IrFunction.uniqueId get() = functionIds.getOrPut(this) { functionName.localHash.value }
+    private val IrFunction.uniqueId get() = functionIds.getOrPut(this) { computeFunctionName().localHash.value }
 }

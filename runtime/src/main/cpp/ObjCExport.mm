@@ -21,6 +21,8 @@
 
 #if KONAN_OBJC_INTEROP
 
+#import <mutex>
+
 #import <Foundation/NSObject.h>
 #import <Foundation/NSValue.h>
 #import <Foundation/NSString.h>
@@ -37,9 +39,9 @@
 #import "ObjCExport.h"
 #import "ObjCExportInit.h"
 #import "ObjCExportPrivate.h"
-#import "MemoryPrivate.hpp"
+#import "ObjCMMAPI.h"
 #import "Runtime.h"
-#import "Utils.h"
+#import "Mutex.hpp"
 #import "Exceptions.h"
 
 struct ObjCToKotlinMethodAdapter {
@@ -52,6 +54,7 @@ struct KotlinToObjCMethodAdapter {
   const char* selector;
   MethodNameHash nameSignature;
   ClassId interfaceId;
+  int itableSize;
   int itableIndex;
   int vtableIndex;
   const void* kotlinImpl;
@@ -121,8 +124,6 @@ extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
 }
 
 static Class getOrCreateClass(const TypeInfo* typeInfo);
-static void initializeClass(Class clazz);
-extern "C" ALWAYS_INLINE void Kotlin_ObjCExport_releaseAssociatedObject(void* associatedObject);
 
 extern "C" id objc_retainAutoreleaseReturnValue(id self);
 
@@ -158,7 +159,7 @@ extern "C" id Kotlin_ObjCExport_CreateNSStringFromKString(ObjHeader* str) {
       length:numBytes
       encoding:NSUTF16LittleEndianStringEncoding];
 
-    if (!str->container()->shareable()) {
+    if (!isShareable(str)) {
       SetAssociatedObject(str, candidate);
     } else {
       id old = AtomicCompareAndSwapAssociatedObject(str, nullptr, candidate);
@@ -485,11 +486,9 @@ template <bool retainAutorelease>
 static ALWAYS_INLINE id Kotlin_ObjCExport_refToObjCImpl(ObjHeader* obj) {
   if (obj == nullptr) return nullptr;
 
-  if (obj->has_meta_object()) {
-    id associatedObject = GetAssociatedObject(obj);
-    if (associatedObject != nullptr) {
-      return retainAutorelease ? objc_retainAutoreleaseReturnValue(associatedObject) : associatedObject;
-    }
+  id associatedObject = GetAssociatedObject(obj);
+  if (associatedObject != nullptr) {
+    return retainAutorelease ? objc_retainAutoreleaseReturnValue(associatedObject) : associatedObject;
   }
 
   // TODO: propagate [retainAutorelease] to the code below.
@@ -768,16 +767,6 @@ static KStdVector<const TypeInfo*> getProtocolsAsInterfaces(Class clazz) {
   return result;
 }
 
-static const TypeInfo* getMostSpecificKotlinClass(const TypeInfo* typeInfo) {
-  const TypeInfo* result = typeInfo;
-  while (getTypeAdapter(result) == nullptr) {
-    result = result->superType_;
-    RuntimeAssert(result != nullptr, "");
-  }
-
-  return result;
-}
-
 static int getVtableSize(const TypeInfo* typeInfo) {
   for (const TypeInfo* current = typeInfo; current != nullptr; current = current->superType_) {
     auto typeAdapter = getTypeAdapter(current);
@@ -890,6 +879,8 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType, co
     supers.push_back(t);
   }
 
+  bool itableEqualsSuper = true;
+
   auto addToITable = [&interfaceVTables](ClassId interfaceId, int methodIndex, VTableElement entry) {
     RuntimeAssert(interfaceId != kInvalidInterfaceId, "");
     auto interfaceVTableIt = interfaceVTables.find(interfaceId);
@@ -899,7 +890,20 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType, co
     interfaceVTable[methodIndex] = entry;
   };
 
-  bool itableEqualsSuper = true;
+  auto addITable = [&interfaceVTables, &itableEqualsSuper](ClassId interfaceId, int itableSize) {
+    RuntimeAssert(itableSize >= 0, "");
+    auto interfaceVTablesIt = interfaceVTables.find(interfaceId);
+    if (interfaceVTablesIt == interfaceVTables.end()) {
+      itableEqualsSuper = false;
+      interfaceVTables.emplace(interfaceId, KStdVector<VTableElement>(itableSize));
+    } else {
+      auto const& interfaceVTable = interfaceVTablesIt->second;
+      RuntimeAssert(interfaceVTable.size() == static_cast<size_t>(itableSize), "");
+    }
+  };
+
+  // Compiler relies on using reverse adapters here from all supertypes
+  // in [ObjCExportCodeGenerator.createReverseAdapters].
   for (const TypeInfo* t : supers) {
     const ObjCTypeAdapter* typeAdapter = getTypeAdapter(t);
     if (typeAdapter == nullptr) continue;
@@ -919,23 +923,16 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType, co
     }
   }
 
+  // Compiler relies on using reverse adapters here from all supertypes
+  // in [ObjCExportCodeGenerator.createReverseAdapters].
   for (const TypeInfo* typeInfo : addedInterfaces) {
     const ObjCTypeAdapter* typeAdapter = getTypeAdapter(typeInfo);
 
     if (typeAdapter == nullptr) continue;
 
     if (superITable != nullptr) {
-      auto interfaceId = typeInfo->classId_;
-      int interfaceVTableSize = typeAdapter->kotlinItableSize;
-      RuntimeAssert(interfaceVTableSize >= 0, "");
-      auto interfaceVTablesIt = interfaceVTables.find(interfaceId);
-      if (interfaceVTablesIt == interfaceVTables.end()) {
-        itableEqualsSuper = false;
-        interfaceVTables.emplace(interfaceId, KStdVector<VTableElement>(interfaceVTableSize));
-      } else {
-        auto const& interfaceVTable = interfaceVTablesIt->second;
-        RuntimeAssert(interfaceVTable.size() == static_cast<size_t>(interfaceVTableSize), "");
-      }
+      // The interface vtable has to be created always in order for type checks to work.
+      addITable(typeInfo->classId_, typeAdapter->kotlinItableSize);
     }
 
     for (int i = 0; i < typeAdapter->reverseAdapterNum; ++i) {
@@ -946,8 +943,12 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType, co
       insertOrReplace(methodTable, adapter->nameSignature, const_cast<void*>(adapter->kotlinImpl));
       RuntimeAssert(adapter->vtableIndex == -1, "");
 
-      if (adapter->itableIndex != -1 && superITable != nullptr)
-        addToITable(adapter->interfaceId, adapter->itableIndex, adapter->kotlinImpl);
+      if (adapter->itableIndex != -1 && superITable != nullptr) {
+        // In general, [adapter->interfaceId] might not be equal to [typeInfo->classId_].
+        auto interfaceId = adapter->interfaceId;
+        addITable(interfaceId, adapter->itableSize);
+        addToITable(interfaceId, adapter->itableIndex, adapter->kotlinImpl);
+      }
     }
   }
 
@@ -962,7 +963,7 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType, co
   return result;
 }
 
-static SimpleMutex typeInfoCreationMutex;
+static kotlin::SpinLock typeInfoCreationMutex;
 
 static const TypeInfo* getOrCreateTypeInfo(Class clazz) {
   const TypeInfo* result = Kotlin_ObjCExport_getAssociatedTypeInfo(clazz);
@@ -976,7 +977,7 @@ static const TypeInfo* getOrCreateTypeInfo(Class clazz) {
     theForeignObjCObjectTypeInfo :
     getOrCreateTypeInfo(superClass);
 
-  LockGuard<SimpleMutex> lockGuard(typeInfoCreationMutex);
+  std::lock_guard<kotlin::SpinLock> lockGuard(typeInfoCreationMutex);
 
   result = Kotlin_ObjCExport_getAssociatedTypeInfo(clazz); // double-checking.
   if (result == nullptr) {
@@ -996,7 +997,7 @@ const TypeInfo* Kotlin_ObjCExport_createTypeInfoWithKotlinFieldsFrom(Class clazz
   return createTypeInfo(clazz, superType, fieldsInfo);
 }
 
-static SimpleMutex classCreationMutex;
+static kotlin::SpinLock classCreationMutex;
 static int anonymousClassNextId = 0;
 
 static void addVirtualAdapters(Class clazz, const ObjCTypeAdapter* typeAdapter) {
@@ -1070,7 +1071,7 @@ static Class getOrCreateClass(const TypeInfo* typeInfo) {
   } else {
     Class superClass = getOrCreateClass(typeInfo->superType_);
 
-    LockGuard<SimpleMutex> lockGuard(classCreationMutex); // Note: non-recursive
+    std::lock_guard<kotlin::SpinLock> lockGuard(classCreationMutex); // Note: non-recursive
 
     result = typeInfo->writableInfo_->objCExport.objCClass; // double-checking.
     if (result == nullptr) {

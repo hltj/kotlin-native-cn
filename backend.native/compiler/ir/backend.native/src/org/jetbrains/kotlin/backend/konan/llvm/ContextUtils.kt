@@ -15,6 +15,7 @@ import org.jetbrains.kotlin.library.resolver.TopologicalLibraryOrder
 import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.hash.GlobalHash
 import org.jetbrains.kotlin.backend.konan.ir.llvmSymbolOrigin
+import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.descriptors.konan.CompiledKlibModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.CurrentKlibModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.DeserializedKlibModuleOrigin
@@ -25,7 +26,6 @@ import org.jetbrains.kotlin.ir.util.isReal
 import org.jetbrains.kotlin.konan.library.KonanLibrary
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.library.KotlinLibrary
-import org.jetbrains.kotlin.library.resolver.TopologicalLibraryOrder
 import org.jetbrains.kotlin.library.uniqueName
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
@@ -34,6 +34,9 @@ import kotlin.properties.ReadOnlyProperty
 import kotlin.reflect.KProperty
 
 internal sealed class SlotType {
+    // An object is statically allocated on stack.
+    object STACK : SlotType()
+
     // Frame local arena slot can be used.
     object ARENA : SlotType()
 
@@ -58,6 +61,12 @@ internal sealed class SlotType {
 
 // Lifetimes class of reference, computed by escape analysis.
 internal sealed class Lifetime(val slotType: SlotType) {
+    object STACK : Lifetime(SlotType.STACK) {
+        override fun toString(): String {
+            return "STACK"
+        }
+    }
+
     // If reference is frame-local (only obtained from some call and never leaves).
     object LOCAL : Lifetime(SlotType.ARENA) {
         override fun toString(): String {
@@ -66,7 +75,7 @@ internal sealed class Lifetime(val slotType: SlotType) {
     }
 
     // If reference is only returned.
-    object RETURN_VALUE : Lifetime(SlotType.RETURN) {
+    object RETURN_VALUE : Lifetime(SlotType.ANONYMOUS) {
         override fun toString(): String {
             return "RETURN_VALUE"
         }
@@ -164,13 +173,14 @@ internal interface ContextUtils : RuntimeAware {
      * It may be declared as external function prototype.
      */
     val IrFunction.llvmFunction: LLVMValueRef
-        get() = llvmFunctionOrNull ?: error("$name in $file/${parent.fqNameForIrSerialization}")
+        get() = llvmFunctionOrNull
+                ?: error("$name in $file/${parent.fqNameForIrSerialization}")
 
     val IrFunction.llvmFunctionOrNull: LLVMValueRef?
         get() {
             assert(this.isReal)
             return if (isExternal(this)) {
-                runtime.addedLLVMExternalFunctions.getOrPut(this) { context.llvm.externalFunction(this.symbolName, getLlvmFunctionType(this),
+                runtime.addedLLVMExternalFunctions.getOrPut(this) { context.llvm.externalFunction(this.computeSymbolName(), getLlvmFunctionType(this),
                         origin = this.llvmSymbolOrigin) }
 
             } else {
@@ -190,7 +200,7 @@ internal interface ContextUtils : RuntimeAware {
     val IrClass.typeInfoPtr: ConstPointer
         get() {
             return if (isExternal(this)) {
-                constPointer(importGlobal(this.typeInfoSymbolName, runtime.typeInfoType,
+                constPointer(importGlobal(this.computeTypeInfoSymbolName(), runtime.typeInfoType,
                         origin = this.llvmSymbolOrigin))
             } else {
                 context.llvmDeclarations.forClass(this).typeInfo
@@ -210,6 +220,7 @@ internal interface ContextUtils : RuntimeAware {
      * It must be declared identically with [Runtime.globalHashType].
      */
     fun GlobalHash.getBytes(): ByteArray {
+        @Suppress("DEPRECATION")
         val size = GlobalHash.size
         assert(size == LLVMStoreSizeOfType(llvmTargetData, runtime.globalHashType))
 
@@ -303,12 +314,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
 
     private fun importMemset(): LLVMValueRef {
         val functionType = functionType(voidType, false, int8TypePtr, int8Type, int32Type, int1Type)
-        return LLVMAddFunction(llvmModule, "llvm.memset.p0i8.i32", functionType)!!
-    }
-
-    private fun importMemcpy(): LLVMValueRef {
-        val functionType = functionType(voidType, false, int8TypePtr, int8TypePtr, int32Type, int1Type)
-        return LLVMAddFunction(llvmModule, "llvm.memcpy.p0i8.p0i8.i32", functionType)!!
+        return llvmIntrinsic("llvm.memset.p0i8.i32", functionType)
     }
 
     private fun llvmIntrinsic(name: String, type: LLVMTypeRef, vararg attributes: String): LLVMValueRef {
@@ -339,7 +345,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
         } else {
             // As exported functions are written in C++ they assume sign extension for promoted types -
             // mention that in attributes.
-            val function = LLVMAddFunction(llvmModule, name, type)!!
+            val function = addLlvmFunctionWithDefaultAttributes(context, llvmModule, name, type)
             return memScoped {
                 val paramCount = LLVMCountParamTypes(type)
                 val paramTypes = allocArray<LLVMTypeRefVar>(paramCount)
@@ -482,20 +488,21 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     }
 
     private fun importRtFunction(name: String) = importFunction(name, runtime.llvmModule)
-    private fun importModelSpecificRtFunction(name: String) =
-            importRtFunction(name + context.memoryModel.suffix)
 
     private fun importRtGlobal(name: String) = importGlobal(name, runtime.llvmModule)
 
-    val allocInstanceFunction = importModelSpecificRtFunction("AllocInstance")
-    val allocArrayFunction = importModelSpecificRtFunction("AllocArrayInstance")
-    val initInstanceFunction = importModelSpecificRtFunction("InitInstance")
-    val initSharedInstanceFunction = importModelSpecificRtFunction("InitSharedInstance")
-    val updateHeapRefFunction = importModelSpecificRtFunction("UpdateHeapRef")
-    val updateStackRefFunction = importModelSpecificRtFunction("UpdateStackRef")
-    val updateReturnRefFunction = importModelSpecificRtFunction("UpdateReturnRef")
-    val enterFrameFunction = importModelSpecificRtFunction("EnterFrame")
-    val leaveFrameFunction = importModelSpecificRtFunction("LeaveFrame")
+    val allocInstanceFunction = importRtFunction("AllocInstance")
+    val allocArrayFunction = importRtFunction("AllocArrayInstance")
+    val initThreadLocalSingleton = importRtFunction("InitThreadLocalSingleton")
+    val initSingletonFunction = importRtFunction("InitSingleton")
+    val initAndRegisterGlobalFunction = importRtFunction("InitAndRegisterGlobal")
+    val updateHeapRefFunction = importRtFunction("UpdateHeapRef")
+    val updateStackRefFunction = importRtFunction("UpdateStackRef")
+    val updateReturnRefFunction = importRtFunction("UpdateReturnRef")
+    val zeroHeapRefFunction = importRtFunction("ZeroHeapRef")
+    val zeroArrayRefsFunction = importRtFunction("ZeroArrayRefs")
+    val enterFrameFunction = importRtFunction("EnterFrame")
+    val leaveFrameFunction = importRtFunction("LeaveFrame")
     val lookupOpenMethodFunction = importRtFunction("LookupOpenMethod")
     val lookupInterfaceTableRecord = importRtFunction("LookupInterfaceTableRecord")
     val isInstanceFunction = importRtFunction("IsInstance")
@@ -503,12 +510,12 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val throwExceptionFunction = importRtFunction("ThrowException")
     val appendToInitalizersTail = importRtFunction("AppendToInitializersTail")
     val addTLSRecord = importRtFunction("AddTLSRecord")
-    val clearTLSRecord = importRtFunction("ClearTLSRecord")
     val lookupTLS = importRtFunction("LookupTLS")
     val initRuntimeIfNeeded = importRtFunction("Kotlin_initRuntimeIfNeeded")
     val mutationCheck = importRtFunction("MutationCheck")
+    val checkLifetimesConstraint = importRtFunction("CheckLifetimesConstraint")
     val freezeSubgraph = importRtFunction("FreezeSubgraph")
-    val checkMainThread = importRtFunction("CheckIsMainThread")
+    val checkGlobalsAccessible = importRtFunction("CheckGlobalsAccessible")
 
     val kRefSharedHolderInitLocal = importRtFunction("KRefSharedHolder_initLocal")
     val kRefSharedHolderInit = importRtFunction("KRefSharedHolder_init")
@@ -533,6 +540,10 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val Kotlin_ObjCExport_AllocInstanceWithAssociatedObject by lazyRtFunction
     val Kotlin_ObjCExport_createContinuationArgument by lazyRtFunction
     val Kotlin_ObjCExport_resumeContinuation by lazyRtFunction
+
+    val Kotlin_mm_safePointFunctionEpilogue by lazyRtFunction
+    val Kotlin_mm_safePointWhileLoopBody by lazyRtFunction
+    val Kotlin_mm_safePointExceptionUnwind by lazyRtFunction
 
     val tlsMode by lazy {
         when (target) {
@@ -623,4 +634,4 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val llvmVector128 = vector128Type
 }
 
-class IrStaticInitializer(val file: IrFile, val initializer: LLVMValueRef)
+class IrStaticInitializer(val konanLibrary: KotlinLibrary?, val initializer: LLVMValueRef)

@@ -20,6 +20,7 @@ import org.jetbrains.kotlin.konan.KonanExternalToolFailure
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.lang.ProcessBuilder.Redirect
+import java.nio.file.Files
 
 
 open class Command(initialCommand: List<String>) {
@@ -27,6 +28,8 @@ open class Command(initialCommand: List<String>) {
     constructor(tool: String) : this(listOf(tool)) 
     constructor(vararg command: String) : this(command.toList<String>()) 
     protected val command = initialCommand.toMutableList()
+
+    val argsWithExecutable: List<String> = command
 
     val args: List<String> 
         get() = command.drop(1)
@@ -81,7 +84,7 @@ open class Command(initialCommand: List<String>) {
     fun getResult(withErrors: Boolean, handleError: Boolean = false): Result {
         log()
 
-        val outputFile = createTempFile()
+        val outputFile = Files.createTempFile(null, null).toFile()
         outputFile.deleteOnExit()
 
         try {

@@ -40,14 +40,12 @@ import org.jetbrains.kotlin.backend.common.ir.copyTo
 import org.jetbrains.kotlin.backend.common.ir.copyToWithoutSuperTypes
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
 import org.jetbrains.kotlin.backend.konan.llvm.coverage.CoverageManager
-import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.ir.declarations.lazy.IrLazyClass
 import org.jetbrains.kotlin.ir.symbols.IrSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrFieldSymbolImpl
-import org.jetbrains.kotlin.ir.types.IrType
-import org.jetbrains.kotlin.ir.types.defaultType
-import org.jetbrains.kotlin.ir.types.makeNullable
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.konan.library.KonanLibraryLayout
+import org.jetbrains.kotlin.konan.util.disposeNativeMemoryAllocator
 import org.jetbrains.kotlin.library.SerializedIrModule
 import org.jetbrains.kotlin.resolve.descriptorUtil.isEffectivelyExternal
 
@@ -58,8 +56,8 @@ import org.jetbrains.kotlin.resolve.descriptorUtil.isEffectivelyExternal
 internal class SpecialDeclarationsFactory(val context: Context) {
     private val enumSpecialDeclarationsFactory by lazy { EnumSpecialDeclarationsFactory(context) }
     private val outerThisFields = mutableMapOf<IrClass, IrField>()
-    private val loweredEnums = mutableMapOf<IrClass, LoweredEnum>()
-    private val ordinals = mutableMapOf<ClassDescriptor, Map<ClassDescriptor, Int>>()
+    private val internalLoweredEnums = mutableMapOf<IrClass, InternalLoweredEnum>()
+    private val externalLoweredEnums = mutableMapOf<IrClass, ExternalLoweredEnum>()
 
     private data class BridgeKey(val target: IrSimpleFunction, val bridgeDirections: BridgeDirections)
 
@@ -83,7 +81,7 @@ internal class SpecialDeclarationsFactory(val context: Context) {
             )
             val descriptor = PropertyDescriptorImpl.create(
                     innerClass.descriptor, Annotations.EMPTY, Modality.FINAL,
-                    Visibilities.PRIVATE, false, "this$0".synthesizedName, CallableMemberDescriptor.Kind.SYNTHESIZED,
+                    DescriptorVisibilities.PRIVATE, false, "this$0".synthesizedName, CallableMemberDescriptor.Kind.SYNTHESIZED,
                     SourceElement.NO_SOURCE, false, false, false, false, false, false
             ).apply {
                 this.setType(outerClass.descriptor.defaultType, emptyList(), receiver, null)
@@ -106,10 +104,24 @@ internal class SpecialDeclarationsFactory(val context: Context) {
             }
         }
 
-    fun getLoweredEnum(enumClass: IrClass): LoweredEnum {
+    fun getLoweredEnum(enumClass: IrClass): LoweredEnumAccess {
         assert(enumClass.kind == ClassKind.ENUM_CLASS) { "Expected enum class but was: ${enumClass.descriptor}" }
-        return loweredEnums.getOrPut(enumClass) {
-            enumSpecialDeclarationsFactory.createLoweredEnum(enumClass)
+        return if (!context.llvmModuleSpecification.containsDeclaration(enumClass)) {
+            externalLoweredEnums.getOrPut(enumClass) {
+                enumSpecialDeclarationsFactory.createExternalLoweredEnum(enumClass)
+            }
+        } else {
+            internalLoweredEnums.getOrPut(enumClass) {
+                enumSpecialDeclarationsFactory.createInternalLoweredEnum(enumClass)
+            }
+        }
+    }
+
+    fun getInternalLoweredEnum(enumClass: IrClass): InternalLoweredEnum {
+        assert(enumClass.kind == ClassKind.ENUM_CLASS) { "Expected enum class but was: ${enumClass.descriptor}" }
+        assert(context.llvmModuleSpecification.containsDeclaration(enumClass)) { "Expected enum class from current module." }
+        return internalLoweredEnums.getOrPut(enumClass) {
+            enumSpecialDeclarationsFactory.createInternalLoweredEnum(enumClass)
         }
     }
 
@@ -125,7 +137,7 @@ internal class SpecialDeclarationsFactory(val context: Context) {
         return bridges.getOrPut(key) { createBridge(key) }
     }
 
-    private fun createBridge(key: BridgeKey): IrSimpleFunction = WrappedSimpleFunctionDescriptor().let { descriptor ->
+    private fun createBridge(key: BridgeKey): IrSimpleFunction {
         val (function, bridgeDirections) = key
         val startOffset = function.startOffset
         val endOffset = function.endOffset
@@ -135,11 +147,11 @@ internal class SpecialDeclarationsFactory(val context: Context) {
                     null
                 else this.irClass?.defaultType ?: context.irBuiltIns.anyNType
 
-        IrFunctionImpl(
+        return IrFunctionImpl(
                 startOffset, endOffset,
                 DECLARATION_ORIGIN_BRIDGE_METHOD(function),
-                IrSimpleFunctionSymbolImpl(descriptor),
-                "<bridge-$bridgeDirections>${function.functionName}".synthesizedName,
+                IrSimpleFunctionSymbolImpl(),
+                "<bridge-$bridgeDirections>${function.computeFunctionName()}".synthesizedName,
                 function.visibility,
                 function.modality,
                 isInline = false,
@@ -153,7 +165,6 @@ internal class SpecialDeclarationsFactory(val context: Context) {
                 isInfix = false
         ).apply {
             val bridge = this
-            descriptor.bind(bridge)
             parent = function.parent
 
             dispatchReceiverParameter = function.dispatchReceiverParameter?.let {
@@ -174,7 +185,6 @@ internal class SpecialDeclarationsFactory(val context: Context) {
 }
 
 internal class Context(config: KonanConfig) : KonanBackendContext(config) {
-    override val lateinitNullableFields = mutableMapOf<IrField, IrField>()
     lateinit var frontendServices: FrontendServices
     lateinit var environment: KotlinCoreEnvironment
     lateinit var bindingContext: BindingContext
@@ -243,10 +253,20 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
         KonanReflectionTypes(moduleDescriptor, KonanFqNames.internalPackageName)
     }
 
-    val layoutBuilders = mutableMapOf<IrClass, ClassLayoutBuilder>()
+    // TODO: Remove after adding special <userData> property to IrDeclaration.
+    private val layoutBuilders = mutableMapOf<IrClass, ClassLayoutBuilder>()
 
-    fun getLayoutBuilder(irClass: IrClass) = layoutBuilders.getOrPut(irClass) {
-        ClassLayoutBuilder(irClass, this, isLowered = shouldLower(this, irClass))
+    fun getLayoutBuilder(irClass: IrClass): ClassLayoutBuilder {
+        if (irClass is IrLazyClass)
+            return layoutBuilders.getOrPut(irClass) {
+                ClassLayoutBuilder(irClass, this, isLowered = shouldLower(this, irClass))
+            }
+        val metadata = irClass.metadata as? CodegenClassMetadata
+                ?: CodegenClassMetadata(irClass).also { irClass.metadata = it }
+        metadata.layoutBuilder?.let { return it }
+        val layoutBuilder = ClassLayoutBuilder(irClass, this, isLowered = shouldLower(this, irClass))
+        metadata.layoutBuilder = layoutBuilder
+        return layoutBuilder
     }
 
     lateinit var globalHierarchyAnalysisResult: GlobalHierarchyAnalysisResult
@@ -281,7 +301,6 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
                 throw Error("Another IrModule in the context.")
             }
             field = module!!
-
             ir = KonanIr(this, module)
         }
 
@@ -323,6 +342,14 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
             LLVMDisposeModule(llvm.runtime.llvmModule)
         tryDisposeLLVMContext()
         llvmDisposed = true
+    }
+
+    private var nativeMemFreed = false
+
+    fun freeNativeMem() {
+        if (nativeMemFreed) return
+        disposeNativeMemoryAllocator()
+        nativeMemFreed = true
     }
 
     val cStubsManager = CStubsManager(config.target)
@@ -415,13 +442,20 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
 
     lateinit var compilerOutput: List<ObjectFile>
 
-    val llvmModuleSpecification: LlvmModuleSpecification = LlvmModuleSpecificationImpl(
-            config.cachedLibraries,
-            producingCache = config.produce.isCache,
-            librariesToCache = config.librariesToCache
-    )
+    val llvmModuleSpecification: LlvmModuleSpecification by lazy {
+        when {
+            config.produce.isCache ->
+                CacheLlvmModuleSpecification(config.cachedLibraries, config.librariesToCache)
+            else -> DefaultLlvmModuleSpecification(config.cachedLibraries)
+        }
+    }
 
     val declaredLocalArrays: MutableMap<String, LLVMTypeRef> = HashMap()
+
+    /**
+     * Manages internal ABI references and declarations.
+     */
+    val internalAbi = InternalAbi(this)
 }
 
 private fun MemberScope.getContributedClassifier(name: String) =
@@ -429,3 +463,12 @@ private fun MemberScope.getContributedClassifier(name: String) =
 
 private fun MemberScope.getContributedFunctions(name: String) =
         this.getContributedFunctions(Name.identifier(name), NoLookupLocation.FROM_BUILTINS)
+
+internal class ContextLogger(val context: Context) {
+    operator fun String.unaryPlus() = context.log { this }
+}
+
+internal fun Context.logMultiple(messageBuilder: ContextLogger.() -> Unit) {
+    if (!inVerbosePhase) return
+    with(ContextLogger(this)) { messageBuilder() }
+}

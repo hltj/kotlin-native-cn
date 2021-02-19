@@ -159,7 +159,9 @@ fun Array<String>.runCommand(workingDir: File = File("."),
                     waitFor(timeoutAmount, timeoutUnit)
                 }.inputStream.bufferedReader().readText()
     } catch (e: Exception) {
-        error("Couldn't run command $this")
+        println("Couldn't run command ${this.joinToString(" ")}")
+        println(e.stackTrace.joinToString("\n"))
+        error(e.message!!)
     }
 }
 
@@ -242,6 +244,7 @@ fun compileSwift(project: Project, target: KonanTarget, sources: List<String>, o
         KonanTarget.TVOS_X64   -> "x86_64-apple-tvos" + configs.osVersionMin
         KonanTarget.TVOS_ARM64 -> "arm64-apple-tvos" + configs.osVersionMin
         KonanTarget.MACOS_X64 -> "x86_64-apple-macosx" + configs.osVersionMin
+        KonanTarget.MACOS_ARM64 -> "arm64-apple-macos" + configs.osVersionMin
         KonanTarget.WATCHOS_X86 -> "i386-apple-watchos" + configs.osVersionMin
         KonanTarget.WATCHOS_X64 -> "x86_64-apple-watchos" + configs.osVersionMin
         else -> throw IllegalStateException("Test target $target is not supported")

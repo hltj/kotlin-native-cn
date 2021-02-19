@@ -16,7 +16,6 @@ import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFieldImpl
-import org.jetbrains.kotlin.ir.descriptors.WrappedFieldDescriptor
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrLocalDelegatedPropertyReference
 import org.jetbrains.kotlin.ir.expressions.IrPropertyReference
@@ -32,8 +31,6 @@ import org.jetbrains.kotlin.name.Name
 
 internal class PropertyDelegationLowering(val context: Context) : FileLoweringPass {
     private var tempIndex = 0
-
-    private val kTypeGenerator = KTypeGenerator(context)
 
     private fun getKPropertyImplConstructor(receiverTypes: List<IrType>,
                                             returnType: IrType,
@@ -86,42 +83,41 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
 
         val kPropertiesFieldType: IrType = context.ir.symbols.array.typeWith(kPropertyImplType)
 
-        val kPropertiesField = WrappedFieldDescriptor().let {
+        val kPropertiesField =
             IrFieldImpl(
                     SYNTHETIC_OFFSET, SYNTHETIC_OFFSET,
                     DECLARATION_ORIGIN_KPROPERTIES_FOR_DELEGATION,
-                    IrFieldSymbolImpl(it),
+                    IrFieldSymbolImpl(),
                     "KPROPERTIES".synthesizedName,
                     kPropertiesFieldType,
-                    Visibilities.PRIVATE,
+                    DescriptorVisibilities.PRIVATE,
                     isFinal = true,
                     isExternal = false,
                     isStatic = true,
             ).apply {
-                it.bind(this)
                 parent = irFile
                 annotations += buildSimpleAnnotation(context.irBuiltIns, startOffset, endOffset, context.ir.symbols.sharedImmutable.owner)
             }
-        }
 
         irFile.transformChildrenVoid(object : IrElementTransformerVoidWithContext() {
 
             override fun visitPropertyReference(expression: IrPropertyReference): IrExpression {
                 expression.transformChildrenVoid(this)
 
+                val kTypeGenerator = KTypeGenerator(context, irFile, expression)
                 val startOffset = expression.startOffset
                 val endOffset = expression.endOffset
                 val irBuilder = context.createIrBuilder(currentScope!!.scope.scopeOwnerSymbol, startOffset, endOffset)
                 irBuilder.run {
                     val receiversCount = listOf(expression.dispatchReceiver, expression.extensionReceiver).count { it != null }
                     return when (receiversCount) {
-                        1 -> createKProperty(expression, this) // Has receiver.
+                        1 -> createKProperty(expression, kTypeGenerator, this) // Has receiver.
 
                         2 -> error("Callable reference to properties with two receivers is not allowed: ${expression.symbol.owner.name}")
 
                         else -> { // Cache KProperties with no arguments.
                             val field = kProperties.getOrPut(expression.symbol.owner) {
-                                createKProperty(expression, this) to kProperties.size
+                                createKProperty(expression, kTypeGenerator, this) to kProperties.size
                             }
 
                             irCall(arrayItemGetter).apply {
@@ -149,6 +145,7 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
                             createLocalKProperty(
                                     expression.symbol.owner.name.asString(),
                                     expression.getter.owner.returnType,
+                                    KTypeGenerator(this@PropertyDelegationLowering.context, irFile, expression),
                                     this
                             ) to kProperties.size
                         }
@@ -172,7 +169,11 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
         }
     }
 
-    private fun createKProperty(expression: IrPropertyReference, irBuilder: IrBuilderWithScope): IrExpression {
+    private fun createKProperty(
+            expression: IrPropertyReference,
+            kTypeGenerator: KTypeGenerator,
+            irBuilder: IrBuilderWithScope
+    ): IrExpression {
         val startOffset = expression.startOffset
         val endOffset = expression.endOffset
         return irBuilder.irBlock(expression) {
@@ -263,6 +264,7 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
 
     private fun createLocalKProperty(propertyName: String,
                                      propertyType: IrType,
+                                     kTypeGenerator: KTypeGenerator,
                                      irBuilder: IrBuilderWithScope): IrExpression {
         irBuilder.run {
             val (symbol, constructorTypeArguments) = getKPropertyImplConstructor(

@@ -183,6 +183,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
 
                 if (arguments.verifyCompiler != null)
                     put(VERIFY_COMPILER, arguments.verifyCompiler == "true")
+                put(VERIFY_IR, arguments.verifyIr)
                 put(VERIFY_BITCODE, arguments.verifyBitCode)
 
                 put(ENABLED_PHASES,
@@ -190,9 +191,6 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(DISABLED_PHASES,
                         arguments.disablePhases.toNonNullList())
                 put(LIST_PHASES, arguments.listPhases)
-
-                put(COMPATIBLE_COMPILER_VERSIONS,
-                    arguments.compatibleCompilerVersions.toNonNullList())
 
                 put(ENABLE_ASSERTIONS, arguments.enableAssertions)
 
@@ -202,6 +200,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                         MemoryModel.RELAXED
                     }
                     "strict" -> MemoryModel.STRICT
+                    "experimental" -> MemoryModel.EXPERIMENTAL
                     else -> {
                         configuration.report(ERROR, "Unsupported memory model ${arguments.memoryModel}")
                         MemoryModel.STRICT
@@ -249,7 +248,17 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 parseShortModuleName(arguments, configuration, outputKind)?.let {
                     put(SHORT_MODULE_NAME, it)
                 }
-                put(DISABLE_FAKE_OVERRIDE_VALIDATOR, arguments.disableFakeOverrideValidator)
+                put(FAKE_OVERRIDE_VALIDATOR, arguments.fakeOverrideValidator)
+                putIfNotNull(PRE_LINK_CACHES, parsePreLinkCachesValue(configuration, arguments.preLinkCaches))
+                putIfNotNull(OVERRIDE_KONAN_PROPERTIES, parseOverrideKonanProperties(arguments, configuration))
+                put(DESTROY_RUNTIME_MODE, when (arguments.destroyRuntimeMode) {
+                    "legacy" -> DestroyRuntimeMode.LEGACY
+                    "on-shutdown" -> DestroyRuntimeMode.ON_SHUTDOWN
+                    else -> {
+                        configuration.report(ERROR, "Unsupported destroy runtime mode ${arguments.destroyRuntimeMode}")
+                        DestroyRuntimeMode.ON_SHUTDOWN
+                    }
+                })
             }
         }
     }
@@ -298,6 +307,19 @@ private fun selectFrameworkType(
        arguments.staticFramework
     }
 }
+
+private fun parsePreLinkCachesValue(
+        configuration: CompilerConfiguration,
+        value: String?
+): Boolean? = when (value) {
+        "enable" -> true
+        "disable" -> false
+        null -> null
+        else -> {
+            configuration.report(ERROR, "Unsupported `-Xpre-link-caches` value: $value. Possible values are 'enable'/'disable'")
+            null
+        }
+    }
 
 private fun selectBitcodeEmbeddingMode(
         configuration: CompilerConfiguration,
@@ -439,6 +461,24 @@ private fun parseDebugPrefixMap(
         libraryAndCache[0] to libraryAndCache[1]
     }
 }.toMap()
+
+private fun parseOverrideKonanProperties(
+        arguments: K2NativeCompilerArguments,
+        configuration: CompilerConfiguration
+): Map<String, String>? =
+        arguments.overrideKonanProperties?.mapNotNull {
+            val keyValueSeparatorIndex = it.indexOf('=')
+            if (keyValueSeparatorIndex > 0) {
+                it.substringBefore('=') to it.substringAfter('=')
+            } else {
+                configuration.report(
+                        ERROR,
+                        "incorrect property format: expected '<key>=<value>', got '$it'"
+                )
+                null
+            }
+        }?.toMap()
+
 
 
 fun main(args: Array<String>) = K2Native.main(args)

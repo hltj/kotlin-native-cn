@@ -10,10 +10,10 @@ import org.jetbrains.kotlin.backend.konan.KonanBackendContext
 import org.jetbrains.kotlin.backend.konan.KonanCompilationException
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.konan.ir.buildSimpleAnnotation
-import org.jetbrains.kotlin.builtins.KOTLIN_REFLECT_FQ_NAME
+import org.jetbrains.kotlin.builtins.StandardNames
 import org.jetbrains.kotlin.config.LanguageVersionSettings
 import org.jetbrains.kotlin.descriptors.ParameterDescriptor
-import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.impl.PackageFragmentDescriptorImpl
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.SourceManager
@@ -25,8 +25,6 @@ import org.jetbrains.kotlin.ir.declarations.impl.IrFileImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrValueParameterImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrVariableImpl
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
-import org.jetbrains.kotlin.ir.descriptors.WrappedFieldDescriptor
-import org.jetbrains.kotlin.ir.descriptors.WrappedVariableDescriptor
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
@@ -69,20 +67,17 @@ internal fun IrExpression.isNullConst() = this is IrConst<*> && this.kind == IrC
 private var topLevelInitializersCounter = 0
 
 internal fun IrFile.addTopLevelInitializer(expression: IrExpression, context: KonanBackendContext, threadLocal: Boolean) {
-    val descriptor = WrappedFieldDescriptor()
     val irField = IrFieldImpl(
             expression.startOffset, expression.endOffset,
             IrDeclarationOrigin.DEFINED,
-            IrFieldSymbolImpl(descriptor),
+            IrFieldSymbolImpl(),
             "topLevelInitializer${topLevelInitializersCounter++}".synthesizedName,
             expression.type,
-            Visibilities.PRIVATE,
+            DescriptorVisibilities.PRIVATE,
             isFinal = true,
             isExternal = false,
             isStatic = true,
     ).apply {
-        descriptor.bind(this)
-
         expression.setDeclarationsParent(this)
 
         if (threadLocal)
@@ -239,9 +234,9 @@ fun IrBuilderWithScope.irCall(irFunction: IrFunction, typeArguments: List<IrType
         irCall(irFunction.symbol, typeArguments)
 
 internal fun irCall(startOffset: Int, endOffset: Int, irFunction: IrSimpleFunction, typeArguments: List<IrType>): IrCall =
-        IrCallImpl(
+        IrCallImpl.fromSymbolDescriptor(
                 startOffset, endOffset, irFunction.substitutedReturnType(typeArguments),
-                irFunction.symbol, typeArguments.size
+                irFunction.symbol, typeArguments.size, irFunction.valueParameters.size
         ).apply {
             typeArguments.forEachIndexed { index, irType ->
                 this.putTypeArgument(index, irType)
@@ -259,26 +254,23 @@ fun IrBuilderWithScope.irCallOp(
         }
 
 fun IrBuilderWithScope.irSetVar(variable: IrVariable, value: IrExpression) =
-        irSetVar(variable.symbol, value)
+        irSet(variable.symbol, value)
 
 fun IrBuilderWithScope.irCatch(type: IrType) =
         IrCatchImpl(
                 startOffset, endOffset,
-                WrappedVariableDescriptor().let { descriptor ->
-                    IrVariableImpl(
-                            startOffset,
-                            endOffset,
-                            IrDeclarationOrigin.IR_TEMPORARY_VARIABLE,
-                            IrVariableSymbolImpl(descriptor),
-                            Name.identifier("e"),
-                            type,
-                            false,
-                            false,
-                            false
-                    ).apply {
-                        descriptor.bind(this)
-                        parent = this@irCatch.parent
-                    }
+                IrVariableImpl(
+                        startOffset,
+                        endOffset,
+                        IrDeclarationOrigin.IR_TEMPORARY_VARIABLE,
+                        IrVariableSymbolImpl(),
+                        Name.identifier("e"),
+                        type,
+                        false,
+                        false,
+                        false
+                ).apply {
+                    parent = this@irCatch.parent
                 }
         )
 
@@ -345,26 +337,24 @@ fun createField(
         name: Name,
         isMutable: Boolean,
         owner: IrClass
-) = WrappedFieldDescriptor().let {
+) =
     IrFieldImpl(
             startOffset, endOffset,
             origin,
-            IrFieldSymbolImpl(it),
+            IrFieldSymbolImpl(),
             name,
             type,
-            Visibilities.PRIVATE,
+            DescriptorVisibilities.PRIVATE,
             !isMutable,
             false,
             false,
     ).apply {
-        it.bind(this)
         owner.declarations += this
         parent = owner
     }
-}
 
 fun IrValueParameter.copy(newDescriptor: ParameterDescriptor): IrValueParameter {
-    // Aggressive use of WrappedDescriptors during deserialization
+    // Aggressive use of IrBasedDescriptors during deserialization
     // makes these types different.
     // Let's hope they not really used afterwards.
     //assert(this.descriptor.type == newDescriptor.type) {
@@ -374,7 +364,8 @@ fun IrValueParameter.copy(newDescriptor: ParameterDescriptor): IrValueParameter 
     return IrValueParameterImpl(
         startOffset, endOffset, IrDeclarationOrigin.DEFINED, IrValueParameterSymbolImpl(newDescriptor),
         newDescriptor.name, newDescriptor.indexOrMinusOne, type, varargElementType,
-        newDescriptor.isCrossinline, newDescriptor.isNoinline
+        newDescriptor.isCrossinline, newDescriptor.isNoinline,
+        isHidden = false, isAssignable = false
     )
 }
 
@@ -386,11 +377,6 @@ fun IrClass.defaultOrNullableType(hasQuestionMark: Boolean) =
 
 fun IrFunction.isRestrictedSuspendFunction(languageVersionSettings: LanguageVersionSettings): Boolean =
         this.descriptor.extensionReceiverParameter?.type?.isRestrictsSuspensionReceiver(languageVersionSettings) == true
-
-fun IrFunction.isTypeOfIntrinsic(): Boolean =
-        this.name.asString() == "typeOf" &&
-                this.valueParameters.isEmpty() &&
-                (this.parent as? IrPackageFragment)?.fqName == KOTLIN_REFLECT_FQ_NAME
 
 fun IrBuilderWithScope.irByte(value: Byte) =
         IrConstImpl.byte(startOffset, endOffset, context.irBuiltIns.byteType, value)

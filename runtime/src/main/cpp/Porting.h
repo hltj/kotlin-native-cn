@@ -17,6 +17,7 @@
 #ifndef RUNTIME_PORTING_H
 #define RUNTIME_PORTING_H
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -26,8 +27,8 @@ namespace konan {
 
 // Console operations.
 void consoleInit();
-void consolePrintf(const char* format, ...);
-void consoleErrorf(const char* format, ...);
+void consolePrintf(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void consoleErrorf(const char* format, ...) __attribute__((format(printf, 1, 2)));
 void consoleWriteUtf8(const void* utf8, uint32_t sizeBytes);
 void consoleErrorUtf8(const void* utf8, uint32_t sizeBytes);
 // Negative return value denotes that read wasn't successful.
@@ -45,7 +46,8 @@ void onThreadExit(void (*destructor)(void*), void* destructorParameter);
 // memcpy/memmove/memcmp are not here intentionally, as frequently implemented/optimized
 // by C compiler.
 void* memmem(const void *big, size_t bigLen, const void *little, size_t littleLen);
-int snprintf(char* buffer, size_t size, const char* format, ...);
+int snprintf(char* buffer, size_t size, const char* format, ...) __attribute__((format(printf, 3, 4)));
+int vsnprintf(char* buffer, size_t size, const char* format, va_list args) __attribute__((format(printf, 3, 0)));
 size_t strnlen(const char* buffer, size_t maxSize);
 
 

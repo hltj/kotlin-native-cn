@@ -24,6 +24,7 @@ import org.gradle.process.ExecResult
 import org.gradle.process.ExecSpec
 import org.gradle.util.ConfigureUtil
 import org.jetbrains.kotlin.konan.target.Architecture
+import org.jetbrains.kotlin.konan.target.ConfigurablesWithEmulator
 
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.konan.target.Xcode
@@ -52,9 +53,10 @@ fun create(project: Project): ExecutorService {
     val testTarget = project.testTarget
     val platform = platformManager.platform(testTarget)
     val absoluteTargetToolchain = platform.absoluteTargetToolchain
-    val absoluteTargetSysRoot = platform.absoluteTargetSysRoot
 
-    return when (testTarget) {
+    return if (project.hasProperty("remote")) {
+        sshExecutor(project)
+    } else when (testTarget) {
         KonanTarget.WASM32 -> object : ExecutorService {
             override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec { execSpec ->
                 action.execute(execSpec)
@@ -68,22 +70,10 @@ fun create(project: Project): ExecutorService {
             }
         }
 
-        KonanTarget.LINUX_MIPS32, KonanTarget.LINUX_MIPSEL32 -> object : ExecutorService {
-            override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec { execSpec ->
-                action.execute(execSpec)
-                with(execSpec) {
-                    val qemu = if (platform.target === KonanTarget.LINUX_MIPS32) "qemu-mips" else "qemu-mipsel"
-                    val absoluteQemu = "$absoluteTargetToolchain/bin/$qemu"
-                    val exe = executable
-                    executable = absoluteQemu
-                    args = listOf("-L", absoluteTargetSysRoot,
-                            // This is to workaround an endianess issue.
-                            // See https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=731082 for details.
-                            "$absoluteTargetSysRoot/lib/ld.so.1", "--inhibit-cache",
-                            exe) + args
-                }
-            }
-        }
+        KonanTarget.LINUX_MIPS32,
+        KonanTarget.LINUX_MIPSEL32,
+        KonanTarget.LINUX_ARM32_HFP,
+        KonanTarget.LINUX_ARM64 -> emulatorExecutor(project, testTarget)
 
         KonanTarget.IOS_X64,
         KonanTarget.TVOS_X64,
@@ -93,10 +83,7 @@ fun create(project: Project): ExecutorService {
         KonanTarget.IOS_ARM32,
         KonanTarget.IOS_ARM64 -> deviceLauncher(project)
 
-        else -> {
-            if (project.hasProperty("remote")) sshExecutor(project)
-            else localExecutorService(project)
-        }
+        else -> localExecutorService(project)
     }
 }
 
@@ -179,10 +166,10 @@ val Project.executor: ExecutorService
  */
 fun ExecutorService.add(actionParameter: Action<in ExecSpec>) = object : ExecutorService {
     override fun execute(action: Action<in ExecSpec>): ExecResult? =
-            this@add.execute(Action {
+            this@add.execute {
                 action.execute(it)
                 actionParameter.execute(it)
-            })
+            }
 }
 
 /**
@@ -213,6 +200,34 @@ fun localExecutorService(project: Project): ExecutorService = object : ExecutorS
     override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec(action)
 }
 
+private fun emulatorExecutor(project: Project, target: KonanTarget) = object : ExecutorService {
+    val platformManager = project.platformManager
+    val configurables = platformManager.platform(target).configurables as? ConfigurablesWithEmulator
+            ?: error("$target does not support emulation!")
+    val absoluteTargetSysRoot = configurables.absoluteTargetSysRoot
+
+    override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec { execSpec ->
+        action.execute(execSpec)
+        with(execSpec) {
+            val exe = executable
+            // TODO: Move these to konan.properties when when it will be possible
+            //  to represent absolute path there.
+            val qemuSpecificArguments = listOf("-L", absoluteTargetSysRoot)
+            val targetSpecificArguments = when (target) {
+                KonanTarget.LINUX_MIPS32,
+                KonanTarget.LINUX_MIPSEL32 -> {
+                    // This is to workaround an endianess issue.
+                    // See https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=731082 for details.
+                    listOf("$absoluteTargetSysRoot/lib/ld.so.1", "--inhibit-cache")
+                }
+                else -> emptyList()
+            }
+            executable = configurables.absoluteEmulatorExecutable
+            args = qemuSpecificArguments + targetSpecificArguments + exe + args
+        }
+    }
+}
+
 /**
  * Executes a given action with iPhone Simulator.
  *
@@ -221,6 +236,7 @@ fun localExecutorService(project: Project): ExecutorService = object : ExecutorS
  * @param iosDevice an optional project property used to control simulator's device type
  *        Specify -PiosDevice=iPhone X to set it
  */
+@Suppress("KDocUnresolvedReference")
 private fun simulator(project: Project): ExecutorService = object : ExecutorService {
 
     private val target = project.testTarget
@@ -245,7 +261,7 @@ private fun simulator(project: Project): ExecutorService = object : ExecutorServ
     private val device = project.findProperty("iosDevice")?.toString() ?: when (target) {
         KonanTarget.TVOS_X64 -> "Apple TV 4K"
         KonanTarget.IOS_X64 -> "iPhone 8"
-        KonanTarget.WATCHOS_X64,
+        KonanTarget.WATCHOS_X64 -> "Apple Watch Series 6 - 40mm"
         KonanTarget.WATCHOS_X86 -> "Apple Watch Series 4 - 40mm"
         else -> error("Unexpected simulation target: $target")
     }
@@ -269,6 +285,7 @@ private fun simulator(project: Project): ExecutorService = object : ExecutorServ
  * @param remote makes binaries be executed on a remote host
  *        Specify it as -Premote=user@host
  */
+@Suppress("KDocUnresolvedReference")
 private fun sshExecutor(project: Project): ExecutorService = object : ExecutorService {
 
     private val remote: String = project.property("remote").toString()
@@ -332,14 +349,15 @@ private fun deviceLauncher(project: Project) = object : ExecutorService {
 
     private val deviceName = project.findProperty("device_name") as? String
 
+    private val bundleID = "org.jetbrains.kotlin.KonanTestLauncher"
+
     override fun execute(action: Action<in ExecSpec>): ExecResult? {
-        var result: ExecResult? = null
+        val result: ExecResult?
         try {
             val udid = targetUDID()
             println("Found device UDID: $udid")
             install(udid, xcProject.resolve("build/KonanTestLauncher.ipa").toString())
-            val bundleId = "org.jetbrains.kotlin.KonanTestLauncher"
-            val commands = startDebugServer(udid, bundleId)
+            val commands = startDebugServer(udid)
                     .split("\n")
                     .filter { it.isNotBlank() }
                     .flatMap { listOf("-o", it) }
@@ -377,7 +395,7 @@ private fun deviceLauncher(project: Project) = object : ExecutorService {
                         savedOut?.write(it.toByteArray())
                     }
 
-            uninstall(udid, bundleId)
+            uninstall(udid)
         } catch (exc: Exception) {
             throw RuntimeException("iOS-device execution failed", exc)
         } finally {
@@ -463,12 +481,12 @@ private fun deviceLauncher(project: Project) = object : ExecutorService {
         check(result.exitValue == 0) { "Installation of $bundlePath failed: $out" }
     }
 
-    private fun uninstall(udid: String, bundleId: String) {
+    private fun uninstall(udid: String) {
         val out = ByteArrayOutputStream()
 
         project.exec {
             it.workingDir = xcProject.toFile()
-            it.commandLine = listOf(idb, "uninstall", "--udid", udid, bundleId)
+            it.commandLine = listOf(idb, "uninstall", "--udid", udid, bundleID)
             it.standardOutput = out
             it.errorOutput = out
             it.isIgnoreExitValue = true
@@ -476,12 +494,12 @@ private fun deviceLauncher(project: Project) = object : ExecutorService {
         println(out.toString())
     }
 
-    private fun startDebugServer(udid: String, bundleId: String): String {
+    private fun startDebugServer(udid: String): String {
         val out = ByteArrayOutputStream()
 
         val result = project.exec {
             it.workingDir = xcProject.toFile()
-            it.commandLine = listOf(idb, "debugserver", "start", "--udid", udid, bundleId)
+            it.commandLine = listOf(idb, "debugserver", "start", "--udid", udid, bundleID)
             it.standardOutput = out
             it.errorOutput = out
             it.isIgnoreExitValue = true

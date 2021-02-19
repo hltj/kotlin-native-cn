@@ -56,9 +56,12 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
 
             irBuiltins.checkNotNullSymbol -> lowerCheckNotNull(expression)
 
-            irBuiltins.noWhenBranchMatchedExceptionSymbol -> IrCallImpl(expression.startOffset, expression.endOffset,
+            irBuiltins.noWhenBranchMatchedExceptionSymbol -> IrCallImpl.fromSymbolDescriptor(
+                    expression.startOffset, expression.endOffset,
                     context.ir.symbols.throwNoWhenBranchMatchedException.owner.returnType,
-                    context.ir.symbols.throwNoWhenBranchMatchedException)
+                    context.ir.symbols.throwNoWhenBranchMatchedException,
+                    context.ir.symbols.throwNoWhenBranchMatchedException.owner.typeParameters.size,
+                    context.ir.symbols.throwNoWhenBranchMatchedException.owner.valueParameters.size)
 
             else -> expression
         }
@@ -126,7 +129,7 @@ internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass,
     }
 
     private fun inlinedClassHasDefaultEquals(irClass: IrClass): Boolean {
-        if (!irClass.descriptor.isInline) {
+        if (!irClass.isInline) {
             // Implicitly-inlined class, e.g. primitive one.
             return true
         }

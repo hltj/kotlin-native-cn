@@ -8,10 +8,14 @@ set(CMAKE_CXX_STANDARD 14)
 
 set(SRC_DIR ${CMAKE_SOURCE_DIR}/src)
 
+set(GOOGLETEST_DIR ${CMAKE_SOURCE_DIR}/googletest)
+
 include_directories(${SRC_DIR}/main/cpp)
 include_directories(${SRC_DIR}/debug/headers)
 include_directories(${CMAKE_SOURCE_DIR}/../common/src/hash/headers)
 
+include_directories(${GOOGLETEST_DIR}/googletest/include)
+include_directories(${GOOGLETEST_DIR}/googlemock/include)
 
 add_executable(runtime
 	src/main/cpp/Arrays.cpp
@@ -69,11 +73,19 @@ add_executable(runtime
 	src/main/cpp/ObjCInteropUtils.mm
 	src/main/cpp/ObjCExportCollectionUtils.mm
 	src/main/cpp/ObjCExportErrors.mm
+	src/main/cpp/ObjCExportExceptionDetails.mm
+
 	src/objc/cpp/ObjCExportNumbers.mm
 	src/objc/cpp/ObjCExportClasses.mm
 	src/objc/cpp/ObjCExportCollections.mm
 	src/objc/cpp/ObjCInteropUtilsClasses.mm
 
+	# Tests
+	src/test_support/cpp/CompilerGenerated.cpp
+	src/test_support/cpp/CompilerGeneratedObjC.mm
+	src/test_support/cpp/TestLauncher.cpp
+
+	src/main/cpp/ArraysTest.cpp
 )
 
 target_compile_definitions(runtime PUBLIC "-DKONAN_OSX=1")

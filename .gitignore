@@ -38,7 +38,7 @@ gradle-app.setting
 
 # local project files
 lib/
-.idea/
+.idea/*
 proto/compiler/protoc-artifacts
 proto/compiler/tests
 
@@ -62,9 +62,23 @@ llvmCoverageMappingC/CMakeLists.txt
 tools/performance-server/node_modules
 tools/performance-server/server
 tools/performance-server/ui/js
+runtime/cmake-build-debug/
 
 # compilation database
 compile_commands.json
 
 # clangd caches
 .clangd/
+
+# googletest framework used by runtime tests
+runtime/googletest/
+
+# code style
+!.idea/codeStyles/
+
+# Toolchain builder artifacts
+tools/toolchain_builder/artifacts
+
+
+# ignore the project model created by CLion (for now).
+runtime/.idea

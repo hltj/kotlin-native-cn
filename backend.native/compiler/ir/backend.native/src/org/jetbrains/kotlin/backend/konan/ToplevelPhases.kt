@@ -3,19 +3,9 @@ package org.jetbrains.kotlin.backend.konan
 import org.jetbrains.kotlin.backend.common.CheckDeclarationParentsVisitor
 import org.jetbrains.kotlin.backend.common.IrValidator
 import org.jetbrains.kotlin.backend.common.IrValidatorConfig
-import org.jetbrains.kotlin.backend.common.LoggingContext
-import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
-import org.jetbrains.kotlin.backend.common.extensions.IrPluginContextImpl
-import org.jetbrains.kotlin.backend.common.overrides.FakeOverrideChecker
+import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.backend.common.phaser.*
-import org.jetbrains.kotlin.backend.common.serialization.mangle.ManglerChecker
-import org.jetbrains.kotlin.backend.common.serialization.mangle.descriptor.Ir2DescriptorManglerAdapter
 import org.jetbrains.kotlin.backend.common.serialization.metadata.KlibMetadataMonolithicSerializer
-import org.jetbrains.kotlin.backend.konan.descriptors.isForwardDeclarationModule
-import org.jetbrains.kotlin.backend.konan.descriptors.isFromInteropLibrary
-import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
-import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
-import org.jetbrains.kotlin.backend.konan.ir.interop.IrProviderForCEnumAndCStructStubs
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
@@ -23,26 +13,25 @@ import org.jetbrains.kotlin.backend.konan.serialization.*
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
-import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
-import org.jetbrains.kotlin.descriptors.ModuleDescriptor
-import org.jetbrains.kotlin.descriptors.konan.DeserializedKlibModuleOrigin
-import org.jetbrains.kotlin.descriptors.konan.KlibModuleOrigin
-import org.jetbrains.kotlin.descriptors.konan.isNativeStdlib
-import org.jetbrains.kotlin.ir.declarations.IrDeclaration
-import org.jetbrains.kotlin.ir.declarations.IrFile
-import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
+import org.jetbrains.kotlin.ir.IrElement
+import org.jetbrains.kotlin.ir.builders.declarations.buildFun
+import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.builders.irGetObjectValue
+import org.jetbrains.kotlin.ir.builders.irReturn
+import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFactoryImpl
-import org.jetbrains.kotlin.ir.symbols.IrSymbol
+import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.IrGetObjectValue
+import org.jetbrains.kotlin.ir.expressions.impl.IrCallImpl
 import org.jetbrains.kotlin.ir.util.*
-import org.jetbrains.kotlin.ir.visitors.acceptVoid
+import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
+import org.jetbrains.kotlin.ir.visitors.IrElementVisitorVoid
+import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
+import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
-import org.jetbrains.kotlin.psi2ir.Psi2IrConfiguration
-import org.jetbrains.kotlin.psi2ir.Psi2IrTranslator
-import org.jetbrains.kotlin.utils.DFS
-import java.util.Collections.emptySet
 
 internal fun moduleValidationCallback(state: ActionState, module: IrModuleFragment, context: Context) {
-    if (!context.config.needCompilerVerification) return
+    if (!context.config.needVerifyIr) return
 
     val validatorConfig = IrValidatorConfig(
         abortOnError = false,
@@ -143,142 +132,12 @@ internal val buildCExportsPhase = konanUnitPhase(
 
 internal val psiToIrPhase = konanUnitPhase(
         op = {
-            // Translate AST to high level IR.
-            val expectActualLinker = config.configuration.get(CommonConfigurationKeys.EXPECT_ACTUAL_LINKER)?:false
-
-            val symbolTable = symbolTable!!
-
-            val translator = Psi2IrTranslator(config.configuration.languageVersionSettings, Psi2IrConfiguration(false))
-            val generatorContext = translator.createGeneratorContext(moduleDescriptor, bindingContext, symbolTable)
-
-            val pluginExtensions = IrGenerationExtension.getInstances(config.project)
-
-            val forwardDeclarationsModuleDescriptor = moduleDescriptor.allDependencyModules.firstOrNull { it.isForwardDeclarationModule }
-
-            val modulesWithoutDCE = moduleDescriptor.allDependencyModules
-                    .filter { !llvmModuleSpecification.isFinal && llvmModuleSpecification.containsModule(it) }
-
-            // Note: using [llvmModuleSpecification] since this phase produces IR for generating single LLVM module.
-
-            val exportedDependencies = (getExportedDependencies() + modulesWithoutDCE).distinct()
-            val functionIrClassFactory = BuiltInFictitiousFunctionIrClassFactory(
-                    symbolTable, generatorContext.irBuiltIns, reflectionTypes)
-            generatorContext.irBuiltIns.functionFactory = functionIrClassFactory
-            val stubGenerator = DeclarationStubGenerator(
-                    moduleDescriptor, symbolTable,
-                    config.configuration.languageVersionSettings
-            )
-            val symbols = KonanSymbols(this, generatorContext.irBuiltIns, symbolTable, symbolTable.lazyWrapper, functionIrClassFactory)
-
-            val irProviderForCEnumsAndCStructs =
-                    IrProviderForCEnumAndCStructStubs(generatorContext, interopBuiltIns, symbols)
-
-            val deserializeFakeOverrides = config.configuration.getBoolean(CommonConfigurationKeys.DESERIALIZE_FAKE_OVERRIDES)
-
-            val linker =
-                KonanIrLinker(
-                    moduleDescriptor,
-                    functionIrClassFactory,
-                    this as LoggingContext,
-                    generatorContext.irBuiltIns,
-                    symbolTable,
-                    forwardDeclarationsModuleDescriptor,
-                    stubGenerator,
-                    irProviderForCEnumsAndCStructs,
-                    exportedDependencies,
-                    deserializeFakeOverrides
-            )
-
-            translator.addPostprocessingStep { module ->
-                val pluginContext = IrPluginContextImpl(
-                        generatorContext.moduleDescriptor,
-                        generatorContext.bindingContext,
-                        generatorContext.languageVersionSettings,
-                        generatorContext.symbolTable,
-                        generatorContext.typeTranslator,
-                        generatorContext.irBuiltIns,
-                        linker = linker
-                )
-                pluginExtensions.forEach { extension ->
-                    extension.generate(module, pluginContext)
-                }
-            }
-
-            var dependenciesCount = 0
-            while (true) {
-                // context.config.librariesWithDependencies could change at each iteration.
-                val dependencies = moduleDescriptor.allDependencyModules.filter {
-                    config.librariesWithDependencies(moduleDescriptor).contains(it.konanLibrary)
-                }
-
-                fun sortDependencies(dependencies: List<ModuleDescriptor>): Collection<ModuleDescriptor> {
-                    return DFS.topologicalOrder(dependencies) {
-                        it.allDependencyModules
-                    }.reversed()
-                }
-
-                for (dependency in sortDependencies(dependencies).filter { it != moduleDescriptor }) {
-                    val kotlinLibrary = dependency.getCapability(KlibModuleOrigin.CAPABILITY)?.let {
-                        (it as? DeserializedKlibModuleOrigin)?.library
-                    }
-                    linker.deserializeIrModuleHeader(dependency, kotlinLibrary)
-                }
-                if (dependencies.size == dependenciesCount) break
-                dependenciesCount = dependencies.size
-            }
-
-            // We need to run `buildAllEnumsAndStructsFrom` before `generateModuleFragment` because it adds references to symbolTable
-            // that should be bound.
-            modulesWithoutDCE
-                    .filter(ModuleDescriptor::isFromInteropLibrary)
-                    .forEach(irProviderForCEnumsAndCStructs::referenceAllEnumsAndStructsFrom)
-
-            val irProviders = listOf(linker)
-            stubGenerator.setIrProviders(irProviders)
-
-            expectDescriptorToSymbol = mutableMapOf<DeclarationDescriptor, IrSymbol>()
-            val module = translator.generateModuleFragment(
-                generatorContext,
-                environment.getSourceFiles(),
-                irProviders,
-                pluginExtensions,
-                // TODO: This is a hack to allow platform libs to build in reasonable time.
-                // referenceExpectsForUsedActuals() appears to be quadratic in time because of
-                // how ExpectedActualResolver is implemented.
-                // Need to fix ExpectActualResolver to either cache expects or somehow reduce the member scope searches.
-                if (expectActualLinker) expectDescriptorToSymbol else null
-            )
-
-            linker.postProcess()
-
-            if (this.stdlibModule in modulesWithoutDCE) {
-                functionIrClassFactory.buildAllClasses()
-            }
-
-            // Enable lazy IR genration for newly-created symbols inside BE
-            stubGenerator.unboundSymbolGeneration = true
-
-            symbolTable.noUnboundLeft("Unbound symbols left after linker")
-
-            module.acceptVoid(ManglerChecker(KonanManglerIr, Ir2DescriptorManglerAdapter(KonanManglerDesc)))
-            if (!config.configuration.getBoolean(KonanConfigKeys.DISABLE_FAKE_OVERRIDE_VALIDATOR)) {
-                val fakeOverrideChecker = FakeOverrideChecker(KonanManglerIr, KonanManglerDesc)
-                linker.modules.values.forEach { fakeOverrideChecker.check(it) }
-            }
-
-            irModule = module
-
-            // Note: coupled with [shouldLower] below.
-            irModules = linker.modules.filterValues { llvmModuleSpecification.containsModule(it) }
-
-            ir.symbols = symbols
-
-            functionIrClassFactory.module =
-                    (listOf(irModule!!) + linker.modules.values)
-                            .single { it.descriptor.isNativeStdlib() }
+            this.psiToIr(symbolTable!!,
+                    isProducingLibrary = config.produce == CompilerOutputKind.LIBRARY,
+                    useLinkerWhenProducingLibrary = false)
         },
         name = "Psi2Ir",
-        description = "Psi to IR conversion",
+        description = "Psi to IR conversion and klib linkage",
         prerequisite = setOf(createSymbolTablePhase)
 )
 
@@ -309,18 +168,20 @@ internal val copyDefaultValuesToActualPhase = konanUnitPhase(
 
 internal val serializerPhase = konanUnitPhase(
         op = {
-            val expectActualLinker = config.configuration.get(CommonConfigurationKeys.EXPECT_ACTUAL_LINKER)?:false
+            val expectActualLinker = config.configuration.get(CommonConfigurationKeys.EXPECT_ACTUAL_LINKER) ?: false
+            val messageLogger = config.configuration.get(IrMessageLogger.IR_MESSAGE_LOGGER) ?: IrMessageLogger.None
 
             serializedIr = irModule?.let { ir ->
                 KonanIrModuleSerializer(
-                    this, ir.irBuiltins, expectDescriptorToSymbol, skipExpects = !expectActualLinker
+                    messageLogger, ir.irBuiltins, expectDescriptorToSymbol, skipExpects = !expectActualLinker
                 ).serializedIrModule(ir)
             }
 
             val serializer = KlibMetadataMonolithicSerializer(
                 this.config.configuration.languageVersionSettings,
                 config.configuration.get(CommonConfigurationKeys.METADATA_VERSION)!!,
-                !expectActualLinker)
+                config.project,
+                !expectActualLinker, includeOnlyModuleContent = true)
             serializedMetadata = serializer.serializeModule(moduleDescriptor)
         },
         name = "Serializer",
@@ -359,23 +220,25 @@ internal val allLoweringsPhase = NamedCompilerPhase(
                         lower = listOf(
                             rangeContainsLoweringPhase,
                             forLoopsPhase,
+                            flattenStringConcatenationPhase,
+                            foldConstantLoweringPhase,
+                            computeStringTrimPhase,
                             stringConcatenationPhase,
                             enumConstructorsPhase,
                             initializersPhase,
                             localFunctionsPhase,
-                            foldConstantLoweringPhase,
                             tailrecPhase,
                             defaultParameterExtentPhase,
                             innerClassPhase,
                             dataClassesPhase,
-                            singleAbstractMethodPhase,
                             ifNullExpressionsFusionPhase,
+                            testProcessorPhase,
+                            delegationPhase,
+                            functionReferencePhase,
+                            singleAbstractMethodPhase,
                             builtinOperatorPhase,
                             finallyBlocksPhase,
-                            testProcessorPhase,
                             enumClassPhase,
-                            delegationPhase,
-                            callableReferencePhase,
                             interopPhase,
                             varargPhase,
                             compileTimeEvaluatePhase,
@@ -452,19 +315,86 @@ internal val entryPointPhase = makeCustomPhase<Context, IrModuleFragment>(
         }
 )
 
+internal val exportInternalAbiPhase = makeKonanModuleOpPhase(
+        name = "exportInternalAbi",
+        description = "Add accessors to private entities",
+        prerequisite = emptySet(),
+        op = { context, module ->
+            val visitor = object : IrElementVisitorVoid {
+                override fun visitElement(element: IrElement) {
+                    element.acceptChildrenVoid(this)
+                }
+
+                override fun visitClass(declaration: IrClass) {
+                    declaration.acceptChildrenVoid(this)
+                    if (declaration.isCompanion) {
+                        val function = context.irFactory.buildFun {
+                            name = InternalAbi.getCompanionObjectAccessorName(declaration)
+                            origin = InternalAbi.INTERNAL_ABI_ORIGIN
+                            returnType = declaration.defaultType
+                        }
+                        context.createIrBuilder(function.symbol).apply {
+                            function.body = irBlockBody {
+                                +irReturn(irGetObjectValue(declaration.defaultType, declaration.symbol))
+                            }
+                        }
+                        context.internalAbi.declare(function, declaration.module)
+                    }
+
+                }
+            }
+            module.acceptChildrenVoid(visitor)
+        }
+)
+
+internal val useInternalAbiPhase = makeKonanModuleOpPhase(
+        name = "useInternalAbi",
+        description = "Use internal ABI functions to access private entities",
+        prerequisite = emptySet(),
+        op = { context, module ->
+            val accessors = mutableMapOf<IrClass, IrSimpleFunction>()
+            val transformer = object : IrElementTransformerVoid() {
+                override fun visitGetObjectValue(expression: IrGetObjectValue): IrExpression {
+                    val irClass = expression.symbol.owner
+                    if (!irClass.isCompanion || context.llvmModuleSpecification.containsDeclaration(irClass)) {
+                        return expression
+                    }
+                    val parent = irClass.parentAsClass
+                    if (parent.isObjCClass()) {
+                        // Access to Obj-C metaclass is done via intrinsic.
+                        return expression
+                    }
+                    val accessor = accessors.getOrPut(irClass) {
+                        context.irFactory.buildFun {
+                            name = InternalAbi.getCompanionObjectAccessorName(irClass)
+                            returnType = irClass.defaultType
+                            origin = InternalAbi.INTERNAL_ABI_ORIGIN
+                            isExternal = true
+                        }.also {
+                            context.internalAbi.reference(it, irClass.module)
+                        }
+                    }
+                    return IrCallImpl(expression.startOffset, expression.endOffset, expression.type, accessor.symbol, accessor.typeParameters.size, accessor.valueParameters.size)
+                }
+            }
+            module.transformChildrenVoid(transformer)
+        }
+)
+
 internal val bitcodePhase = NamedCompilerPhase(
         name = "Bitcode",
         description = "LLVM Bitcode generation",
         lower = contextLLVMSetupPhase then
                 buildDFGPhase then
-                serializeDFGPhase then
-                deserializeDFGPhase then
                 devirtualizationPhase then
+                redundantCoercionsCleaningPhase then
                 dcePhase then
                 createLLVMDeclarationsPhase then
                 ghaPhase then
                 RTTIPhase then
                 generateDebugInfoHeaderPhase then
+                propertyAccessorInlinePhase then // Have to run after link dependencies phase, because fields
+                                                 // from dependencies can be changed during lowerings.
                 escapeAnalysisPhase then
                 localEscapeAnalysisPhase then
                 codegenPhase then
@@ -480,6 +410,8 @@ private val backendCodegen = namedUnitPhase(
                 dependenciesLowerPhase then // Then lower all libraries in topological order.
                                             // With that we guarantee that inline functions are unlowered while being inlined.
                 entryPointPhase then
+                exportInternalAbiPhase then
+                useInternalAbiPhase then
                 bitcodePhase then
                 verifyBitcodePhase then
                 printBitcodePhase then
@@ -500,6 +432,7 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                 destroySymbolTablePhase then
                 copyDefaultValuesToActualPhase then
                 serializerPhase then
+                specialBackendChecksPhase then
                 namedUnitPhase(
                         name = "Backend",
                         description = "All backend",
@@ -509,7 +442,8 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                                 unitSink()
                 ) then
                 objectFilesPhase then
-                linkerPhase
+                linkerPhase then
+                freeNativeMemPhase
 )
 
 internal fun PhaseConfig.disableIf(phase: AnyNamedPhase, condition: Boolean) {
@@ -523,15 +457,13 @@ internal fun PhaseConfig.disableUnless(phase: AnyNamedPhase, condition: Boolean)
 internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
     with(config.configuration) {
         disable(compileTimeEvaluatePhase)
-        disable(deserializeDFGPhase)
-        disable(escapeAnalysisPhase)
-        disable(serializeDFGPhase)
+        disable(localEscapeAnalysisPhase)
 
         // Don't serialize anything to a final executable.
         disableUnless(serializerPhase, config.produce == CompilerOutputKind.LIBRARY)
-        disableIf(dependenciesLowerPhase, config.produce == CompilerOutputKind.LIBRARY)
         disableUnless(entryPointPhase, config.produce == CompilerOutputKind.PROGRAM)
-        disableIf(bitcodePhase, config.produce == CompilerOutputKind.LIBRARY)
+        disableUnless(exportInternalAbiPhase, config.produce.isCache)
+        disableIf(backendCodegen, config.produce == CompilerOutputKind.LIBRARY)
         disableUnless(bitcodeOptimizationPhase, config.produce.involvesLinkStage)
         disableUnless(linkBitcodeDependenciesPhase, config.produce.involvesLinkStage)
         disableUnless(objectFilesPhase, config.produce.involvesLinkStage)
@@ -539,7 +471,10 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         disableIf(testProcessorPhase, getNotNull(KonanConfigKeys.GENERATE_TEST_RUNNER) == TestRunnerKind.NONE)
         disableUnless(buildDFGPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(devirtualizationPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
-        disableUnless(localEscapeAnalysisPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
+        disableUnless(escapeAnalysisPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
+        // Inline accessors only in optimized builds due to separate compilation and possibility to get broken
+        // debug information.
+        disableUnless(propertyAccessorInlinePhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(dcePhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(ghaPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(verifyBitcodePhase, config.needCompilerVerification || getBoolean(KonanConfigKeys.VERIFY_BITCODE))
@@ -548,6 +483,6 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         disableIf(psiToIrPhase, isDescriptorsOnlyLibrary)
         disableIf(destroySymbolTablePhase, isDescriptorsOnlyLibrary)
         disableIf(copyDefaultValuesToActualPhase, isDescriptorsOnlyLibrary)
-        disableIf(backendCodegen, isDescriptorsOnlyLibrary)
+        disableIf(specialBackendChecksPhase, isDescriptorsOnlyLibrary)
     }
 }

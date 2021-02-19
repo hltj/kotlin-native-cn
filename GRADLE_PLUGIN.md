@@ -3,7 +3,7 @@
 Since 1.3.40, a separate Gradle plugin for Kotlin/Native is deprecated in favor of the `kotlin-multiplatform` plugin.
 This plugin provides an IDE support along with support of the new multiplatform project model introduced in Kotlin 1.3.0.
 Below you can find a short list of differences between `kotlin-platform-native` and `kotlin-muliplatform` plugins. 
-For more information see the `kotlin-muliplatform` [documentation page](https://kotlinlang.org/docs/reference/building-mpp-with-gradle.html).
+For more information see the `kotlin-muliplatform` [documentation page](https://kotlinlang.org/docs/mpp-discover-project.html).
 For `kotlin-platform-native` reference see the [corresponding section](#kotlin-platform-native-reference).
 
 ### Applying the multiplatform plugin
@@ -170,7 +170,7 @@ kotlin.sourceSets {
     // Configure all native platform sources sets to use it as a common one.
     linuxX64Main.dependsOn(nativeMain)
     macosX64Main.dependsOn(nativeMain)
-    //...
+    // ...
 }
 ```
 
@@ -459,7 +459,7 @@ dependencies {
 </div> 
 
 It's possible to depend on a Kotlin/Native library published earlier in a maven repo. The plugin relies on Gradle's
-[metadata](https://github.com/gradle/gradle/blob/master/subprojects/docs/src/docs/design/gradle-module-metadata-specification.md)
+[metadata](https://github.com/gradle/gradle/blob/master/subprojects/docs/src/docs/design/gradle-module-metadata-latest-specification.md)
 support so the corresponding feature must be enabled. Add the following line in your `settings.gradle`:
 
 <div class="sample" markdown="1" theme="idea" mode="groovy">

@@ -13,6 +13,7 @@ import org.jetbrains.kotlin.backend.konan.descriptors.kotlinNativeInternal
 import org.jetbrains.kotlin.backend.konan.llvm.findMainEntryPoint
 import org.jetbrains.kotlin.backend.konan.lower.TestProcessor
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
+import org.jetbrains.kotlin.builtins.StandardNames
 import org.jetbrains.kotlin.builtins.UnsignedType
 import org.jetbrains.kotlin.config.coroutinesIntrinsicsPackageFqName
 import org.jetbrains.kotlin.config.coroutinesPackageFqName
@@ -194,6 +195,8 @@ internal class KonanSymbols(
     val interopCreateNSStringFromKString =
             symbolTable.referenceSimpleFunction(context.interopBuiltIns.CreateNSStringFromKString)
 
+    val createForeignException = interopFunction("CreateForeignException")
+
     val interopObjCGetSelector = interopFunction("objCGetSelector")
 
     val interopCEnumVar = interopClass("CEnumVar")
@@ -233,6 +236,12 @@ internal class KonanSymbols(
     val executeImpl = symbolTable.referenceSimpleFunction(
             builtIns.builtInsModule.getPackage(FqName("kotlin.native.concurrent")).memberScope
                     .getContributedFunctions(Name.identifier("executeImpl"), NoLookupLocation.FROM_BACKEND)
+                    .single()
+    )
+
+    val createCleaner = symbolTable.referenceSimpleFunction(
+            builtIns.builtInsModule.getPackage(FqName("kotlin.native.internal")).memberScope
+                    .getContributedFunctions(Name.identifier("createCleaner"), NoLookupLocation.FROM_BACKEND)
                     .single()
     )
 
@@ -320,7 +329,7 @@ internal class KonanSymbols(
     }
     
     val copyInto = arrays.map { symbol ->
-        val packageViewDescriptor = builtIns.builtInsModule.getPackage(KotlinBuiltIns.COLLECTIONS_PACKAGE_FQ_NAME)
+        val packageViewDescriptor = builtIns.builtInsModule.getPackage(StandardNames.COLLECTIONS_PACKAGE_FQ_NAME)
         val functionDescriptor = packageViewDescriptor.memberScope
                 .getContributedFunctions(Name.identifier("copyInto"), NoLookupLocation.FROM_BACKEND)
                 .single {
@@ -421,6 +430,8 @@ internal class KonanSymbols(
                     }
     )
 
+    override val functionAdapter = symbolTable.referenceClass(context.getKonanInternalClass("FunctionAdapter"))
+
     val refClass = symbolTable.referenceClass(context.getKonanInternalClass("Ref"))
 
     val kFunctionImpl =  symbolTable.referenceClass(context.reflectionTypes.kFunctionImpl)
@@ -439,14 +450,21 @@ internal class KonanSymbols(
 
     val kLocalDelegatedPropertyImpl = symbolTable.referenceClass(context.reflectionTypes.kLocalDelegatedPropertyImpl)
     val kLocalDelegatedMutablePropertyImpl = symbolTable.referenceClass(context.reflectionTypes.kLocalDelegatedMutablePropertyImpl)
+
+    val typeOf = symbolTable.referenceSimpleFunction(context.reflectionTypes.typeOf)
+
+    val kType = symbolTable.referenceClass(context.reflectionTypes.kType)
+    val kVariance = symbolTable.referenceClass(context.reflectionTypes.kVariance)
+
     val getClassTypeInfo = internalFunction("getClassTypeInfo")
     val getObjectTypeInfo = internalFunction("getObjectTypeInfo")
     val kClassImpl = internalClass("KClassImpl")
     val kClassImplConstructor by lazy { kClassImpl.constructors.single() }
     val kClassUnsupportedImpl = internalClass("KClassUnsupportedImpl")
     val kClassUnsupportedImplConstructor by lazy { kClassUnsupportedImpl.constructors.single() }
+    val kTypeParameterImpl = internalClass("KTypeParameterImpl")
     val kTypeImpl = internalClass("KTypeImpl")
-    val kTypeImplForGenerics = internalClass("KTypeImplForGenerics")
+    val kTypeImplForTypeParametersWithRecursiveBounds = internalClass("KTypeImplForTypeParametersWithRecursiveBounds")
 
     val kTypeProjection = symbolTable.referenceClass(context.reflectionTypes.kTypeProjection)
 

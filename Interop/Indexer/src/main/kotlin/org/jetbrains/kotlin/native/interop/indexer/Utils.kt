@@ -100,7 +100,7 @@ internal fun parseTranslationUnit(
         )
 
         if (errorCode != CXErrorCode.CXError_Success) {
-            val copiedSourceFile = sourceFile.copyTo(createTempFile(suffix = sourceFile.name), overwrite = true)
+            val copiedSourceFile = sourceFile.copyTo(Files.createTempFile(null, sourceFile.name).toFile(), overwrite = true)
 
             error("""
                 clang_parseTranslationUnit2 failed with $errorCode;
@@ -241,7 +241,7 @@ internal fun Appendable.appendPreamble(compilation: Compilation) = this.apply {
  * Creates temporary source file which includes the library.
  */
 internal fun Compilation.createTempSource(): File {
-    val result = createTempFile(suffix = ".${language.sourceFileExtension}")
+    val result = Files.createTempFile(null, ".${language.sourceFileExtension}").toFile()
     result.deleteOnExit()
 
     result.bufferedWriter().use { writer ->
@@ -292,7 +292,7 @@ fun Compilation.precompileHeaders(): CompilationWithPCH = withIndex { index ->
 }
 
 internal fun Compilation.withPrecompiledHeader(translationUnit: CXTranslationUnit): CompilationWithPCH {
-    val precompiledHeader = createTempFile(suffix = ".pch").apply { this.deleteOnExit() }
+    val precompiledHeader = Files.createTempFile(null, ".pch").toFile().apply { this.deleteOnExit() }
     clang_saveTranslationUnit(translationUnit, precompiledHeader.absolutePath, 0)
 
     return CompilationWithPCH(this.compilerArgs, precompiledHeader.absolutePath, this.language)
@@ -439,7 +439,7 @@ internal fun indexTranslationUnit(index: CXIndex, translationUnit: CXTranslation
             val indexAction = clang_IndexAction_create(index)
             try {
                 val result = clang_indexTranslationUnit(indexAction, clientData,
-                        indexerCallbacks.ptr, IndexerCallbacks.size.toInt(), options, translationUnit)
+                        indexerCallbacks.ptr, sizeOf<IndexerCallbacks>().toInt(), options, translationUnit)
 
                 if (result != 0) {
                     throw Error("clang_indexTranslationUnit returned $result")
@@ -740,12 +740,10 @@ private fun createVfsOverlayFileContents(virtualPathToReal: Map<Path, Path>): By
 fun createVfsOverlayFile(virtualPathToReal: Map<Path, Path>): Path {
     val bytes = createVfsOverlayFileContents(virtualPathToReal)
 
-    return createTempFile(prefix = "konan", suffix = ".vfsoverlay").apply {
-        bufferedWriter().use {
-            writeBytes(bytes)
-        }
-        deleteOnExit()
-    }.toPath()
+    return Files.createTempFile("konan", ".vfsoverlay").also {
+        Files.write(it, bytes)
+        it.toFile().deleteOnExit()
+    }
 }
 
 tailrec fun Type.unwrapTypedefs(): Type = if (this is Typedef) {

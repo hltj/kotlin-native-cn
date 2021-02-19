@@ -9,13 +9,11 @@ import llvm.*
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrValueParameterImpl
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
-import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
-import org.jetbrains.kotlin.ir.descriptors.WrappedValueParameterDescriptor
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrValueParameterSymbolImpl
@@ -59,13 +57,12 @@ internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.la
     val startOffset = inlinedClass.startOffset
     val endOffset = inlinedClass.endOffset
 
-    val descriptor = WrappedSimpleFunctionDescriptor()
     IrFunctionImpl(
             startOffset, endOffset,
             DECLARATION_ORIGIN_INLINE_CLASS_SPECIAL_FUNCTION,
-            IrSimpleFunctionSymbolImpl(descriptor),
+            IrSimpleFunctionSymbolImpl(),
             Name.special("<${inlinedClass.name}-box>"),
-            Visibilities.PUBLIC,
+            DescriptorVisibilities.PUBLIC,
             Modality.FINAL,
             returnType,
             isInline = false,
@@ -77,23 +74,22 @@ internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.la
             isOperator = false,
             isInfix = false
     ).also { function ->
-        function.valueParameters = listOf(WrappedValueParameterDescriptor().let {
+        function.valueParameters = listOf(
             IrValueParameterImpl(
                     startOffset, endOffset,
                     IrDeclarationOrigin.DEFINED,
-                    IrValueParameterSymbolImpl(it),
+                    IrValueParameterSymbolImpl(),
                     Name.identifier("value"),
                     index = 0,
                     varargElementType = null,
                     isCrossinline = false,
                     type = parameterType,
-                    isNoinline = false
+                    isNoinline = false,
+                    isHidden = false,
+                    isAssignable = false
             ).apply {
-                it.bind(this)
                 parent = function
-            }
-        })
-        descriptor.bind(function)
+            })
         function.parent = inlinedClass.getContainingFile()!!
     }
 }
@@ -114,13 +110,12 @@ internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.
     val startOffset = inlinedClass.startOffset
     val endOffset = inlinedClass.endOffset
 
-    val descriptor = WrappedSimpleFunctionDescriptor()
     IrFunctionImpl(
             startOffset, endOffset,
             DECLARATION_ORIGIN_INLINE_CLASS_SPECIAL_FUNCTION,
-            IrSimpleFunctionSymbolImpl(descriptor),
+            IrSimpleFunctionSymbolImpl(),
             Name.special("<${inlinedClass.name}-unbox>"),
-            Visibilities.PUBLIC,
+            DescriptorVisibilities.PUBLIC,
             Modality.FINAL,
             returnType,
             isInline = false,
@@ -132,23 +127,22 @@ internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.
             isOperator = false,
             isInfix = false
     ).also { function ->
-        function.valueParameters = listOf(WrappedValueParameterDescriptor().let {
+        function.valueParameters = listOf(
             IrValueParameterImpl(
                     startOffset, endOffset,
                     IrDeclarationOrigin.DEFINED,
-                    IrValueParameterSymbolImpl(it),
+                    IrValueParameterSymbolImpl(),
                     Name.identifier("value"),
                     index = 0,
                     varargElementType = null,
                     isCrossinline = false,
                     type = parameterType,
-                    isNoinline = false
+                    isNoinline = false,
+                    isHidden = false,
+                    isAssignable = false
             ).apply {
-                it.bind(this)
                 parent = function
-            }
-        })
-        descriptor.bind(function)
+            })
         function.parent = inlinedClass.getContainingFile()!!
     }
 }

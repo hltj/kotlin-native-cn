@@ -11,7 +11,6 @@ import org.jetbrains.kotlin.config.LanguageVersion
 import org.jetbrains.kotlin.config.LanguageVersionSettingsImpl
 import org.jetbrains.kotlin.descriptors.impl.ModuleDescriptorImpl
 import org.jetbrains.kotlin.konan.file.File
-import org.jetbrains.kotlin.library.KLIB_FILE_EXTENSION_WITH_DOT
 import org.jetbrains.kotlin.konan.target.Distribution
 import org.jetbrains.kotlin.konan.target.PlatformManager
 import org.jetbrains.kotlin.konan.util.DependencyProcessor
@@ -20,15 +19,17 @@ import org.jetbrains.kotlin.konan.util.KlibMetadataFactories
 import org.jetbrains.kotlin.backend.common.serialization.metadata.DynamicTypeDeserializer
 import org.jetbrains.kotlin.descriptors.konan.isNativeStdlib
 import org.jetbrains.kotlin.builtins.konan.KonanBuiltIns
+import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.descriptors.deserialization.PlatformDependentTypeTransformer
 import org.jetbrains.kotlin.util.Logger
 import org.jetbrains.kotlin.library.metadata.KlibMetadataProtoBuf
 import org.jetbrains.kotlin.konan.library.KonanLibrary
 import org.jetbrains.kotlin.konan.library.resolverByName
 import org.jetbrains.kotlin.konan.util.KonanHomeProvider
+import org.jetbrains.kotlin.library.KLIB_FILE_EXTENSION_WITH_DOT
 import org.jetbrains.kotlin.library.metadata.parseModuleHeader
 import org.jetbrains.kotlin.storage.LockBasedStorageManager
-import java.lang.System.out
+import org.jetbrains.kotlin.util.removeSuffixIfPresent
 import kotlin.system.exitProcess
 
 internal val KlibFactories = KlibMetadataFactories(::KonanBuiltIns, DynamicTypeDeserializer, PlatformDependentTypeTransformer.None)
@@ -39,15 +40,17 @@ fun printUsage() {
     println("\tinfo\tgeneral information about the library")
     println("\tinstall\tinstall the library to the local repository")
     println("\tcontents\tlist contents of the library")
+    println("\tsignatures\tlist of ID signatures in the library")
     println("\tremove\tremove the library from the local repository")
     println("and the options are:")
     println("\t-repository <path>\twork with the specified repository")
     println("\t-target <name>\tinspect specifics of the given target")
+    println("\t-print-signatures [true|false]\tprint ID signature for every declaration (only for \"contents\" command)")
 }
 
 private fun parseArgs(args: Array<String>): Map<String, List<String>> {
     val commandLine = mutableMapOf<String, MutableList<String>>()
-    for (index in 0..args.size - 1 step 2) {
+    for (index in args.indices step 2) {
         val key = args[index]
         if (key[0] != '-') {
             throw IllegalArgumentException("Expected a flag with initial dash: $key")
@@ -62,13 +65,14 @@ private fun parseArgs(args: Array<String>): Map<String, List<String>> {
 }
 
 
-class Command(args: Array<String>){
+class Command(args: Array<String>) {
     init {
         if (args.size < 2) {
             printUsage()
             exitProcess(0)
         }
     }
+
     val verb = args[0]
     val library = args[1]
     val options = parseArgs(args.drop(2).toTypedArray())
@@ -103,11 +107,11 @@ open class ModuleDeserializer(val library: ByteArray) {
 
 }
 
-class Library(val name: String, val requestedRepository: String?, val target: String) {
+class Library(val libraryNameOrPath: String, val requestedRepository: String?, val target: String) {
 
     val repository = requestedRepository?.File() ?: defaultRepository
     fun info() {
-        val library = libraryInRepoOrCurrentDir(repository, name)
+        val library = libraryInRepoOrCurrentDir(repository, libraryNameOrPath)
         val headerAbiVersion = library.versions.abiVersion
         val headerCompilerVersion = library.versions.compilerVersion
         val headerLibraryVersion = library.versions.libraryVersion
@@ -136,20 +140,22 @@ class Library(val name: String, val requestedRepository: String?, val target: St
             repository.mkdirs()
         }
 
-        Library(File(name).name.removeSuffix(KLIB_FILE_EXTENSION_WITH_DOT), requestedRepository, target).remove(true)
+        val libraryTrueName = File(libraryNameOrPath).name.removeSuffixIfPresent(KLIB_FILE_EXTENSION_WITH_DOT)
+        val library = libraryInCurrentDir(libraryNameOrPath)
 
-        val library = libraryInCurrentDir(name)
-        val newLibDir = File(repository, library.libraryFile.name.removeSuffix(KLIB_FILE_EXTENSION_WITH_DOT))
+        val installLibDir = File(repository, libraryTrueName)
 
-        library.libraryFile.unpackZippedKonanLibraryTo(newLibDir)
+        if (installLibDir.exists) installLibDir.deleteRecursively()
+
+        library.libraryFile.unpackZippedKonanLibraryTo(installLibDir)
     }
 
     fun remove(blind: Boolean = false) {
         if (!repository.exists) error("Repository does not exist: $repository")
 
         val library = try {
-            val library = libraryInRepo(repository, name)
-            if (blind) warn("Removing The previously installed $name from $repository.")
+            val library = libraryInRepo(repository, libraryNameOrPath)
+            if (blind) warn("Removing The previously installed $libraryNameOrPath from $repository.")
             library
 
         } catch (e: Throwable) {
@@ -160,10 +166,24 @@ class Library(val name: String, val requestedRepository: String?, val target: St
         library?.libraryFile?.deleteRecursively()
     }
 
-    fun contents(output: Appendable = out) {
+    fun contents(output: Appendable, printSignatures: Boolean) {
+        val module = loadModule()
+        val signatureRenderer = if (printSignatures) DefaultIdSignatureRenderer("// ID signature: ") else IdSignatureRenderer.NO_SIGNATURE
+        val printer = DeclarationPrinter(output, DefaultDeclarationHeaderRenderer, signatureRenderer)
 
+        printer.print(module)
+    }
+
+    fun signatures(output: Appendable) {
+        val module = loadModule()
+        val printer = SignaturePrinter(output, DefaultIdSignatureRenderer())
+
+        printer.print(module)
+    }
+
+    private fun loadModule(): ModuleDescriptor {
         val storageManager = LockBasedStorageManager("klib")
-        val library = libraryInRepoOrCurrentDir(repository, name)
+        val library = libraryInRepoOrCurrentDir(repository, libraryNameOrPath)
         val versionSpec = LanguageVersionSettingsImpl(currentLanguageVersion, currentApiVersion)
         val module = KlibFactories.DefaultDeserializedDescriptorFactory.createDescriptorAndNewBuiltIns(library, versionSpec, storageManager, null)
 
@@ -173,19 +193,18 @@ class Library(val name: String, val requestedRepository: String?, val target: St
                     emptyList(),
                     distributionKlib = Distribution(KonanHomeProvider.determineKonanHome()).klib,
                     skipCurrentDir = true,
-                    logger = KlibToolLogger)
-            resolver.defaultLinks(false, true, true)
-                    .mapTo(defaultModules) {
-                        KlibFactories.DefaultDeserializedDescriptorFactory.createDescriptor(
-                                it, versionSpec, storageManager, module.builtIns, null)
-                    }
+                    logger = KlibToolLogger
+            )
+            resolver.defaultLinks(false, true, true).mapTo(defaultModules) {
+                KlibFactories.DefaultDeserializedDescriptorFactory.createDescriptor(it, versionSpec, storageManager, module.builtIns, null)
+            }
         }
 
         (defaultModules + module).let { allModules ->
             allModules.forEach { it.setDependencies(allModules) }
         }
 
-        KlibPrinter(output).print(module)
+        return module
     }
 }
 
@@ -208,15 +227,17 @@ fun main(args: Array<String>) {
     val target = targetManager.targetName
 
     val repository = command.options["-repository"]?.last()
+    val printSignatures = command.options["-print-signatures"]?.last()?.toBoolean() == true
 
     val library = Library(command.library, repository, target)
 
     when (command.verb) {
-        "contents"  -> library.contents()
-        "info"      -> library.info()
-        "install"   -> library.install()
-        "remove"    -> library.remove()
-        else        -> error("Unknown command ${command.verb}.")
+        "contents" -> library.contents(System.out, printSignatures)
+        "signatures" -> library.signatures(System.out)
+        "info" -> library.info()
+        "install" -> library.install()
+        "remove" -> library.remove()
+        else -> error("Unknown command ${command.verb}.")
     }
 }
 

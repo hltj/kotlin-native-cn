@@ -13,19 +13,15 @@ import org.jetbrains.kotlin.backend.common.lower.*
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFieldImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrPropertyImpl
-import org.jetbrains.kotlin.ir.descriptors.WrappedPropertyDescriptor
-import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
 import org.jetbrains.kotlin.ir.expressions.*
-import org.jetbrains.kotlin.ir.expressions.impl.IrBlockImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrCallImpl
-import org.jetbrains.kotlin.ir.expressions.impl.IrGetObjectValueImpl
 import org.jetbrains.kotlin.ir.symbols.*
 import org.jetbrains.kotlin.ir.symbols.impl.IrFieldSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrPropertySymbolImpl
@@ -35,7 +31,6 @@ import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.visitors.*
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.utils.addIfNotNull
 
 /**
  * Boxes and unboxes values of value types when necessary.
@@ -93,11 +88,13 @@ private class AutoboxingTransformer(val context: Context) : AbstractValueUsageTr
     override fun IrExpression.useAs(type: IrType): IrExpression {
         if (this.isNullConst() && type.isNullablePointer()) {
             // TODO: consider using IrConst with proper type.
-            return IrCallImpl(
+            return IrCallImpl.fromSymbolDescriptor(
                     startOffset,
                     endOffset,
                     symbols.getNativeNullPtr.owner.returnType,
-                    symbols.getNativeNullPtr
+                    symbols.getNativeNullPtr,
+                    symbols.getNativeNullPtr.owner.typeParameters.size,
+                    symbols.getNativeNullPtr.owner.valueParameters.size
             ).uncheckedCast(type)
         }
 
@@ -121,7 +118,6 @@ private class AutoboxingTransformer(val context: Context) : AbstractValueUsageTr
 
             else -> this.type
         }
-
         return this.adaptIfNecessary(actualType, type)
     }
 
@@ -165,7 +161,8 @@ private class AutoboxingTransformer(val context: Context) : AbstractValueUsageTr
             val parameter = conversion.owner.explicitParameters.single()
             val argument = this.uncheckedCast(parameter.type)
 
-            IrCallImpl(startOffset, endOffset, conversion.owner.returnType, conversion).apply {
+            IrCallImpl(startOffset, endOffset, conversion.owner.returnType, conversion,
+                    conversion.owner.typeParameters.size, conversion.owner.valueParameters.size).apply {
                 addArguments(mapOf(parameter to argument))
             }.uncheckedCast(this.type) // Try not to bring new type incompatibilities.
         }
@@ -227,7 +224,7 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
 
         if (declaration.isInlined()) {
             if (declaration.isUsedAsBoxClass()) {
-                if (KonanPrimitiveType.byFqName[declaration.fqNameForIrSerialization.toUnsafe()] != null) {
+                if (declaration.isNativePrimitiveType()) {
                     buildBoxField(declaration)
                 }
 
@@ -235,8 +232,13 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
                 buildUnboxFunction(declaration, context.getUnboxFunction(declaration))
             }
 
-            declaration.constructors.filter { !it.isPrimary }.toList().mapTo(declaration.declarations) {
-                context.getLoweredInlineClassConstructor(it)
+            if (declaration.isNativePrimitiveType()) {
+                // Constructors for these types aren't used and actually are malformed (e.g. lack the parameter).
+                // Skipping here for simplicity.
+            } else {
+                declaration.constructors.toList().mapTo(declaration.declarations) {
+                    context.getLoweredInlineClassConstructor(it)
+                }
             }
         }
 
@@ -264,19 +266,14 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
         super.visitSetField(expression)
 
         return if (expression.symbol.owner.parentClassOrNull?.isInlined() == true) {
-            // TODO: it is better to get rid of functions setting such fields.
-            // Here we're trying to maintain all IR nodes as is, albeit the transformed IR isn't equivalent to the original.
-            // By far SET_FIELD can only be in the constructor which won't be codegened.
-            // Box functions use createUninitializedInstance instead of constructor calls
-            // and are placed separately so they won't be processed here.
-            val startOffset = expression.startOffset
-            val endOffset = expression.endOffset
-            IrBlockImpl(startOffset, endOffset, irBuiltIns.unitType).apply {
-                statements.addIfNotNull(expression.receiver)
-                statements += expression.value
-                statements += IrCallImpl(startOffset, endOffset, irBuiltIns.nothingType, symbols.throwNullPointerException)
-                statements += IrGetObjectValueImpl(startOffset, endOffset, irBuiltIns.unitType, irBuiltIns.unitClass)
-            }
+            // Happens in one of the cases:
+            // 1. In primary constructor of the inlined class. Makes no sense, "has no effect", can be removed.
+            //    The constructor will be lowered and used.
+            // 2. In setter of NativePointed.rawPtr. It is generally a hack and isn't actually used.
+            //    TODO: it is better to get rid of it.
+            //
+            // So drop the entire IrSetField:
+            return builder.irComposite(expression) {}
         } else {
             expression
         }
@@ -297,14 +294,41 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
         super.visitConstructor(declaration)
 
         if (declaration.constructedClass.isInlined()) {
-            if (!declaration.isPrimary) {
-                buildLoweredSecondaryConstructor(declaration)
+            if (declaration.constructedClass.isNativePrimitiveType()) {
+                // Constructors for these types aren't used and actually are malformed (e.g. lack the parameter).
+                // Skipping here for simplicity.
+            } else {
+                buildLoweredConstructor(declaration)
             }
             // TODO: fix DFG building and nullify the body instead.
             (declaration.body as IrBlockBody).statements.clear()
         }
 
         return declaration
+    }
+
+    override fun visitCall(expression: IrCall): IrExpression {
+        expression.transformChildrenVoid(this)
+        // Make replacement only in optimized builds due to separate compilation and possibility to get broken
+        // debug information.
+        if (!context.shouldOptimize())
+            return expression
+
+        val property = expression.symbol.owner.correspondingPropertySymbol?.owner ?: return expression
+
+        property.parent.let {
+            if (it is IrClass && it.isInline && property.backingField != null) {
+                expression.dispatchReceiver?.let { receiver ->
+                    return builder.at(expression)
+                            .irCall(symbols.reinterpret, expression.type, listOf(receiver.type, expression.type))
+                            .apply {
+                                extensionReceiver = receiver
+                            }
+                }
+            }
+        }
+
+        return expression
     }
 
     private fun IrBuilderWithScope.irIsNull(expression: IrExpression): IrExpression {
@@ -388,16 +412,15 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
     private fun buildBoxField(declaration: IrClass) {
         val startOffset = declaration.startOffset
         val endOffset = declaration.endOffset
-        val descriptor = WrappedPropertyDescriptor()
 
         val irField = IrFieldImpl(
                 startOffset,
                 endOffset,
                 IrDeclarationOrigin.DEFINED,
-                IrFieldSymbolImpl(descriptor),
+                IrFieldSymbolImpl(),
                 Name.identifier("value"),
                 declaration.defaultType,
-                Visibilities.PRIVATE,
+                DescriptorVisibilities.PRIVATE,
                 isFinal = true,
                 isExternal = false,
                 isStatic = false,
@@ -408,7 +431,7 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
                 startOffset,
                 endOffset,
                 IrDeclarationOrigin.DEFINED,
-                IrPropertySymbolImpl(descriptor),
+                IrPropertySymbolImpl(),
                 irField.name,
                 irField.visibility,
                 Modality.FINAL,
@@ -418,7 +441,6 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
                 isDelegated = false,
                 isExternal = false
         )
-        descriptor.bind(irProperty)
         irProperty.backingField = irField
 
         declaration.addChild(irProperty)
@@ -427,22 +449,35 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
     private fun IrBuilderWithScope.lowerConstructorCallToValue(
             expression: IrMemberAccessExpression<*>,
             callee: IrConstructor
-    ): IrExpression = if (callee.isPrimary) {
-        expression.getValueArgument(0)!!
-    } else {
-        this.at(expression).irCall(this@InlineClassTransformer.context.getLoweredInlineClassConstructor(callee)).apply {
+    ): IrExpression {
+        this.at(expression)
+        val loweredConstructor = this@InlineClassTransformer.context.getLoweredInlineClassConstructor(callee)
+        return if (callee.isPrimary) this.irBlock {
+            val argument = irTemporary(expression.getValueArgument(0)!!)
+            +irCall(loweredConstructor).apply {
+                putValueArgument(0, irGet(argument))
+            }
+            +irGet(argument)
+        } else this.irCall(loweredConstructor).apply {
             (0 until expression.valueArgumentsCount).forEach {
                 putValueArgument(it, expression.getValueArgument(it)!!)
             }
         }
     }
 
-    private fun buildLoweredSecondaryConstructor(irConstructor: IrConstructor) {
+    private fun buildLoweredConstructor(irConstructor: IrConstructor) {
         val result = context.getLoweredInlineClassConstructor(irConstructor)
         val irClass = irConstructor.parentAsClass
 
         result.body = context.createIrBuilder(result.symbol).irBlockBody(result) {
-            lateinit var thisVar: IrVariable
+            lateinit var thisVar: IrValueDeclaration
+
+            fun IrBuilderWithScope.genReturnValue(): IrExpression = if (irConstructor.isPrimary) {
+                irGetObject(irBuiltIns.unitClass)
+            } else {
+                irGet(thisVar)
+            }
+
             val parameterMapping = result.valueParameters.associateBy {
                 irConstructor.valueParameters[it.index].symbol
             }
@@ -453,9 +488,14 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
                     override fun visitDelegatingConstructorCall(expression: IrDelegatingConstructorCall): IrExpression {
                         expression.transformChildrenVoid()
 
-                        val value = lowerConstructorCallToValue(expression, expression.symbol.owner)
                         return irBlock(expression) {
-                            thisVar = irTemporary(value)
+                            thisVar = if (irConstructor.isPrimary) {
+                                // Note: block is empty in this case.
+                                result.valueParameters.single()
+                            } else {
+                                val value = lowerConstructorCallToValue(expression, expression.symbol.owner)
+                                irTemporary(value)
+                            }
                         }
                     }
 
@@ -469,12 +509,18 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
                         return expression
                     }
 
+                    override fun visitSetValue(expression: IrSetValue): IrExpression {
+                        expression.transformChildrenVoid()
+                        parameterMapping[expression.symbol]?.let { return irSet(it.symbol, expression.value) }
+                        return expression
+                    }
+
                     override fun visitReturn(expression: IrReturn): IrExpression {
                         expression.transformChildrenVoid()
                         if (expression.returnTargetSymbol == irConstructor.symbol) {
                             return irReturn(irBlock(expression.startOffset, expression.endOffset) {
                                 +expression.value
-                                +irGet(thisVar)
+                                +genReturnValue()
                             })
                         }
 
@@ -482,7 +528,7 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
                     }
                 })
             }
-            +irReturn(irGet(thisVar))
+            +irReturn(genReturnValue())
         }
     }
 
@@ -492,13 +538,21 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
 
 private val Context.getLoweredInlineClassConstructor: (IrConstructor) -> IrSimpleFunction by Context.lazyMapMember { irConstructor ->
     require(irConstructor.constructedClass.isInlined())
-    require(!irConstructor.isPrimary)
 
-    val descriptor = WrappedSimpleFunctionDescriptor(irConstructor.descriptor.annotations, irConstructor.descriptor.source)
+    val returnType = if (irConstructor.isPrimary) {
+        // Optimization. When constructor is primary, the return value will be the same as the argument.
+        // So we can just use the argument on the call site.
+        // This might be especially important for reference types,
+        // to avoid redundant suboptimal "slot" machinery messing with this code.
+        irBuiltIns.unitType
+    } else {
+        irConstructor.returnType
+    }
+
     IrFunctionImpl(
             irConstructor.startOffset, irConstructor.endOffset,
             IrDeclarationOrigin.DEFINED,
-            IrSimpleFunctionSymbolImpl(descriptor),
+            IrSimpleFunctionSymbolImpl(),
             Name.special("<constructor>"),
             irConstructor.visibility,
             Modality.FINAL,
@@ -506,14 +560,20 @@ private val Context.getLoweredInlineClassConstructor: (IrConstructor) -> IrSimpl
             isExternal = false,
             isTailrec = false,
             isSuspend = false,
-            returnType = irConstructor.returnType,
+            returnType = returnType,
             isExpect = false,
             isFakeOverride = false,
             isOperator = false,
             isInfix = false
     ).apply {
-        descriptor.bind(this)
         parent = irConstructor.parent
-        valueParameters += irConstructor.valueParameters.map { it.copyTo(this) }
+
+        // Note: technically speaking, this function doesn't have access to class type parameters (since it is "static").
+        // But, technically speaking, otherwise we would have to remap types in the entire IR subtree,
+        // which is an overkill here, because type parameters don't matter at this phase of compilation and later.
+        // So it is just a trick to make [copyTo] happy:
+        val remapTypeMap = irConstructor.constructedClass.typeParameters.associateBy { it }
+
+        valueParameters += irConstructor.valueParameters.map { it.copyTo(this, remapTypeMap = remapTypeMap) }
     }
 }

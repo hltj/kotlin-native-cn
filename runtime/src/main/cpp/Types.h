@@ -27,6 +27,7 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <memory>
 #include <string>
 #include <set>
 #include <unordered_map>
@@ -60,6 +61,8 @@ typedef ObjHeader* KRef;
 typedef const ObjHeader* KConstRef;
 typedef const ArrayHeader* KString;
 
+// TODO: Consider moving these into `kotlin::std_support` namespace keeping STL names.
+
 // Definitions of STL classes used inside Konan runtime.
 typedef std::basic_string<char, std::char_traits<char>,
                           KonanAllocator<char>> KStdString;
@@ -81,6 +84,13 @@ template<class Value>
 using KStdVector = std::vector<Value, KonanAllocator<Value>>;
 template<class Value>
 using KStdList = std::list<Value, KonanAllocator<Value>>;
+template <class Value>
+using KStdUniquePtr = std::unique_ptr<Value, KonanDeleter<Value>>;
+
+template <typename T, typename... Args>
+KStdUniquePtr<T> make_unique(Args&&... args) noexcept {
+    return KStdUniquePtr<T>(konanConstructInstance<T>(std::forward<Args>(args)...));
+}
 
 #ifdef __cplusplus
 extern "C" {
@@ -106,8 +116,10 @@ extern const TypeInfo* theStringTypeInfo;
 extern const TypeInfo* theThrowableTypeInfo;
 extern const TypeInfo* theUnitTypeInfo;
 extern const TypeInfo* theWorkerBoundReferenceTypeInfo;
+extern const TypeInfo* theCleanerImplTypeInfo;
 
 KBoolean IsInstance(const ObjHeader* obj, const TypeInfo* type_info) RUNTIME_PURE;
+KBoolean IsInstanceOfClassFast(const ObjHeader* obj, int32_t lo, int32_t hi) RUNTIME_PURE;
 void CheckCast(const ObjHeader* obj, const TypeInfo* type_info);
 KBoolean IsArray(KConstRef obj) RUNTIME_PURE;
 bool IsSubInterface(const TypeInfo* thiz, const TypeInfo* other) RUNTIME_PURE;

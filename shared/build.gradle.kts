@@ -37,6 +37,7 @@ version = konanVersion
 
 repositories {
     maven("https://cache-redirector.jetbrains.com/maven-central")
+    mavenCentral()
     maven(kotlinCompilerRepo)
     maven(buildKotlinCompilerRepo)
 }
@@ -53,6 +54,7 @@ sourceSets["main"].withConvention(KotlinSourceSet::class) {
 tasks.withType<KotlinCompile> {
     dependsOn(generateCompilerVersion)
     kotlinOptions.jvmTarget = "1.8"
+    kotlinOptions.freeCompilerArgs = listOf("-Xskip-prerelease-check")
 }
 
 tasks.clean {

@@ -97,13 +97,13 @@ class BenchmarksIndexesDispatcher(connector: ElasticSearchConnector, val feature
     }
 
     // Get benchmarks values of needed metric for choosen build number.
-    fun getSamples(metricName: String, featureValue: String = "", samples: List<String>,
+    fun getSamples(metricName: String, featureValue: String = "", samples: List<String>, buildsCountToShow: Int,
                    buildNumbers: Iterable<String>? = null,
                    normalize: Boolean = false): Promise<List<Pair<String, Array<Double?>>>> {
         val queryDescription = """
             {
                 "_source": ["buildNumber"],
-                "size": 1000,
+                "size": ${samples.size * buildsCountToShow},
                 "query": {
                     "bool": {
                         "must": [ 
@@ -255,7 +255,8 @@ class BenchmarksIndexesDispatcher(connector: ElasticSearchConnector, val feature
     // Get geometric mean for benchmarks values of needed metric.
     fun getGeometricMean(metricName: String, featureValue: String = "",
                          buildNumbers: Iterable<String>? = null, normalize: Boolean = false,
-                         excludeNames: List<String> = emptyList()): Promise<List<Pair<String, List<Double>>>> {
+                         excludeNames: List<String> = emptyList()): Promise<List<Pair<String, List<Double?>>>> {
+
         // Filter only with metric or also with names.
         val filterBenchmarks = if (excludeNames.isEmpty())
             """
@@ -264,7 +265,7 @@ class BenchmarksIndexesDispatcher(connector: ElasticSearchConnector, val feature
         else """
             "bool": { 
                 "must": { "match": { "benchmarks.metric": "$metricName" } },
-                "must_not": { "terms" : { "benchmarks.name" : [${excludeNames.map { "\"$it\"" }.joinToString()}] } }
+                "must_not": [ ${excludeNames.map { """{ "match_phrase" : { "benchmarks.name" : "$it" } }"""}.joinToString() } ]
             }
         """.trimIndent()
         val queryDescription = """
@@ -345,9 +346,9 @@ class BenchmarksIndexesDispatcher(connector: ElasticSearchConnector, val feature
                             .getObject("metric_samples")
                             .getObject("buckets")
                             .getObject("samples")
-                            .getObject("geom_mean")
-                            .getPrimitive("value")
-                            .double
+                            .getObjectOrNull("geom_mean")
+                            ?.getPrimitive("value")
+                            ?.double
                     )
                 }
             } ?: listOf("golden" to listOf(aggregations
@@ -355,9 +356,9 @@ class BenchmarksIndexesDispatcher(connector: ElasticSearchConnector, val feature
                     .getObject("metric_samples")
                     .getObject("buckets")
                     .getObject("samples")
-                    .getObject("geom_mean")
-                    .getPrimitive("value")
-                    .double
+                    .getObjectOrNull("geom_mean")
+                    ?.getPrimitive("value")
+                    ?.double
                 )
             )
         }

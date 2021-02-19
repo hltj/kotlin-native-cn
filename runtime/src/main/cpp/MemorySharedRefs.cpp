@@ -4,7 +4,6 @@
  */
 
 #include "Exceptions.h"
-#include "MemoryPrivate.hpp"
 #include "MemorySharedRefs.hpp"
 #include "Runtime.h"
 #include "Types.h"
@@ -17,14 +16,12 @@ OBJ_GETTER(DescribeObjectForDebugging, KConstNativePtr typeInfo, KConstNativePtr
 namespace {
 
 inline bool isForeignRefAccessible(ObjHeader* object, ForeignRefContext context) {
-  if (!Kotlin_hasRuntime()) {
-    // So the object is either unowned or shared.
+    // If runtime has not been initialized on this thread, then the object is either unowned or shared.
     // In the former case initialized runtime is required to throw exceptions
     // in the latter case -- to provide proper execution context for caller.
     Kotlin_initRuntimeIfNeeded();
-  }
 
-  return IsForeignRefAccessible(object, context);
+    return IsForeignRefAccessible(object, context);
 }
 
 RUNTIME_NORETURN inline void throwIllegalSharingException(ObjHeader* object) {
@@ -127,6 +124,8 @@ void BackRefFromAssociatedObject::addRef() {
   static_assert(errorPolicy != ErrorPolicy::kDefaultValue, "Cannot use default return value here");
 
   if (atomicAdd(&refCount, 1) == 1) {
+    if (obj_ == nullptr) return; // E.g. after [detach].
+
     // There are no references to the associated object itself, so Kotlin object is being passed from Kotlin,
     // and it is owned therefore.
     ensureRefAccessible<errorPolicy>(obj_, context_); // TODO: consider removing explicit verification.
@@ -144,6 +143,8 @@ template <ErrorPolicy errorPolicy>
 bool BackRefFromAssociatedObject::tryAddRef() {
   static_assert(errorPolicy != ErrorPolicy::kDefaultValue, "Cannot use default return value here");
 
+  if (obj_ == nullptr) return false; // E.g. after [detach].
+
   // Suboptimal but simple:
   ensureRefAccessible<errorPolicy>(obj_, context_);
 
@@ -153,7 +154,7 @@ bool BackRefFromAssociatedObject::tryAddRef() {
   RuntimeAssert(isForeignRefAccessible(obj_, context_), "Cannot be inaccessible because of the check above");
   // TODO: This is a very weird way to ask for "unsafe" addRef.
   addRef<ErrorPolicy::kIgnore>();
-  ReleaseHeapRef(obj); // Balance TryAddHeapRef.
+  ReleaseHeapRefNoCollect(obj); // Balance TryAddHeapRef.
   // TODO: consider optimizing for non-shared objects.
 
   return true;
@@ -165,16 +166,26 @@ template bool BackRefFromAssociatedObject::tryAddRef<ErrorPolicy::kTerminate>();
 void BackRefFromAssociatedObject::releaseRef() {
   ForeignRefContext context = context_;
   if (atomicAdd(&refCount, -1) == 0) {
+    if (obj_ == nullptr) return; // E.g. after [detach].
+
     // Note: by this moment "subsequent" addRef may have already happened and patched context_.
     // So use the value loaded before refCount update:
     DeinitForeignRef(obj_, context);
     // From this moment [context] is generally a dangling pointer.
     // This is handled in [IsForeignRefAccessible] and [addRef].
+    // TODO: This probably isn't fine in new MM. Make sure it works.
   }
+}
+
+void BackRefFromAssociatedObject::detach() {
+  RuntimeAssert(atomicGet(&refCount) == 0, "unexpected refCount");
+  obj_ = nullptr; // Handled in addRef/tryAddRef/releaseRef/ref.
 }
 
 template <ErrorPolicy errorPolicy>
 ObjHeader* BackRefFromAssociatedObject::ref() const {
+  RuntimeAssert(obj_ != nullptr, "no valid Kotlin object found");
+
   if (!ensureRefAccessible<errorPolicy>(obj_, context_)) {
     return nullptr;
   }

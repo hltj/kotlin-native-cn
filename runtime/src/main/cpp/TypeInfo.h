@@ -54,6 +54,7 @@ enum Konan_RuntimeType {
 };
 
 // Flags per type.
+// Keep in sync with constants in RTTIGenerator.
 enum Konan_TypeFlags {
   TF_IMMUTABLE = 1 << 0,
   TF_ACYCLIC   = 1 << 1,
@@ -61,6 +62,8 @@ enum Konan_TypeFlags {
   TF_OBJC_DYNAMIC = 1 << 3,
   TF_LEAK_DETECTOR_CANDIDATE = 1 << 4,
   TF_SUSPEND_FUNCTION = 1 << 5,
+  TF_HAS_FINALIZER = 1 << 6,
+  TF_HAS_FREEZE_HOOK = 1 << 7,
 };
 
 // Flags per object instance.
@@ -155,6 +158,8 @@ struct TypeInfo {
     inline VTableElement* vtable() {
       return reinterpret_cast<VTableElement*>(this + 1);
     }
+
+    inline bool IsArray() const { return instanceSize_ < 0; }
 #endif
 };
 

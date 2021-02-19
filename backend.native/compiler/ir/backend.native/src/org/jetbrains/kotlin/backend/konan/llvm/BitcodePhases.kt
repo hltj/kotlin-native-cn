@@ -12,13 +12,13 @@ import org.jetbrains.kotlin.backend.common.phaser.PhaserState
 import org.jetbrains.kotlin.backend.common.phaser.namedUnitPhase
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.GlobalHierarchyAnalysis
+import org.jetbrains.kotlin.backend.konan.lower.RedundantCoercionsCleaner
 import org.jetbrains.kotlin.backend.konan.optimizations.*
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.visitors.*
-import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.util.OperatorNameConventions
 import org.jetbrains.kotlin.utils.addToStdlib.cast
 
@@ -74,6 +74,16 @@ internal val disposeLLVMPhase = namedUnitPhase(
         }
 )
 
+internal val freeNativeMemPhase = namedUnitPhase(
+        name = "FreeNativeMem",
+        description = "Free native memory used by interop",
+        lower = object : CompilerPhase<Context, Unit, Unit> {
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<Unit>, context: Context, input: Unit) {
+                context.freeNativeMem()
+            }
+        }
+)
+
 internal val RTTIPhase = makeKonanModuleOpPhase(
         name = "RTTI",
         description = "RTTI generation",
@@ -98,18 +108,6 @@ internal val buildDFGPhase = makeKonanModuleOpPhase(
         }
 )
 
-internal val deserializeDFGPhase = makeKonanModuleOpPhase(
-        name = "DeserializeDFG",
-        description = "Data flow graph deserializing",
-        op = { context, _ ->
-            context.externalModulesDFG = DFGSerializer.deserialize(
-                    context,
-                    context.moduleDFG!!.symbolTable.privateTypeIndex,
-                    context.moduleDFG!!.symbolTable.privateFunIndex
-            )
-        }
-)
-
 internal val devirtualizationPhase = makeKonanModuleOpPhase(
         name = "Devirtualization",
         description = "Devirtualization",
@@ -119,6 +117,12 @@ internal val devirtualizationPhase = makeKonanModuleOpPhase(
                     irModule, context, context.moduleDFG!!, ExternalModulesDFG(emptyList(), emptyMap(), emptyMap(), emptyMap())
             )
         }
+)
+
+internal val redundantCoercionsCleaningPhase = makeKonanModuleOpPhase(
+        name = "RedundantCoercionsCleaning",
+        description = "Redundant coercions cleaning",
+        op = { context, irModule -> irModule.files.forEach { RedundantCoercionsCleaner(context).lower(it) } }
 )
 
 internal val ghaPhase = makeKonanModuleOpPhase(
@@ -141,10 +145,15 @@ internal val dcePhase = makeKonanModuleOpPhase(
                     context, context.moduleDFG!!,
                     externalModulesDFG,
                     context.devirtualizationAnalysisResult!!,
-                    true
+                    // For DCE we don't wanna miss any potentially reachable function.
+                    nonDevirtualizedCallSitesUnfoldFactor = Int.MAX_VALUE
             ).build()
 
             val referencedFunctions = mutableSetOf<IrFunction>()
+            callGraph.rootExternalFunctions.forEach {
+                if (!it.isGlobalInitializer)
+                    referencedFunctions.add(it.irFunction ?: error("No IR for: $it"))
+            }
             for (node in callGraph.directEdges.values) {
                 if (!node.symbol.isGlobalInitializer)
                     referencedFunctions.add(node.symbol.irFunction ?: error("No IR for: ${node.symbol}"))
@@ -212,22 +221,35 @@ internal val dcePhase = makeKonanModuleOpPhase(
 )
 
 internal val escapeAnalysisPhase = makeKonanModuleOpPhase(
-        // Disabled by default !!!!
         name = "EscapeAnalysis",
         description = "Escape analysis",
-        prerequisite = setOf(buildDFGPhase, deserializeDFGPhase), // TODO: Requires devirtualization.
+        prerequisite = setOf(buildDFGPhase, devirtualizationPhase),
         op = { context, _ ->
-            context.externalModulesDFG?.let { externalModulesDFG ->
-                val callGraph = CallGraphBuilder(
-                        context, context.moduleDFG!!,
-                        externalModulesDFG,
-                        context.devirtualizationAnalysisResult!!,
-                        false
-                ).build()
-                EscapeAnalysis.computeLifetimes(
-                        context, context.moduleDFG!!, externalModulesDFG, callGraph, context.lifetimes
-                )
-            }
+            val entryPoint = context.ir.symbols.entryPoint?.owner
+            val externalModulesDFG = ExternalModulesDFG(emptyList(), emptyMap(), emptyMap(), emptyMap())
+            val nonDevirtualizedCallSitesUnfoldFactor =
+                    if (entryPoint != null) {
+                        // For a final program it can be safely assumed that what classes we see is what we got,
+                        // so can take those. In theory we can always unfold call sites using type hierarchy, but
+                        // the analysis might converge much, much slower, so take only reasonably small for now.
+                        5
+                    }
+                    else {
+                        // Can't tolerate any non-devirtualized call site for a library.
+                        // TODO: What about private virtual functions?
+                        // Note: 0 is also bad - this means that there're no inheritors in the current source set,
+                        // but there might be some provided by the users of the library being produced.
+                        -1
+                    }
+            val callGraph = CallGraphBuilder(
+                    context, context.moduleDFG!!,
+                    externalModulesDFG,
+                    context.devirtualizationAnalysisResult!!,
+                    nonDevirtualizedCallSitesUnfoldFactor
+            ).build()
+            EscapeAnalysis.computeLifetimes(
+                    context, context.moduleDFG!!, externalModulesDFG, callGraph, context.lifetimes
+            )
         }
 )
 
@@ -237,15 +259,6 @@ internal val localEscapeAnalysisPhase = makeKonanModuleOpPhase(
         prerequisite = setOf(buildDFGPhase, devirtualizationPhase),
         op = { context, _ ->
             LocalEscapeAnalysis.computeLifetimes(context, context.moduleDFG!!, context.lifetimes)
-        }
-)
-
-internal val serializeDFGPhase = makeKonanModuleOpPhase(
-        name = "SerializeDFG",
-        description = "Data flow graph serializing",
-        prerequisite = setOf(buildDFGPhase), // TODO: Requires escape analysis.
-        op = { context, _ ->
-            DFGSerializer.serialize(context, context.moduleDFG!!)
         }
 )
 

@@ -17,6 +17,7 @@ buildscript {
         maven {
             url 'https://cache-redirector.jetbrains.com/maven-central'
         }
+        mavenCentral()
         maven {
             url buildKotlinCompilerRepo
         }
@@ -28,8 +29,16 @@ buildscript {
     dependencies {
         classpath "org.jetbrains.kotlin:kotlin-native-gradle-plugin:$gradlePluginVersion"
     }
-    ext.useCustomDist = project.hasProperty("konan.home")
+    ext.useCustomDist = project.hasProperty("kotlin.native.home") ||
+            project.hasProperty("org.jetbrains.kotlin.native.home") ||
+            project.hasProperty("konan.home")
+    ext.kotlinNativeDist = project.findProperty("kotlin.native.home")
+            ?: project.findProperty("org.jetbrains.kotlin.native.home")
+            ?: project.findProperty("konan.home")
+            ?: distDir.absolutePath
     if (!useCustomDist) {
+        ext.setProperty("kotlin.native.home", distDir.absolutePath)
+        ext.setProperty("org.jetbrains.kotlin.native.home", distDir.absolutePath)
         ext.setProperty("konan.home", distDir.absolutePath)
     }
 }
@@ -95,7 +104,7 @@ externalStdlibTestsDir.mkdirs()
 ext.platformManager = project.rootProject.platformManager
 ext.target = platformManager.targetManager(project.testTarget).target
 
-ext.testLibraryDir = "${project.property("konan.home")}/klib/platform/${project.target.name}"
+ext.testLibraryDir = "${ext.kotlinNativeDist}/klib/platform/${project.target.name}"
 
 // Add executor to run tests depending on a target
 project.convention.plugins.executor = ExecutorServiceKt.create(project)
@@ -112,8 +121,16 @@ ext.konanNoRun = true
 
 final CacheTesting cacheTesting = CacheTestingKt.configureCacheTesting(project)
 if (cacheTesting != null) {
-    // Note: can't do this in [CacheTesting.configure] since task classes aren't accessible there.
+    // Check for debug build and set the -g option.
+    if (project.globalTestArgs.contains("-opt")) {
+        throw new IllegalArgumentException("Cache testing should be run with debug build. " +
+                "Remove -opt options from the test args")
+    }
+    if (!project.globalTestArgs.contains("-g")) {
+        project.globalTestArgs.add("-g")
+    }
 
+    // Note: can't do this in [CacheTesting.configure] since task classes aren't accessible there.
     tasks.withType(KonanCompileNativeBinary.class).configureEach {
         dependsOn cacheTesting.buildCacheTask
         extraOpts cacheTesting.compilerArgs
@@ -135,6 +152,8 @@ tasks.withType(KonanCompileNativeBinary.class).configureEach {
 tasks.withType(RunExternalTestGroup.class).configureEach {
     enableTwoStageCompilation = twoStageEnabled
 }
+
+ext.isExperimentalMM = project.globalTestArgs.contains("-memory-model") && project.globalTestArgs.contains("experimental")
 
 allprojects {
     // Root directories for test output (logs, compiled files, statistics etc). Only single path must be in each set.
@@ -175,9 +194,9 @@ konanArtifacts {
     }
 }
 
-task installTestLibrary(type: KlibInstall) {
-    dependsOn compileKonanTestLibraryHost
-    klib = konanArtifacts.testLibrary.getArtifactByTarget('host')
+def installTestLib = tasks.register("installTestLibrary", KlibInstall) {
+    dependsOn "compileKonanTestLibraryHost"
+    klib = project.provider { konanArtifacts.testLibrary.getArtifactByTarget('host') }
     repo = rootProject.file(testLibraryDir)
 
     doLast {
@@ -203,6 +222,7 @@ def update_external_tests() {
             include 'compiler/codegen/box/**'
             include 'compiler/codegen/boxInline/**'
             include 'compiler/compileKotlinAgainstKotlin/**'
+            include 'compiler/binaryCompatibility/klibEvolution/**'
             exclude 'stdlib/**'
         }
     }
@@ -406,7 +426,16 @@ Task dynamicTest(String name, Closure<KonanDynamicTest> configureClosure) {
         if (task.enabled) {
             konanArtifacts {
                 def targetName = target.name
+                def lib = task.interop
+                if (lib != null) {
+                    UtilsKt.dependsOnKonanBuildingTask(task, lib, target)
+                }
                 dynamic(name, targets: [targetName]) {
+                    if (lib != null) {
+                        libraries {
+                            artifact lib
+                        }
+                    }
                     srcFiles task.getSources()
                     baseDir  "$testOutputLocal/$name"
                     extraOpts task.flags
@@ -431,6 +460,7 @@ task run_external () {
     // Set up dependencies.
     dependsOn(tasksOf(RunExternalTestGroup))
     dependsOn("stdlibTest")
+    dependsOn("stdlibTestInWorker")
 }
 
 task daily() {
@@ -765,9 +795,7 @@ task array_to_any(type: KonanLocalTest) {
 }
 
 standaloneTest("runtime_basic_init") {
-    disabled = (project.testTarget == 'wasm32') // -g not yet properly works for WASM.
     source = "runtime/basic/init.kt"
-    flags = ['-g']
     expectedExitStatus = 0
 }
 
@@ -786,13 +814,18 @@ task runtime_basic_simd(type: KonanLocalTest) {
 }
 
 task runtime_worker_random(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Uses workers.
+    enabled = (project.testTarget != 'wasm32') && // Uses workers.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     source = "runtime/basic/worker_random.kt"
 }
 
 task hello0(type: KonanLocalTest) {
     goldValue = "Hello, world!\n"
     source = "runtime/basic/hello0.kt"
+}
+
+task stringTrim(type: KonanLocalTest) {
+    source = "codegen/stringTrim/stringTrim.kt"
 }
 
 standaloneTest("hello1") {
@@ -895,87 +928,171 @@ task empty_substring(type: KonanLocalTest) {
     source = "runtime/basic/empty_substring.kt"
 }
 
+standaloneTest("cleaner_basic") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_basic.kt"
+    flags = ['-tr', '-Xopt-in=kotlin.native.internal.InternalForKotlinNative']
+}
+
+standaloneTest("cleaner_workers") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_workers.kt"
+    flags = ['-tr', '-Xopt-in=kotlin.native.internal.InternalForKotlinNative']
+}
+
+standaloneTest("cleaner_in_main_with_checker") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_in_main_with_checker.kt"
+    goldValue = "42\n"
+}
+
+standaloneTest("cleaner_in_main_without_checker") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_in_main_without_checker.kt"
+    goldValue = ""
+}
+
+standaloneTest("cleaner_leak_without_checker") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_leak_without_checker.kt"
+    goldValue = ""
+}
+
+standaloneTest("cleaner_leak_with_checker") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_leak_with_checker.kt"
+    expectedExitStatusChecker = { it != 0 }
+    outputChecker = { s -> (s =~ /Cleaner (0x)?[0-9a-fA-F]+ was disposed during program exit/).find() }
+}
+
+standaloneTest("cleaner_in_tls_main_without_checker") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_in_tls_main_without_checker.kt"
+}
+
+standaloneTest("cleaner_in_tls_main_with_checker") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_in_tls_main_with_checker.kt"
+    expectedExitStatusChecker = { it != 0 }
+    outputChecker = { s -> (s =~ /Cleaner (0x)?[0-9a-fA-F]+ was disposed during program exit/).find() }
+}
+
+standaloneTest("cleaner_in_tls_worker") {
+    enabled = (project.testTarget != 'wasm32') && // Cleaners need workers
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/basic/cleaner_in_tls_worker.kt"
+    flags = ['-Xopt-in=kotlin.native.internal.InternalForKotlinNative']
+}
+
 standaloneTest("worker_bound_reference0") {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     source = "runtime/concurrent/worker_bound_reference0.kt"
     flags = ['-tr']
 }
 
 task worker0(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "Got Input processed\nOK\n"
     source = "runtime/workers/worker0.kt"
 }
 
 task worker1(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "OK\n"
     source = "runtime/workers/worker1.kt"
 }
 
 task worker2(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "OK\n"
     source = "runtime/workers/worker2.kt"
 }
 
 task worker3(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "OK\n"
     source = "runtime/workers/worker3.kt"
 }
 
 task worker4(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "Got 42\nOK\n"
     source = "runtime/workers/worker4.kt"
 }
 
 // This tests changes main thread worker queue state, so better be executed alone.
 standaloneTest("worker5") {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "Got 3\nOK\n"
     source = "runtime/workers/worker5.kt"
 }
 
 task worker6(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "Got 42\nOK\n"
     source = "runtime/workers/worker6.kt"
 }
 
 task worker7(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "Input\nGot kotlin.Unit\nOK\n"
     source = "runtime/workers/worker7.kt"
 }
 
 task worker8(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "SharedData(string=Hello, int=10, member=SharedDataMember(double=0.1))\nGot kotlin.Unit\nOK\n"
     source = "runtime/workers/worker8.kt"
 }
 
 task worker9(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "zzz\n42\nOK\nfirst 2\nsecond 3\nfrozen OK\n"
     source = "runtime/workers/worker9.kt"
 }
 
 task worker10(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "OK\ntrue\ntrue\n"
     source = "runtime/workers/worker10.kt"
 }
 
 task worker11(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "OK\n"
     source = "runtime/workers/worker11.kt"
 }
 
+standaloneTest("worker_threadlocal_no_leak") {
+    disabled = (project.testTarget == 'wasm32') || // Needs pthreads.
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/workers/worker_threadlocal_no_leak.kt"
+}
+
 task freeze0(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // No workers on WASM.
+    enabled = (project.testTarget != 'wasm32') && // No workers on WASM.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "frozen bit is true\n" +
             "Worker: SharedData(string=Hello, int=10, member=SharedDataMember(double=0.1))\n" +
             "Main: SharedData(string=Hello, int=10, member=SharedDataMember(double=0.1))\n" +
@@ -984,19 +1101,22 @@ task freeze0(type: KonanLocalTest) {
 }
 
 task freeze1(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // No exceptions on WASM.
+    enabled = (project.testTarget != 'wasm32') && // No exceptions on WASM.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "OK, cannot mutate frozen\n"
     source = "runtime/workers/freeze1.kt"
 }
 
 task freeze_stress(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // No exceptions on WASM.
+    enabled = (project.testTarget != 'wasm32') && // No exceptions on WASM.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "OK\n"
     source = "runtime/workers/freeze_stress.kt"
 }
 
 task freeze2(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // No exceptions on WASM.
+    enabled = (project.testTarget != 'wasm32') && // No exceptions on WASM.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue =
             "Worker 1: Hello world\n" + "Worker2: 42\n" +
             "Worker3: 239.0\n" + "Worker4: a\n" + "OK\n"
@@ -1004,30 +1124,35 @@ task freeze2(type: KonanLocalTest) {
 }
 
 task freeze3(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // No exceptions on WASM.
+    enabled = (project.testTarget != 'wasm32') && // No exceptions on WASM.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "OK\n"
     source = "runtime/workers/freeze3.kt"
 }
 
 task freeze4(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // No exceptions on WASM.
+    enabled = (project.testTarget != 'wasm32') && // No exceptions on WASM.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "OK\n"
     source = "runtime/workers/freeze4.kt"
 }
 
 task freeze5(type: KonanLocalTest) {
+    enabled = !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "OK\n"
     source = "runtime/workers/freeze5.kt"
 }
 
 task freeze6(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // No exceptions on WASM.
+    enabled = (project.testTarget != 'wasm32') && // No exceptions on WASM.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "OK\nOK\n"
     source = "runtime/workers/freeze6.kt"
 }
 
 task atomic0(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "35\n" + "20\n" + "OK\n"
     source = "runtime/workers/atomic0.kt"
 }
@@ -1039,44 +1164,55 @@ standaloneTest("atomic1") {
 }
 
 task lazy0(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "OK\n"
     source = "runtime/workers/lazy0.kt"
 }
 
 task lazy1(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Need exceptions.
+    enabled = (project.testTarget != 'wasm32') && // Need exceptions.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "OK\n"
     source = "runtime/workers/lazy1.kt"
 }
 
 standaloneTest("lazy2") {
+    enabled = !isExperimentalMM  // Experimental MM does not have a GC yet.
     goldValue = "123\nOK\n"
     source = "runtime/workers/lazy2.kt"
 }
 
 standaloneTest("lazy3") {
+    enabled = !isExperimentalMM  // Experimental MM does not have a GC yet.
     source = "runtime/workers/lazy3.kt"
 }
 
+task mutableData1(type: KonanLocalTest) {
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads. Need exceptions
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "runtime/workers/mutableData1.kt"
+}
+
 task enumIdentity(type: KonanLocalTest) {
-    enabled = (project.testTarget != 'wasm32') // Workers need pthreads.
+    enabled = (project.testTarget != 'wasm32') && // Workers need pthreads.
+        !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     goldValue = "true\n"
     source = "runtime/workers/enum_identity.kt"
 }
 
 standaloneTest("leakWorker") {
-    disabled = project.globalTestArgs.contains('-opt') || (project.testTarget == 'wasm32') // Needs debug build and pthreads.
+    disabled = (project.testTarget == 'wasm32') || // Needs pthreads.
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     source = "runtime/workers/leak_worker.kt"
-    flags = ['-g']
     expectedExitStatusChecker = { it != 0 }
     outputChecker = { s -> s.contains("Unfinished workers detected, 1 workers leaked!") }
 }
 
 standaloneTest("leakMemoryWithWorkerTermination") {
-    disabled = project.globalTestArgs.contains('-opt') || (project.testTarget == 'wasm32') // Needs debug build and pthreads.
+    disabled = (project.testTarget == 'wasm32') || // Needs pthreads.
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     source = "runtime/workers/leak_memory_with_worker_termination.kt"
-    flags = ['-g']
     expectedExitStatusChecker = { it != 0 }
     outputChecker = { s -> s.contains("Memory leaks detected, 1 objects leaked!") }
 }
@@ -1158,6 +1294,7 @@ task enum_nested(type: KonanLocalTest) {
 }
 
 task enum_isFrozen(type: KonanLocalTest) {
+    enabled = !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "true\n"
     source = "codegen/enum/isFrozen.kt"
 }
@@ -1459,6 +1596,10 @@ task bridges_special(type: KonanLocalTest) {
     source = "codegen/bridges/special.kt"
 }
 
+task bridges_specialGeneric(type: KonanLocalTest) {
+    source = "codegen/bridges/specialGeneric.kt"
+}
+
 task bridges_nativePointed(type: KonanLocalTest) {
     source = "codegen/bridges/nativePointed.kt"
 }
@@ -1657,6 +1798,10 @@ task ktype1(type: KonanLocalTest) {
     source = "codegen/ktype/ktype1.kt"
 }
 
+task ktype_nonReified(type: KonanLocalTest) {
+    source = "codegen/ktype/nonReified.kt"
+}
+
 task associatedObjects1(type: KonanLocalTest) {
     source = "codegen/associatedObjects/associatedObjects1.kt"
 }
@@ -1836,6 +1981,11 @@ task coroutines_functionReference_lambdaAsSuspendLambda(type: KonanLocalTest) {
     source = "codegen/coroutines/functionReference_lambdaAsSuspendLambda.kt"
 }
 
+task coroutines_kt41394(type: KonanLocalTest) {
+    goldValue = ""
+    source = "codegen/coroutines/kt41394.kt"
+}
+
 standaloneTest('coroutines_suspendConversion') {
     goldValue = ""
     source = "codegen/coroutines/suspendConversion.kt"
@@ -1895,7 +2045,8 @@ task typed_array0(type: KonanLocalTest) {
 }
 
 task typed_array1(type: KonanLocalTest) {
-    enabled  = (project.testTarget != 'wasm32')  // No exceptions on WASM.
+    enabled  = (project.testTarget != 'wasm32') && // No exceptions on WASM.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "OK\n"
     source = "runtime/collections/typed_array1.kt"
 }
@@ -2067,9 +2218,9 @@ standaloneTest("link_default_libs") {
 
 standaloneTest("link_testLib_explicitly") {
     // there are no testLibrary for cross targets yet.
-    enabled = project.testTarget == null || project.testTarget == project.hostName
+    enabled = project.target.name == project.hostName
 
-    dependsOn 'installTestLibrary'
+    dependsOn installTestLib
     goldValue = "This is a side effect of a test library linked into the binary.\nYou should not be seeing this.\n\nHello\n"
     source = "link/omit/hello.kt"
     // We force library inclusion, so need to see the warning banner.
@@ -2245,6 +2396,11 @@ task hash_map0(type: KonanLocalTest) {
     source = "runtime/collections/hash_map0.kt"
 }
 
+task hash_map1(type: KonanLocalTest) {
+    goldValue = "OK\n"
+    source = "runtime/collections/hash_map1.kt"
+}
+
 task hash_set0(type: KonanLocalTest) {
     goldValue = "OK\n"
     source = "runtime/collections/hash_set0.kt"
@@ -2375,10 +2531,18 @@ standaloneTest("kt-37572") {
 }
 
 standaloneTest("custom_hook") {
-    enabled = (project.testTarget != 'wasm32') // Uses exceptions.
+    enabled = (project.testTarget != 'wasm32') && // Uses exceptions.
+        !isExperimentalMM  // Experimental MM does not support freezing yet.
     goldValue = "value 42: Error\n"
     expectedExitStatus = 1
     source = "runtime/exceptions/custom_hook.kt"
+}
+
+standaloneTest("exception_in_global_init") {
+    enabled = (project.testTarget != 'wasm32') // Uses exceptions.
+    source = "runtime/exceptions/exception_in_global_init.kt"
+    expectedExitStatusChecker = { it != 0 }
+    outputChecker = { s -> s.contains("Uncaught Kotlin exception: kotlin.IllegalStateException: FAIL") && !s.contains("in kotlin main") }
 }
 
 standaloneTest("runtime_math_exceptions") {
@@ -2541,21 +2705,24 @@ standaloneTest("args0") {
 }
 
 standaloneTest("devirtualization_lateinitInterface") {
-    disabled = (cacheTesting != null) // Cache is not compatible with -opt.
+    disabled = (cacheTesting != null) || // Cache is not compatible with -opt.
+        isExperimentalMM // Experimental MM does not support -opt yet.
     goldValue = "42\n"
     flags = ["-opt"]
     source = "codegen/devirtualization/lateinitInterface.kt"
 }
 
 standaloneTest("devirtualization_getter_looking_as_box_function") {
-    disabled = (cacheTesting != null) // Cache is not compatible with -opt.
+    disabled = (cacheTesting != null) || // Cache is not compatible with -opt.
+        isExperimentalMM // Experimental MM does not support -opt yet.
     goldValue = "box\n"
     flags = ["-opt"]
     source = "codegen/devirtualization/getter_looking_as_box_function.kt"
 }
 
 standaloneTest("devirtualization_anonymousObject") {
-    disabled = (cacheTesting != null) // Cache is not compatible with -opt.
+    disabled = (cacheTesting != null) || // Cache is not compatible with -opt.
+        isExperimentalMM // Experimental MM does not support -opt yet.
     goldValue = "zzz\n"
     flags = ["-opt"]
     source = "codegen/devirtualization/anonymousObject.kt"
@@ -2710,6 +2877,14 @@ standaloneTest("lambda14") {
     flags = ['-tr']
 }
 
+task funInterface_implIsNotFunction(type: KonanLocalTest) {
+    source = "codegen/funInterface/implIsNotFunction.kt"
+}
+
+task funInterface_nonTrivialProjectionInSuperType(type: KonanLocalTest) {
+    source = "codegen/funInterface/nonTrivialProjectionInSuperType.kt"
+}
+
 task objectExpression1(type: KonanLocalTest) {
     goldValue = "aabb\n"
     source = "codegen/objectExpression/expr1.kt"
@@ -2751,7 +2926,8 @@ task initializers5(type: KonanLocalTest) {
 }
 
 task initializers6(type: KonanLocalTest) {
-    disabled = project.testTarget == 'wasm32' // Needs workers.
+    disabled = (project.testTarget == 'wasm32') || // Needs workers.
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     source = "runtime/basic/initializers6.kt"
 }
 
@@ -2759,10 +2935,22 @@ task initializers7(type: KonanLocalTest) {
     source = "runtime/basic/initializers7.kt"
 }
 
+task initializers8(type: KonanLocalTest) {
+    source = "runtime/basic/initializers8.kt"
+}
+
 task expression_as_statement(type: KonanLocalTest) {
     expectedFail = (project.testTarget == 'wasm32') // uses exceptions.
     goldValue = "Ok\n"
     source = "codegen/basics/expression_as_statement.kt"
+}
+
+task codegen_escapeAnalysis_zeroOutObjectOnAlloc(type: KonanLocalTest) {
+    source = "codegen/escapeAnalysis/zeroOutObjectOnAlloc.kt"
+}
+
+task codegen_escapeAnalysis_recursion(type: KonanLocalTest) {
+    source = "codegen/escapeAnalysis/recursion.kt"
 }
 
 task memory_var1(type: KonanLocalTest) {
@@ -2797,11 +2985,13 @@ task memory_escape1(type: KonanLocalTest) {
 }
 
 task memory_cycles0(type: KonanLocalTest) {
+    enabled = !isExperimentalMM  // Experimental MM does not have a GC yet.
     goldValue = "42\n"
     source = "runtime/memory/cycles0.kt"
 }
 
 task memory_cycles1(type: KonanLocalTest) {
+    enabled = !isExperimentalMM  // Experimental MM does not have a GC yet.
     source = "runtime/memory/cycles1.kt"
 }
 
@@ -2815,6 +3005,7 @@ task memory_escape2(type: KonanLocalTest) {
 }
 
 task memory_weak0(type: KonanLocalTest) {
+    enabled = !isExperimentalMM  // Experimental MM does not have a GC yet.
     goldValue = "Data(s=Hello)\nnull\nOK\n"
     source = "runtime/memory/weak0.kt"
 }
@@ -2825,24 +3016,26 @@ task memory_weak1(type: KonanLocalTest) {
 }
 
 standaloneTest("memory_only_gc") {
+    enabled = !isExperimentalMM  // Experimental MM does not have a GC yet.
     source = "runtime/memory/only_gc.kt"
 }
 
 task memory_stable_ref_cross_thread_check(type: KonanLocalTest) {
-    disabled = project.testTarget == 'wasm32' // Needs workers.
+    disabled = (project.testTarget == 'wasm32') || // Needs workers.
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     source = "runtime/memory/stable_ref_cross_thread_check.kt"
 }
 
 standaloneTest("cycle_detector") {
     disabled = project.globalTestArgs.contains('-opt') || // Needs debug build.
-               (project.testTarget == 'wasm32') // CycleDetector is disabled on WASM.
+               (project.testTarget == 'wasm32') || // CycleDetector is disabled on WASM.
+               isExperimentalMM  // Experimental MM will not support CycleDetector.
     flags = ['-tr', '-g']
     source = "runtime/memory/cycle_detector.kt"
 }
 
 standaloneTest("cycle_collector") {
     disabled = true // Needs USE_CYCLIC_GC, which is disabled.
-    flags = ['-g']
     source = "runtime/memory/cycle_collector.kt"
 }
 
@@ -2852,11 +3045,20 @@ standaloneTest("cycle_collector_deadlock1") {
 }
 
 standaloneTest("leakMemory") {
-    disabled = project.globalTestArgs.contains('-opt') || (project.testTarget == 'wasm32') // Needs debug build.
     source = "runtime/memory/leak_memory.kt"
-    flags = ['-g']
-    expectedExitStatusChecker = { it != 0 }
-    outputChecker = { s -> s.contains("Memory leaks detected, 1 objects leaked!") }
+    if (!isExperimentalMM) { // Experimental MM will not report memory leaks.
+        expectedExitStatusChecker = { it != 0 }
+        outputChecker = { s -> s.contains("Memory leaks detected, 1 objects leaked!") }
+    }
+}
+
+standaloneTest("leakMemoryWithTestRunner") {
+    source = "runtime/memory/leak_memory_test_runner.kt"
+    flags = ['-tr']
+    if (!isExperimentalMM) { // Experimental MM will not report memory leaks.
+        expectedExitStatusChecker = { it != 0 }
+        outputChecker = { s -> s.contains("Memory leaks detected, 1 objects leaked!") }
+    }
 }
 
 standaloneTest("mpp1") {
@@ -2906,6 +3108,14 @@ task unit3(type: KonanLocalTest) {
 task unit4(type: KonanLocalTest) {
     goldValue = "Done\n"
     source = "codegen/basics/unit4.kt"
+}
+
+task kt42000_1(type: KonanLocalTest) {
+    source = "codegen/basics/k42000_1.kt"
+}
+
+task kt42000_2(type: KonanLocalTest) {
+    source = "codegen/basics/k42000_2.kt"
 }
 
 task inline0(type: KonanLocalTest) {
@@ -3103,6 +3313,11 @@ task inline_defaultArgs(type: KonanLocalTest) {
     source = "codegen/inline/defaultArgs.kt"
 }
 
+task inline_propertyAccessorInline(type: KonanLocalTest) {
+    goldValue = "123\n42\n"
+    source = "codegen/inline/propertyAccessorInline.kt"
+}
+
 task inline_twiceInlinedObject(type: KonanLocalTest) {
     goldValue = "Ok\n"
     source = "codegen/inline/twiceInlinedObject.kt"
@@ -3145,12 +3360,24 @@ task inlineClass_defaultEquals(type: KonanLocalTest) {
     source = "codegen/inlineClass/defaultEquals.kt"
 }
 
+task inlineClass_secondaryConstructorWithGenerics(type: KonanLocalTest) {
+    source = "codegen/inlineClass/secondaryConstructorWithGenerics.kt"
+}
+
+task valueClass0(type: KonanLocalTest) {
+    source = "codegen/inlineClass/valueClass0.kt"
+}
+
 task deserialized_inline0(type: KonanLocalTest) {
     source = "serialization/deserialized_inline0.kt"
 }
 
 task deserialized_listof0(type: KonanLocalTest) {
     source = "serialization/deserialized_listof0.kt"
+}
+
+task deserialized_fields(type: KonanLocalTest) {
+    source = "serialization/deserialized_fields.kt"
 }
 
 task genKt39548 {
@@ -3374,6 +3601,65 @@ standaloneTest("testing_filters") {
     }
 }
 
+standaloneTest("testing_filtered_suites") {
+    source = "testing/filtered_suites.kt"
+    flags = ["-tr", "-ea"]
+
+    def filters = [
+            ["Filtered_suitesKt.*"],    // filter out a class.
+            ["A.*"],                    // filter out a top-level suite.
+            ["*.common"],               // run a test from all suites -> all hooks executed.
+            ["Ignored.*"],              // an ignored suite -> no hooks executed.
+            ["A.ignored"]               // a suite with only ignored tests -> no hooks executed.
+    ]
+    def expectedHooks = [
+            ["Filtered_suitesKt.before", "Filtered_suitesKt.after"],
+            ["A.before", "A.after"],
+            ["A.before", "A.after", "Filtered_suitesKt.before", "Filtered_suitesKt.after"],
+            [],
+            []
+    ]
+
+    multiRuns = true
+    multiArguments = filters.collect {
+        def filter = it.collect { "kotlin.test.tests.$it" }.join(",")
+        ["--ktest_gradle_filter=$filter", "--ktest_logger=SIMPLE"]
+    }
+    outputChecker = { String output ->
+        // The first chunk is empty - drop it.
+        def outputs = output.split("Starting testing\n").drop(1)
+        if (outputs.size() != expectedHooks.size()) {
+            println("Incorrect number of test runs. Expected: ${expectedHooks.size()}, actual: ${outputs.size()}")
+            return false
+        }
+
+        // Check the correct set of hooks was executed on each run.
+        for (int i = 0; i < outputs.size(); i++) {
+            def actual = outputs[i].split('\n')
+                    .findAll { it.startsWith("Hook:") }
+                    .collect { it.replace("Hook: ", "") }
+            def expected = expectedHooks[i]
+
+            if (actual.size() != expected.size()) {
+                println("Incorrect number of executed hooks for run #$i. Expected: ${expected.size()}. Actual: ${actual.size()}")
+                println("Expected hooks: $expected")
+                println("Actual hooks: $actual")
+                return false
+            }
+
+            for (expectedHook in expected) {
+                if (!actual.contains(expectedHook)) {
+                    println("Expected hook wasn't executed for run #$i: $expectedHook")
+                    println("Expected hooks: $expected")
+                    println("Actual hooks: $actual")
+                    return false
+                }
+            }
+        }
+        return true
+    }
+}
+
 // Check that stacktraces and ignored suite are correctly reported in the TC logger.
 standaloneTest("testing_stacktrace") {
     source = "testing/stacktrace.kt"
@@ -3402,13 +3688,14 @@ standaloneTest("testing_stacktrace") {
 }
 
 // Just check that the driver is able to produce runnable binaries.
-task driver0(type: KonanDriverTest) {
+tasks.register("driver0", KonanDriverTest) {
     goldValue = "Hello, world!\n"
     source = "runtime/basic/driver0.kt"
 }
 
-task driver_opt(type: KonanDriverTest) {
-    disabled = (cacheTesting != null) // Cache is not compatible with -opt.
+tasks.register("driver_opt", KonanDriverTest) {
+    disabled = (cacheTesting != null) || // Cache is not compatible with -opt.
+        isExperimentalMM // Experimental MM does not support -opt yet.
     goldValue = "Hello, world!\n"
     source = "runtime/basic/driver0.kt"
     flags = ["-opt"]
@@ -3574,6 +3861,20 @@ createInterop("auxiliaryCppSources") {
     it.extraOpts "-Xsource-compiler-option", "-std=c++17"
 }
 
+createInterop("concurrentTerminate") {
+    it.defFile 'interop/concurrentTerminate/concurrentTerminate.def'
+    it.headers "$projectDir/interop/concurrentTerminate/async.h"
+    // TODO: Using `-Xcompile-source` does not imply dependency on that source, so the task will no re-run when the source is updated.
+    it.extraOpts "-Xcompile-source", "$projectDir/interop/concurrentTerminate/async.cpp"
+    it.extraOpts "-Xsource-compiler-option", "-std=c++17"
+}
+
+createInterop("incomplete_types") {
+    it.defFile 'interop/incomplete_types/library.def'
+    it.headers "$projectDir/interop/incomplete_types/library.h"
+    it.extraOpts "-Xcompile-source", "$projectDir/interop/incomplete_types/library.cpp"
+}
+
 createInterop("embedStaticLibraries") {
     it.defFile 'interop/embedStaticLibraries/embedStaticLibraries.def'
     it.headers "$projectDir/interop/embedStaticLibraries/embedStaticLibraries.h"
@@ -3581,19 +3882,49 @@ createInterop("embedStaticLibraries") {
     // Note: also hardcoded in def file.
     final String libDir = "$buildDir/embedStaticLibraries/"
 
-    it.getByTarget(target.name).doFirst {
-        1.upto(4) {
-            UtilsKt.buildStaticLibrary(
-                    project,
-                    [file("$projectDir/interop/embedStaticLibraries/${it}.c")],
-                    file("$libDir/${it}.a"),
-                    file("$libDir/${it}.objs"),
-            )
+    it.getByTarget(target.name).configure {
+        doFirst {
+            1.upto(4) {
+                UtilsKt.buildStaticLibrary(
+                        project,
+                        [file("$projectDir/interop/embedStaticLibraries/${it}.c")],
+                        file("$libDir/${it}.a"),
+                        file("$libDir/${it}.objs"),
+                )
+            }
         }
     }
 
     it.extraOpts '-staticLibrary', "1.a"
     it.extraOpts '-staticLibrary', "2.a"
+}
+
+createInterop("kt43265") {
+    it.defFile 'interop/kt43265/kt43265.def'
+}
+
+createInterop("kt43502") {
+    it.defFile 'interop/kt43502/kt43502.def'
+    it.headers "$projectDir/interop/kt43502/kt43502.h"
+    // Note: also hardcoded in def file.
+    final String libDir = "$buildDir/kt43502/"
+    // Construct library that contains actual symbol definition.
+    it.getByTarget(target.name).configure {
+        doFirst {
+            UtilsKt.buildStaticLibrary(
+                    project,
+                    [file("$projectDir/interop/kt43502/kt43502.c")],
+                    file("$libDir/kt43502.a"),
+                    file("$libDir/kt43502.objs"),
+            )
+        }
+    }
+}
+
+createInterop("leakMemoryWithRunningThread") {
+    it.defFile 'interop/leakMemoryWithRunningThread/leakMemory.def'
+    it.headers "$projectDir/interop/leakMemoryWithRunningThread/leakMemory.h"
+    it.extraOpts "-Xcompile-source", "$projectDir/interop/leakMemoryWithRunningThread/leakMemory.cpp"
 }
 
 if (PlatformInfo.isAppleTarget(project)) {
@@ -3617,6 +3948,22 @@ if (PlatformInfo.isAppleTarget(project)) {
         it.headers "$projectDir/interop/objc/msg_send/messaging.h"
     }
 
+    createInterop("foreignException") {
+        it.defFile 'interop/objc/foreignException/objc_wrap.def'
+        it.headers "$projectDir/interop/objc/foreignException/objc_wrap.h"
+    }
+
+    createInterop("foreignExceptionMode_default") {
+        it.defFile 'interop/objc/foreignException/objcExceptionMode.def'
+        it.headers "$projectDir/interop/objc/foreignException/objc_wrap.h"
+    }
+
+    createInterop("foreignExceptionMode_wrap") {
+        it.defFile 'interop/objc/foreignException/objcExceptionMode.def'
+        it.headers "$projectDir/interop/objc/foreignException/objc_wrap.h"
+        it.extraOpts '-Xforeign-exception-mode', "objc-wrap"
+    }
+
     createInterop("objcKt34467") {
         it.defFile 'interop/objc/kt34467/module_library.def'
         def moduleMap = file("interop/objc/kt34467/module_library.modulemap").absolutePath
@@ -3631,6 +3978,13 @@ if (PlatformInfo.isAppleTarget(project)) {
     createInterop("objc_illegal_sharing_with_weak") {
       it.defFile 'interop/objc/illegal_sharing_with_weak/objclib.def'
       it.headers "$projectDir/interop/objc/illegal_sharing_with_weak/objclib.h"
+    }
+    createInterop("objcKt43517") {
+        it.defFile 'framework/kt43517/kt43517.def'
+    }
+    createInterop("objc_kt42172") {
+        it.defFile 'interop/objc/kt42172/objclib.def'
+        it.headers "$projectDir/interop/objc/kt42172/objclib.h"
     }
 }
 
@@ -3682,7 +4036,9 @@ standaloneTest("interop_objc_allocException") {
 interopTest("interop0") {
     disabled = (project.testTarget == 'wasm32') ||         // No interop for wasm yet.
                (project.testTarget == 'linux_mips32') ||   //  st_uid of '/' is not equal to 0 when using qemu
-               (project.testTarget == 'linux_mipsel32')
+               (project.testTarget == 'linux_mipsel32') ||
+               (project.testTarget == 'linux_arm32_hfp') ||
+               (project.testTarget == 'linux_arm64')
     goldValue = "0\n0\n"
     source = "interop/basics/0.kt"
     interop = 'sysstat'
@@ -3813,6 +4169,21 @@ interopTest("interop_auxiliarySources") {
     interop = 'auxiliaryCppSources'
 }
 
+interopTest("interop_concurrentTerminate") {
+    disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
+    source = "interop/concurrentTerminate/main.kt"
+    interop = 'concurrentTerminate'
+    goldValue = "Reporting error!\n"
+    outputChecker = { str -> str.endsWith(goldValue) }
+    expectedExitStatus = 99
+}
+
+interopTest("interop_incompleteTypes") {
+    disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
+    source = "interop/incomplete_types/main.kt"
+    interop = 'incomplete_types'
+}
+
 interopTest("interop_embedStaticLibraries") {
     disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
     source = "interop/embedStaticLibraries/main.kt"
@@ -3865,6 +4236,36 @@ interopTest("interop_array_pointers") {
     source = "interop/basics/arrayPointers.kt"
 }
 
+interopTest("interop_kt43265") {
+    disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
+    interop = 'kt43265'
+    source = "interop/kt43265/usage.kt"
+}
+
+dynamicTest("interop_kt43502") {
+    disabled = (project.target.name != project.hostName)
+    interop = "kt43502"
+    source = "interop/kt43502/main.kt"
+    cSource = "$projectDir/interop/kt43502/main.c"
+    goldValue = "null\n"
+}
+
+interopTest("interop_leakMemoryWithRunningThreadUnchecked") {
+    disabled = (project.testTarget == 'wasm32') || // No interop for wasm yet.
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    interop = 'leakMemoryWithRunningThread'
+    source = "interop/leakMemoryWithRunningThread/unchecked.kt"
+}
+
+interopTest("interop_leakMemoryWithRunningThreadChecked") {
+    disabled = (project.testTarget == 'wasm32') || // No interop for wasm yet.
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    interop = 'leakMemoryWithRunningThread'
+    source = "interop/leakMemoryWithRunningThread/checked.kt"
+    expectedExitStatusChecker = { it != 0 }
+    outputChecker = { s -> s.contains("Cannot run checkers when there are 1 alive runtimes at the shutdown") }
+}
+
 standaloneTest("interop_pinning") {
     disabled = (project.testTarget == 'wasm32') // Uses exceptions.
     source = "interop/basics/pinning.kt"
@@ -3873,6 +4274,10 @@ standaloneTest("interop_pinning") {
 
 task interop_convert(type: KonanLocalTest) {
     source = "codegen/intrinsics/interop_convert.kt"
+}
+
+task interop_sourceCodeStruct(type: KonanLocalTest) {
+    source = "codegen/intrinsics/interop_sourceCodeStruct.kt"
 }
 
 /*
@@ -3897,6 +4302,7 @@ standaloneTest("interop_opengl_teapot") {
 
 if (PlatformInfo.isAppleTarget(project)) {
     interopTest("interop_objc_smoke") {
+        enabled = !isExperimentalMM  // Experimental MM does not have a GC yet.
         goldValue = "84\nFoo\nDeallocated\n" +
                 "Hello, World!\nKotlin says: Hello, everybody!\nHello from Kotlin\n2, 1\n" +
                 "true\ntrue\n" +
@@ -3931,6 +4337,7 @@ if (PlatformInfo.isAppleTarget(project)) {
     }
 
     interopTestMultifile("interop_objc_tests") {
+        enabled = !isExperimentalMM  // Experimental MM does not have a GC yet.
         source = "interop/objc/tests/"
         interop = 'objcTests'
         flags = ['-tr', '-e', 'main']
@@ -3954,7 +4361,6 @@ if (PlatformInfo.isAppleTarget(project)) {
         goldValue = "OK\n"
         source = "interop/objc_with_initializer/objc_test.kt"
         interop = 'objcMisc'
-        flags = ['-g']
 
         doBeforeBuild {
             mkdir(buildDir)
@@ -3986,6 +4392,62 @@ if (PlatformInfo.isAppleTarget(project)) {
         }
     }
 
+    interopTest("interop_objc_foreignException") {
+        source = "interop/objc/foreignException/objc_wrap.kt"
+        interop = 'foreignException'
+        dependsOnPlatformLibs(it)
+
+        doBeforeBuild {
+            mkdir(buildDir)
+            execKonanClang(project.target) {
+                args "$projectDir/interop/objc/foreignException/objc_wrap.m"
+                args "-lobjc", '-fobjc-arc'
+                args '-fPIC', '-shared', '-o', "$buildDir/libobjcexception.dylib"
+            }
+            if (project.target instanceof KonanTarget.IOS_X64) {
+                UtilsKt.codesign(project, "$buildDir/libobjcexception.dylib")
+            }
+        }
+    }
+
+    interopTest("interop_objc_foreignExceptionMode_wrap") {
+        source = "interop/objc/foreignException/objcExceptionMode.kt"
+        interop = 'foreignExceptionMode_wrap'
+        goldValue = "OK: ForeignException\n"
+        dependsOnPlatformLibs(it)
+
+        doBeforeBuild {
+            mkdir(buildDir)
+            execKonanClang(project.target) {
+                args "$projectDir/interop/objc/foreignException/objc_wrap.m"
+                args "-lobjc", '-fobjc-arc'
+                args '-fPIC', '-shared', '-o', "$buildDir/libobjcexception.dylib"
+            }
+            if (project.target instanceof KonanTarget.IOS_X64) {
+                UtilsKt.codesign(project, "$buildDir/libobjcexception.dylib")
+            }
+        }
+    }
+
+    interopTest("interop_objc_foreignExceptionMode_default") {
+        source = "interop/objc/foreignException/objcExceptionMode.kt"
+        interop = 'foreignExceptionMode_default'
+        goldValue = "OK: Ends with uncaught exception handler\n"
+        dependsOnPlatformLibs(it)
+
+        doBeforeBuild {
+            mkdir(buildDir)
+            execKonanClang(project.target) {
+                args "$projectDir/interop/objc/foreignException/objc_wrap.m"
+                args "-lobjc", '-fobjc-arc'
+                args '-fPIC', '-shared', '-o', "$buildDir/libobjcexception.dylib"
+            }
+            if (project.target instanceof KonanTarget.IOS_X64) {
+                UtilsKt.codesign(project, "$buildDir/libobjcexception.dylib")
+            }
+        }
+    }
+
     interopTest("interop_objc_kt34467") {
         source = "interop/objc/kt34467/foo.kt"
         interop = 'objcKt34467'
@@ -3993,6 +4455,7 @@ if (PlatformInfo.isAppleTarget(project)) {
     }
 
     interopTest("interop_objc_illegal_sharing_with_weak") {
+        enabled = !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
         source = "interop/objc/illegal_sharing_with_weak/main.kt"
         interop = 'objc_illegal_sharing_with_weak'
 
@@ -4001,6 +4464,26 @@ if (PlatformInfo.isAppleTarget(project)) {
             it.startsWith("Before") &&                   // Should crash after "Before"
                 !it.contains("After") &&                 // But before "After"
                 it.contains("isObjectAliveShouldCrash")  // And should contain stack trace.
+        }
+    }
+
+    interopTest("interop_objc_kt42172") {
+        enabled = !isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+        source = "interop/objc/kt42172/main.kt"
+        interop = "objc_kt42172"
+        flags = ['-Xopt-in=kotlin.native.internal.InternalForKotlinNative']
+        goldValue = 'Executed finalizer\n'
+
+        doBeforeBuild {
+            mkdir(buildDir)
+            execKonanClang(project.target) {
+                args "$projectDir/interop/objc/kt42172/objclib.m"
+                args "-lobjc", '-fobjc-arc'
+                args '-fPIC', '-shared', '-o', "$buildDir/libobjc_kt42172.dylib"
+            }
+            if (project.target instanceof KonanTarget.IOS_X64) {
+                UtilsKt.codesign(project, "$buildDir/libobjc_kt42172.dylib")
+            }
         }
     }
 }
@@ -4036,7 +4519,8 @@ standaloneTest("interop_zlib") {
 
 standaloneTest("interop_objc_illegal_sharing") {
     dependsOnPlatformLibs(it)
-    disabled = !isAppleTarget(project)
+    disabled = !isAppleTarget(project) ||
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
     source = "interop/objc/illegal_sharing.kt"
     expectedExitStatusChecker = { it != 0 }
     outputChecker = {
@@ -4045,7 +4529,7 @@ standaloneTest("interop_objc_illegal_sharing") {
 }
 
 dynamicTest("produce_dynamic") {
-    disabled = (project.testTarget != null && project.testTarget != project.hostName)
+    disabled = (project.target.name != project.hostName)
     source = "produce_dynamic/simple/hello.kt"
     cSource = "$projectDir/produce_dynamic/simple/main.c"
     goldValue = "Hello, dynamic!\n" +
@@ -4070,7 +4554,97 @@ dynamicTest("produce_dynamic") {
                 "Error handler: kotlin.Error: Expected error\n"
 }
 
-task library_mismatch(type: KonanDriverTest) {
+dynamicTest("kt36639") {
+    disabled = (project.target.name != project.hostName)
+    source = "produce_dynamic/kt-36639/main.kt"
+    cSource = "$projectDir/produce_dynamic/kt-36639/main.c"
+    goldValue = """|CFoo1::extfoo
+                   |CFoo1::extfoo
+                   |CFoo2::extfoo
+                   |CFoo2::extfoo
+                   |Int::extfoo
+                   |Int::extfoo
+                   |""".stripMargin()
+}
+
+dynamicTest("interop_concurrentRuntime") {
+    disabled = (project.target.name != project.hostName)
+    disabled = true  // KT-43180
+    source = "interop/concurrentTerminate/reverseInterop.kt"
+    cSource = "$projectDir/interop/concurrentTerminate/main.cpp"
+    clangTool = "clang++"
+    goldValue = "Uncaught Kotlin exception: kotlin.RuntimeException: Example"
+    outputChecker = { str -> str.startsWith(goldValue) }
+    expectedExitStatus = 99
+}
+
+dynamicTest("interop_kt42397") {
+    disabled = project.target.name != project.hostName
+    source = "interop/kt42397/knlibrary.kt"
+    cSource = "$projectDir/interop/kt42397/test.cpp"
+    clangTool = "clang++"
+}
+
+dynamicTest("interop_cleaners_main_thread") {
+    disabled = (project.target.name != project.hostName) ||
+        isExperimentalMM  // Experimental MM does not have a GC yet.
+    source = "interop/cleaners/cleaners.kt"
+    cSource = "$projectDir/interop/cleaners/main_thread.cpp"
+    clangTool = "clang++"
+    goldValue = "42\n"
+    flags = ['-Xopt-in=kotlin.native.internal.InternalForKotlinNative']
+}
+
+dynamicTest("interop_cleaners_second_thread") {
+    disabled = (project.target.name != project.hostName) ||
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "interop/cleaners/cleaners.kt"
+    cSource = "$projectDir/interop/cleaners/second_thread.cpp"
+    clangTool = "clang++"
+    goldValue = "42\n"
+    flags = ['-Xopt-in=kotlin.native.internal.InternalForKotlinNative']
+}
+
+dynamicTest("interop_cleaners_leak") {
+    disabled = (project.target.name != project.hostName)
+    source = "interop/cleaners/cleaners.kt"
+    cSource = "$projectDir/interop/cleaners/leak.cpp"
+    clangTool = "clang++"
+    goldValue = ""
+    flags = ['-Xopt-in=kotlin.native.internal.InternalForKotlinNative']
+}
+
+dynamicTest("interop_migrating_main_thread_legacy") {
+    disabled = (project.target.name != project.hostName) ||
+        isExperimentalMM  // Experimental MM will not support legacy destroy runtime mode.
+    source = "interop/migrating_main_thread/lib.kt"
+    flags = ['-Xdestroy-runtime-mode=legacy']
+    clangFlags = ['-DIS_LEGACY']
+    cSource = "$projectDir/interop/migrating_main_thread/main.cpp"
+    clangTool = "clang++"
+}
+
+dynamicTest("interop_migrating_main_thread") {
+    disabled = (project.target.name != project.hostName) ||
+        isExperimentalMM  // Experimental MM doesn't support multiple mutators yet.
+    source = "interop/migrating_main_thread/lib.kt"
+    flags = ['-Xdestroy-runtime-mode=on-shutdown']
+    cSource = "$projectDir/interop/migrating_main_thread/main.cpp"
+    clangTool = "clang++"
+}
+
+dynamicTest("interop_memory_leaks") {
+    disabled = (project.target.name != project.hostName) ||
+        isExperimentalMM  // Experimental MM will not support legacy destroy runtime mode.
+    source = "interop/memory_leaks/lib.kt"
+    cSource = "$projectDir/interop/memory_leaks/main.cpp"
+    clangTool = "clang++"
+    flags = ['-Xdestroy-runtime-mode=legacy'] // Runtime cannot be destroyed with interop with on-shutdown.
+    expectedExitStatusChecker = { it != 0 }
+    outputChecker = { s -> s.contains("Memory leaks detected, 1 objects leaked!") }
+}
+
+tasks.register("library_mismatch", KonanDriverTest) {
     // Does not work for cross targets yet.
     enabled = !(project.testTarget != null && project.target.name != project.hostName)
 
@@ -4108,7 +4682,7 @@ task library_mismatch(type: KonanDriverTest) {
     }
 }
 
-task library_ir_provider_mismatch(type: KonanDriverTest) {
+tasks.register("library_ir_provider_mismatch", KonanDriverTest) {
     def dir = buildDir.absolutePath
     def lib = "$projectDir/link/ir_providers/library/empty.kt"
     def invalidManifest = "$projectDir/link/ir_providers/library/manifest.properties"
@@ -4146,6 +4720,18 @@ standaloneTest("fake_override_0") {
     source = "$sources/main.kt"
     flags = ["-l", "use", "-r", "$dir"]
     goldValue = "Moved\nMoved\nChild\nSuper\n"
+}
+
+linkTest("private_fake_overrides_0") {
+    source = "link/private_fake_overrides/inherit_main.kt"
+    lib = "link/private_fake_overrides/inherit_lib.kt"
+    goldValue = "PASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\n"
+}
+
+linkTest("private_fake_overrides_1") {
+    source = "link/private_fake_overrides/override_main.kt"
+    lib = "link/private_fake_overrides/override_lib.kt"
+    goldValue = "PASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\nPASS\n"
 }
 
 Task frameworkTest(String name, Closure<FrameworkTest> configurator) {
@@ -4189,6 +4775,7 @@ Task frameworkTest(String name, Closure<FrameworkTest> configurator) {
 
 if (isAppleTarget(project)) {
     frameworkTest('testObjCExport') {
+        enabled = !isExperimentalMM // Experimental MM doesn't support ObjC blocks yet.
         final String frameworkName = 'Kt'
         final String dir = "$testOutputFramework/testObjCExport"
         final File lazyHeader = file("$dir/$target-lazy.h")
@@ -4232,12 +4819,13 @@ if (isAppleTarget(project)) {
         framework(frameworkName) {
             sources = ['objcexport']
             library = libraryName
-            opts = ["-Xemit-lazy-objc-header=$lazyHeader", "-Xopt-in=kotlin.ExperimentalStdlibApi"]
+            opts = ["-Xemit-lazy-objc-header=$lazyHeader"]
         }
         swiftSources = ['objcexport']
     }
 
     frameworkTest('testObjCExportStatic') {
+        enabled = !isExperimentalMM // Experimental MM doesn't support ObjC blocks yet.
         final String frameworkName = 'KtStatic'
         final String frameworkArtifactName = 'Kt'
         final String libraryName = frameworkName + "Library"
@@ -4263,7 +4851,6 @@ if (isAppleTarget(project)) {
             artifact = frameworkArtifactName
             library = libraryName
             isStatic = true
-            opts = ['-Xstatic-framework', "-Xopt-in=kotlin.ExperimentalStdlibApi"]
         }
         swiftSources = ['objcexport']
     }
@@ -4276,6 +4863,7 @@ if (isAppleTarget(project)) {
     }
 
     frameworkTest("testStdlibFramework") {
+        enabled = !isExperimentalMM // Experimental MM does not have GC yet.
         framework('Stdlib') {
             sources = ['framework/stdlib']
             bitcode = true
@@ -4298,12 +4886,52 @@ if (isAppleTarget(project)) {
         swiftSources = ['framework/multiple']
     }
 
+    frameworkTest("testMultipleFrameworksStatic") {
+        if (cacheTesting != null) {
+            // See https://youtrack.jetbrains.com/issue/KT-34261.
+            expectedExitStatus = 134
+        }
+
+        framework('FirstStatic') {
+            artifact = 'First'
+            sources = ['framework/multiple/framework1', 'framework/multiple/shared']
+            bitcode = true
+            isStatic = true
+            opts = ['-Xstatic-framework', "-Xpre-link-caches=enable"]
+        }
+        framework('SecondStatic') {
+            artifact = 'Second'
+            sources = ['framework/multiple/framework2', 'framework/multiple/shared']
+            bitcode = true
+            isStatic = true
+            opts = ['-Xstatic-framework', "-Xpre-link-caches=enable"]
+        }
+        codesign = false
+        swiftSources = ['framework/multiple']
+    }
+
     frameworkTest("testGh3343Framework") {
         framework('Gh3343') {
             sources = ['framework/gh3343']
             library = 'objcGh3343'
         }
         swiftSources = ['framework/gh3343/']
+    }
+
+    frameworkTest("testKt42397Framework") {
+        enabled = !project.globalTestArgs.contains('-opt')
+        framework("Kt42397") {
+            sources = ['framework/kt42397']
+        }
+        swiftSources = ['framework/kt42397']
+    }
+
+    frameworkTest("testKt43517Framework") {
+        framework('Kt43517') {
+            sources = ['framework/kt43517']
+            library = 'objcKt43517'
+        }
+        swiftSources = ['framework/kt43517/']
     }
 }
 
@@ -4386,7 +5014,6 @@ if (UtilsKt.getTestTargetSupportsCodeCoverage(project)) {
         binaryName = "CoverageControlFlow"
         numberOfCoveredFunctions = 1
         numberOfCoveredLines = 102
-        enabled = !twoStageEnabled
 
         konanArtifacts {
             program(binaryName, targets: [ target ]) {
@@ -4432,7 +5059,6 @@ if (UtilsKt.getTestTargetSupportsCodeCoverage(project)) {
         binaryName = "CoverageSmoke1"
         numberOfCoveredFunctions = 9
         numberOfCoveredLines = 33
-        enabled = !twoStageEnabled
 
         konanArtifacts {
             program(binaryName, targets: [ target ]) {
@@ -4445,18 +5071,21 @@ if (UtilsKt.getTestTargetSupportsCodeCoverage(project)) {
     }
 }
 
-task metadata_compare_typedefs(type: MetadataComparisonTest) {
+tasks.register("metadata_compare_typedefs", MetadataComparisonTest) {
+    UtilsKt.dependsOnDist(it)
     enabled = (project.testTarget != 'wasm32')
     defFile = "interop/basics/typedefs.def"
 }
 
-task metadata_compare_unable_to_import(type: MetadataComparisonTest) {
+tasks.register("metadata_compare_unable_to_import", MetadataComparisonTest) {
+    UtilsKt.dependsOnDist(it)
     enabled = (project.testTarget != 'wasm32')
     defFile = "interop/basics/unable_to_import.def"
 }
 
 standaloneTest("local_ea_arraysfieldwrite") {
-    disabled = (cacheTesting != null) // Cache is not compatible with -opt.
+    disabled = (cacheTesting != null) || // Cache is not compatible with -opt.
+        isExperimentalMM // Experimental MM does not support -opt yet.
     goldValue = "Array (constructor init):\nSize: 2\nContents: [1, 2]\n" +
             "Array (constructor init):\nSize: 2\nContents: [3, 4]\n" +
             "Array (default value init):\nSize: 2\nContents: [1, 2]\n" +
@@ -4467,22 +5096,58 @@ standaloneTest("local_ea_arraysfieldwrite") {
     source = "codegen/localEscapeAnalysis/arraysFieldWrite.kt"
 }
 
+tasks.register("override_konan_properties0", KonanDriverTest) {
+    def overrides = PlatformInfo.isWindows()
+            ? '-Xoverride-konan-properties="llvmInlineThreshold=76"'
+            : '-Xoverride-konan-properties=llvmInlineThreshold=76'
+    flags = [
+            "-opt",
+            "-Xverbose-phases=BitcodeOptimization",
+            overrides
+    ]
+    compilerMessages = true
+    source = "link/ir_providers/hello.kt"
+    def messages =
+            "inline_threshold: 76\n" +
+            "hello\n"
+    goldValue = PlatformInfo.isWindows() ? messages.replaceAll('\\/', '\\\\') : messages
+    outputChecker = { out ->
+        goldValue.split("\n")
+                .collect { line -> out.contains(line) }
+                .every { it == true }
+    }
+}
+
+createStdlibTest('stdlibTest', /* inWorker = */ false)
+createStdlibTest('stdlibTestInWorker', /*inWorker = */ true)
+
 /**
  * Creates tasks to build and execute stdlib tests.
  */
-KotlinNativeTestKt.createTest(project, 'stdlibTest', KonanGTest) { task ->
+private void createStdlibTest(String name, boolean inWorker) {
+    KotlinNativeTestKt.createTest(project, name, KonanGTest) { task ->
+        configureStdlibTest(task, inWorker)
+    }
+}
+
+/**
+ * Configures tasks to build and execute stdlib tests.
+ */
+private void configureStdlibTest(KonanGTest task, boolean inWorker) {
     def sources = UtilsKt.getFilesToCompile(project,
             [ 'build/stdlib_external/stdlib', 'stdlib_external/utils.kt',
+                                 'stdlib_external/collections',
                                  'stdlib_external/jsCollectionFactoriesActuals.kt',
                                  'stdlib_external/text/StringEncodingTestNative.kt'],
             [ 'build/stdlib_external/stdlib/test/internalAnnotations.kt' ])
 
     konanArtifacts {
-        program('stdlibTest', targets: [target.name]) {
+        program(task.name, targets: [target.name]) {
             srcFiles sources
-            baseDir "$testOutputStdlib/stdlibTest"
+            baseDir "$testOutputStdlib/$task.name"
             enableMultiplatform true
-            extraOpts '-tr',
+            extraOpts inWorker ? '-trw' : '-tr',
+                    '-Xverify-ir',
                     '-Xopt-in=kotlin.RequiresOptIn,kotlin.ExperimentalStdlibApi',
                     "-friend-modules", project.rootProject.file("${project.properties['konan.home']}/klib/common/stdlib").absolutePath
             extraOpts project.globalTestArgs
@@ -4493,7 +5158,8 @@ KotlinNativeTestKt.createTest(project, 'stdlibTest', KonanGTest) { task ->
     task.useFilter = false
     task.testLogger = KonanTest.Logger.GTEST
     task.finalizedBy("resultsTask")
-    task.enabled = (project.testTarget != 'wasm32')  // Uses exceptions
+    task.enabled = (project.testTarget != 'wasm32') && // Uses exceptions
+        (!inWorker || !ext.isExperimentalMM)  // Experimental MM doesn't support multiple mutators yet.
 }
 
 /**
@@ -4522,6 +5188,7 @@ task buildKonanTests { t ->
             srcFiles sources
             baseDir testOutputLocal
             extraOpts '-tr'
+            extraOpts '-Xverify-ir'
             extraOpts project.globalTestArgs
         }
     }
@@ -4535,7 +5202,7 @@ task buildKonanTests { t ->
     project.tasks
             .withType(KonanLocalTest.class)
             .matching { !(it instanceof KonanStandaloneTest) }
-            .forEach { it.dependsOn(t) }
+            .configureEach { it.dependsOn(t) }
 }
 
 
@@ -4552,8 +5219,12 @@ sourceSets {
     }
 }
 
+compileNopPluginKotlin {
+    kotlinOptions.freeCompilerArgs += ['-Xskip-prerelease-check']
+}
+
 Task pluginTest(String name, String pluginName, Closure configureClosure) {
-    def jarTask = project.tasks.create("jar-$pluginName", Jar).configure {
+    def jarTask = project.tasks.register("jar-$pluginName", Jar) {
         it.dependsOn("compile${pluginName.capitalize()}Kotlin")
         from {
             sourceSets[pluginName].output
@@ -4608,7 +5279,7 @@ project.tasks.register("debugger_test", Test.class) {
 if (target.family == Family.IOS && (target.architecture == ARM32 || target.architecture == ARM64)) {
     project.tasks
             .withType(KonanTestExecutable.class)
-            .forEach {
+            .configureEach {
                 ExecutorServiceKt.configureXcodeBuild((KonanTestExecutable) it)
             }
     // Exclude tasks that cannot be run on device
@@ -4620,5 +5291,5 @@ if (target.family == Family.IOS && (target.architecture == ARM32 || target.archi
                     it instanceof KonanDynamicTest ||
                     it instanceof KonanLinkTest
             }
-            .forEach { it.enabled = false }
+            .configureEach { it.enabled = false }
 }

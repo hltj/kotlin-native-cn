@@ -11,12 +11,13 @@ import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.isExternalObjCClassMethod
+import org.jetbrains.kotlin.builtins.PrimitiveType
 import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.ir.symbols.isPublicApi
 import org.jetbrains.kotlin.ir.types.*
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.util.isAnnotationClass
 import org.jetbrains.kotlin.ir.util.isInterface
-import org.jetbrains.kotlin.library.KotlinAbiVersion
 import org.jetbrains.kotlin.name.FqName
 
 internal class RTTIGenerator(override val context: Context) : ContextUtils {
@@ -68,6 +69,14 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
         if (irClass.defaultType.isSuspendFunction()) {
             result = result or TF_SUSPEND_FUNCTION
+        }
+
+        if (irClass.hasAnnotation(KonanFqNames.hasFinalizer)) {
+            result = result or TF_HAS_FINALIZER
+        }
+
+        if (irClass.hasAnnotation(KonanFqNames.hasFreezeHook)) {
+            result = result or TF_HAS_FREEZE_HOOK
         }
 
         return result
@@ -158,18 +167,18 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
     }
 
     private val arrayClasses = mapOf(
-            "kotlin.Array"              to kObjHeaderPtr,
-            "kotlin.ByteArray"          to int8Type,
-            "kotlin.CharArray"          to int16Type,
-            "kotlin.ShortArray"         to int16Type,
-            "kotlin.IntArray"           to int32Type,
-            "kotlin.LongArray"          to int64Type,
-            "kotlin.FloatArray"         to floatType,
-            "kotlin.DoubleArray"        to doubleType,
-            "kotlin.BooleanArray"       to int8Type,
-            "kotlin.String"             to int16Type,
-            "kotlin.native.ImmutableBlob" to int8Type,
-            "kotlin.native.internal.NativePtrArray" to kInt8Ptr
+            IdSignatureValues.array                                                       to kObjHeaderPtr,
+            primitiveArrayTypesSignatures[PrimitiveType.BYTE]                             to int8Type,
+            primitiveArrayTypesSignatures[PrimitiveType.CHAR]                             to int16Type,
+            primitiveArrayTypesSignatures[PrimitiveType.SHORT]                            to int16Type,
+            primitiveArrayTypesSignatures[PrimitiveType.INT]                              to int32Type,
+            primitiveArrayTypesSignatures[PrimitiveType.LONG]                             to int64Type,
+            primitiveArrayTypesSignatures[PrimitiveType.FLOAT]                            to floatType,
+            primitiveArrayTypesSignatures[PrimitiveType.DOUBLE]                           to doubleType,
+            primitiveArrayTypesSignatures[PrimitiveType.BOOLEAN]                          to int8Type,
+            IdSignatureValues.string                                                      to int16Type,
+            getPublicSignature(KonanFqNames.packageName, "ImmutableBlob")           to int8Type,
+            getPublicSignature(KonanFqNames.internalPackageName, "NativePtrArray")  to kInt8Ptr
     )
 
     // Keep in sync with Konan_RuntimeType.
@@ -186,8 +195,11 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
             vector128Type to 10
     )
 
-    private fun getInstanceSize(classType: LLVMTypeRef?, className: FqName) : Int {
-        val elementType = arrayClasses.get(className.asString())
+    private fun getElementType(irClass: IrClass): LLVMTypeRef? =
+            if (irClass.symbol.isPublicApi) arrayClasses[irClass.symbol.signature as IdSignature.PublicSignature] else null
+
+    private fun getInstanceSize(classType: LLVMTypeRef?, irClass: IrClass) : Int {
+        val elementType = getElementType(irClass)
         // Check if it is an array.
         if (elementType != null) return -LLVMABISizeOfType(llvmTargetData, elementType).toInt()
         return LLVMStoreSizeOfType(llvmTargetData, classType).toInt()
@@ -215,7 +227,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
         val bodyType = llvmDeclarations.bodyType
 
-        val instanceSize = getInstanceSize(bodyType, className)
+        val instanceSize = getInstanceSize(bodyType, irClass)
 
         val superType = when {
             irClass.isAny() -> NullPointer(runtime.typeInfoType)
@@ -317,7 +329,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
     fun methodTableRecords(irClass: IrClass): List<MethodTableRecord> {
         val functionNames = mutableMapOf<Long, OverriddenFunctionInfo>()
         return context.getLayoutBuilder(irClass).methodTableEntries.map {
-            val functionName = it.overriddenFunction.functionName
+            val functionName = it.overriddenFunction.computeFunctionName()
             val nameSignature = functionName.localHash
             val previous = functionNames.putIfAbsent(nameSignature.value, it)
             if (previous != null)
@@ -448,7 +460,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         val className = irClass.fqNameForIrSerialization.toString()
         val llvmDeclarations = context.llvmDeclarations.forClass(irClass)
         val bodyType = llvmDeclarations.bodyType
-        val elementType = arrayClasses[className]
+        val elementType = getElementType(irClass)
 
         val value = if (elementType != null) {
             // An array type.
@@ -532,7 +544,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
         val methods = (methodTableRecords(superClass) + methodImpls.map { (method, impl) ->
             assert(method.parent == irClass)
-            MethodTableRecord(method.functionName.localHash, impl.bitcast(int8TypePtr))
+            MethodTableRecord(method.computeFunctionName().localHash, impl.bitcast(int8TypePtr))
         }).sortedBy { it.nameSignature.value }.also {
             assert(it.distinctBy { it.nameSignature.value } == it)
         }
@@ -629,4 +641,6 @@ private const val TF_INTERFACE = 4
 private const val TF_OBJC_DYNAMIC = 8
 private const val TF_LEAK_DETECTOR_CANDIDATE = 16
 private const val TF_SUSPEND_FUNCTION = 32
+private const val TF_HAS_FINALIZER = 64
+private const val TF_HAS_FREEZE_HOOK = 128
 

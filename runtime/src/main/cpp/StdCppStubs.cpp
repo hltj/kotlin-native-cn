@@ -31,8 +31,8 @@ RUNTIME_USED RUNTIME_WEAK extern "C" char* Konan_cxa_demangle(
 }
 
 namespace std {
-void __throw_length_error(const char* __s __attribute__((unused))) {
-  RuntimeAssert(false, __s);
+RUNTIME_WEAK void __throw_length_error(const char* __s __attribute__((unused))) {
+  RuntimeCheck(false, "%s", __s);
 }
 
 }  // namespace std
